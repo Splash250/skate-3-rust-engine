@@ -1443,7 +1443,9 @@ impl Vm {
                     } else { callbacks.set(key, function)?; }
                 }
             }
-            let managed=resource.filter(|r|r.language()=="csharp").map(|r|crate::managed::Managed::new(&lua,&callbacks,&r.limits,budget.clone(),managed_sources)).transpose()?;
+            // Keep the empty-side resource instance and its generation alive,
+            // without requiring a worker for scripts that run on the other side.
+            let managed=resource.filter(|r|r.language()=="csharp"&&!managed_sources.is_empty()).map(|r|crate::managed::Managed::new(&lua,&callbacks,&r.limits,budget.clone(),managed_sources)).transpose()?;
             Ok(Self {
                 lua,
                 callbacks,

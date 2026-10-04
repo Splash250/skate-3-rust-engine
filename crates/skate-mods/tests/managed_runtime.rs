@@ -88,6 +88,43 @@ fn prerequisites() {
 }
 
 #[test]
+fn csharp_empty_side_keeps_resource_active_without_managed_prerequisites() {
+    let t = Temp::new();
+    if std::env::var_os("SKATE_TEST_MANAGED_EMPTY_SIDE").is_none() {
+        // An isolated child avoids mutating process-wide environment while
+        // other runtime tests may be using a real owned .NET installation.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "csharp_empty_side_keeps_resource_active_without_managed_prerequisites", "--nocapture"])
+            .env("SKATE_TEST_MANAGED_EMPTY_SIDE", "1")
+            .env("SKATE_DOTNET_ROOT", t.0.join("absent-dotnet"))
+            .env("SKATE_MANAGED_HOST", t.0.join("absent-worker"))
+            .output().unwrap();
+        assert!(output.status.success(), "empty-side child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    for side in [Side::Client, Side::Server] {
+        let mut package = installed(&t, "opposite_side", "csharp", "deliberately invalid C#; this side must not read or compile it", &[], &[]);
+        let scripts = std::mem::take(&mut package.manifest.shared_scripts);
+        if side == Side::Client { package.manifest.server_scripts = scripts; }
+        else { package.manifest.client_scripts = scripts; }
+        package.generation = 13;
+        let mut h = host(&t, side);
+        h.install(vec![package.clone()]).unwrap();
+        h.start_all().unwrap();
+        assert!(h.running("opposite_side"));
+        assert_eq!(h.generation("opposite_side"), Some(13));
+        h.tick(1. / 60., json!({}));
+        assert!(h.drain_outputs().is_empty());
+        assert!(h.drain_commands().is_empty());
+        h.disconnect();
+        assert!(!h.running("opposite_side"));
+        let mut selected = host(&t, if side == Side::Client { Side::Server } else { Side::Client });
+        selected.install(vec![package]).unwrap();
+        assert!(selected.start_all().is_err(), "the side with a script must still require its managed runtime");
+    }
+}
+
+#[test]
 #[ignore = "requires isolated .NET worker; run with SKATE_DOTNET_ROOT and SKATE_MANAGED_HOST"]
 fn csharp_lua_javascript_exports_lifecycle_and_persistence() {
     prerequisites();
