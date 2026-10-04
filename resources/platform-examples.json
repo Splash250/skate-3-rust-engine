@@ -1,0 +1,80 @@
+{
+  "root": ".",
+  "storage": "../platform-example-data",
+  "ensure": [
+    "cross-language-demo",
+    "persistent-progression",
+    "shared-objects",
+    "inventory-ui"
+  ],
+  "grants": {
+    "js-rules": [
+      "resource.exports"
+    ],
+    "lua-rule-adapter": [
+      "resource.exports"
+    ],
+    "cross-language-demo": [
+      "resource.network",
+      "resource.state",
+      "resource.storage",
+      "resource.exports",
+      "engine.ui"
+    ],
+    "persistent-progression": [
+      "resource.database",
+      "resource.events",
+      "resource.commands"
+    ],
+    "shared-objects": [
+      "resource.entities",
+      "resource.teleport",
+      "resource.commands",
+      "resource.state"
+    ],
+    "inventory-ui": [
+      "resource.network",
+      "resource.events",
+      "resource.database",
+      "engine.ui"
+    ],
+    "managed-language-demo": [
+      "resource.network",
+      "resource.state",
+      "resource.storage",
+      "resource.exports",
+      "engine.ui"
+    ],
+    "voice-room": [
+      "resource.voice",
+      "engine.voice",
+      "resource.commands",
+      "resource.network",
+      "resource.events"
+    ],
+    "verified-course": [
+      "resource.competition",
+      "resource.commands",
+      "resource.events",
+      "resource.state",
+      "resource.network",
+      "resource.teleport",
+      "resource.entities",
+      "engine.ui"
+    ],
+    "presentation-demo": [
+      "resource.network",
+      "resource.state",
+      "resource.events",
+      "engine.animation",
+      "engine.ui"
+    ],
+    "community-park": [
+      "resource.state",
+      "resource.commands",
+      "resource.world",
+      "resource.teleport",
+      "engine.ui"
+    ]
+  }
+}

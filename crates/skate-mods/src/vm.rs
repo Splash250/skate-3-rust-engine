@@ -197,6 +197,12 @@ pub enum Command {
         text: String,
     },
     MultiplayerDebug { key: String, text: String },
+    Voice { operation: Value },
+    Animation { version: u32, operation: crate::animation::Operation },
+    UiBrowserOpen { key: String, options: skate_browser::Options },
+    UiBrowserMessage { key: String, value: Value },
+    UiBrowserFocus { key: String, focused: bool },
+    UiBrowserClose { key: String },
     UiCanvas { key: String, options: crate::presentation::CanvasOptions },
     UiRemove { key: String },
     CameraRig { body: String, options: crate::presentation::CameraRigOptions },
@@ -581,12 +587,17 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
+            Self::Voice {operation} => serde_json::to_vec(operation).is_ok_and(|bytes|bytes.len()<=4096) && serde_json::from_value::<skate_voice::ClientCommand>(operation.clone()).is_ok_and(|command|command.validate().is_ok()),
+            Self::Animation {version,operation} => *version==1 && operation.validate(),
             Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
             Self::Log { text } => text.len() <= 2048,
             Self::Overlay { key, text } | Self::MultiplayerDebug { key, text } => crate::schema::valid_id(key) && text.len() <= 1024,
+            Self::UiBrowserOpen {key,options} => crate::schema::valid_id(key) && options.validate().is_ok(),
+            Self::UiBrowserMessage {key,value} => crate::schema::valid_id(key) && skate_browser::encode(&skate_browser::Input::Message{value:value.clone()},skate_browser::MAX_MESSAGE).is_ok(),
+            Self::UiBrowserFocus {key,..} | Self::UiBrowserClose {key} => crate::schema::valid_id(key),
             Self::UiCanvas { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::UiRemove { key } => crate::schema::valid_id(key),
             Self::CameraRig { body, options } => crate::schema::valid_id(body) && options.validate(),
@@ -861,6 +872,8 @@ pub(crate) fn command_kind(command: &Command) -> &'static str {
     match command {
         Command::RigPart {..} => "rig_part",
         Command::GraphGate {..} => "graph_gate",
+        Command::Voice {..} => "voice",
+        Command::Animation {..} => "animation",
         Command::EngineInspect {..} => "engine_inspect",
         Command::Request {..} => "request",
         Command::InputOverride {..} => "input_override",
@@ -868,6 +881,10 @@ pub(crate) fn command_kind(command: &Command) -> &'static str {
         Command::Log { .. } => "log",
         Command::Overlay { .. } => "overlay",
         Command::MultiplayerDebug { .. } => "multiplayer_debug",
+        Command::UiBrowserOpen { .. } => "ui_browser_open",
+        Command::UiBrowserMessage { .. } => "ui_browser_message",
+        Command::UiBrowserFocus { .. } => "ui_browser_focus",
+        Command::UiBrowserClose { .. } => "ui_browser_close",
         Command::UiCanvas { .. } => "ui_canvas",
         Command::UiRemove { .. } => "ui_remove",
         Command::CameraRig { .. } => "camera_rig",
@@ -1124,11 +1141,24 @@ pub const LUA_INSTRUCTIONS_PER_BUDGET_UNIT: usize = 1000;
 /// Per-callback instruction budget (each unit ~= 1000 Lua instructions).
 pub const LUA_BUDGET_UNITS: usize = 800;
 
+pub(crate) fn check_instruction_budget(budget: &AtomicUsize) -> mlua::Result<()> {
+    if budget.load(Ordering::Relaxed) == 0 {
+        Err(mlua::Error::RuntimeError("resource instruction budget exhausted".into()))
+    } else { Ok(()) }
+}
+
+
 pub struct Vm {
     lua: Lua,
     callbacks: Table,
     advance: mlua::Function,
     timers_due: mlua::Function,
+    resource_advance: Option<mlua::Function>,
+    resource_due: Option<mlua::Function>,
+    budget_units: usize,
+    metrics: crate::runtime_metrics::Counters,
+    _javascript: Option<Arc<crate::javascript::JavaScript>>,
+    _managed: Option<Arc<crate::managed::Managed>>,
     budget: Arc<AtomicUsize>,
     queue: Arc<Mutex<Vec<Command>>>,
 }
@@ -1151,10 +1181,10 @@ impl Vm {
     fn build(root:&Path, manifest:&Manifest, settings:&BTreeMap<String,Value>, snapshot:&Value, resource:Option<&crate::resources::Bootstrap>) -> Result<Self,String> {
         let build = || -> mlua::Result<Self> {
             let lua = Lua::new_with(
-                StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
+                StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | if resource.is_some() { StdLib::COROUTINE } else { StdLib::NONE },
                 LuaOptions::default(),
             )?;
-            lua.set_memory_limit(16 * 1024 * 1024)?;
+            lua.set_memory_limit(resource.map_or(16 * 1024 * 1024, |r|r.limits.lua_memory_bytes))?;
             // Snapshot closures own native allocations which Lua's heap counter
             // cannot see. Keep finalization batches small and advance collection
             // after dispatch, instead of retaining hundreds of old native frames.
@@ -1162,8 +1192,6 @@ impl Vm {
                 mlua::state::GcIncParams::default().step_size(10),
             ));
             for key in [
-                "pcall",
-                "xpcall",
                 "load",
                 "loadfile",
                 "dofile",
@@ -1172,9 +1200,15 @@ impl Vm {
             ] {
                 lua.globals().set(key, mlua::Value::Nil)?;
             }
-            let budget = Arc::new(AtomicUsize::new(LUA_BUDGET_UNITS));
+            if resource.is_none() {
+                lua.globals().set("pcall", mlua::Value::Nil)?;
+                lua.globals().set("xpcall", mlua::Value::Nil)?;
+            }
+            let budget_units = resource.map_or(LUA_BUDGET_UNITS, |r|r.limits.instruction_budget_units);
+            let budget = Arc::new(AtomicUsize::new(budget_units));
+            crate::lua_patterns::install(&lua, budget.clone())?;
             let counter = budget.clone();
-            lua.set_hook(
+            lua.set_global_hook(
                 HookTriggers::new().every_nth_instruction(LUA_INSTRUCTIONS_PER_BUDGET_UNIT as u32),
                 move |_, _| {
                     if counter
@@ -1203,6 +1237,7 @@ impl Vm {
             capabilities.set("menus", 3)?;
             capabilities.set("player_physics", 2)?;
             capabilities.set("engine_access", 1)?;
+            capabilities.set("animation", 1)?;
             capabilities.set("command_results", 1)?;
             capabilities.set("native_bodies", 1)?;
             capabilities.set("input_override", 1)?;
@@ -1357,13 +1392,38 @@ impl Vm {
             sdk.set("_advance", mlua::Value::Nil)?;
             let timers_due = sdk.get("_timers_due")?;
             sdk.set("_timers_due", mlua::Value::Nil)?;
-            if let Some(resource) = resource { resource.install(&lua, &sdk, budget.clone())?; }
+            if let Some(resource) = resource {
+                // Lua-created coroutines do not inherit mlua's global hook. Every
+                // script-accessible creation path must use mlua::create_thread.
+                lua.globals().get::<Table>("coroutine")?.set("create", lua.create_function(|lua, f: mlua::Function|lua.create_thread(f))?)?;
+                let check = budget.clone();
+                sdk.set("_budget_check", lua.create_function(move |_, ()| {
+                    if check.load(Ordering::Relaxed) == 0 { Err(mlua::Error::RuntimeError("Lua instruction budget exhausted".into())) } else { Ok(()) }
+                })?)?;
+                sdk.set("_max_threads", resource.limits.max_threads)?;
+                resource.install(&lua, &sdk, budget.clone())?;
+            }
+            let resource_advance = sdk.get::<Option<mlua::Function>>("_resource_advance")?;
+            let resource_due = sdk.get::<Option<mlua::Function>>("_resource_due")?;
+            sdk.set("_resource_advance", mlua::Value::Nil)?;
+            sdk.set("_resource_due", mlua::Value::Nil)?;
             let callbacks = lua.create_table()?;
+            let javascript=resource.filter(|r|r.language()=="javascript").map(|r|crate::javascript::JavaScript::new(&lua,&callbacks,&r.limits,budget.clone())).transpose()?;
             let scripts = resource.map(|r|r.scripts()).unwrap_or_else(||vec![manifest.entry.clone()]);
+            let mut managed_sources=Vec::new();
             for entry in scripts {
                 let code = read_bounded(root, &entry, 256 * 1024).map_err(mlua::Error::RuntimeError)?;
                 let source = std::str::from_utf8(&code).map_err(mlua::Error::external)?;
+                if resource.is_some_and(|r|r.language()=="csharp") {
+                    managed_sources.push((entry,source.to_owned()));
+                    continue;
+                }
+                if let Some(js)=&javascript {
+                    js.evaluate(source).map_err(|e|mlua::Error::RuntimeError(format!("{}/{}: {e}",manifest.id,entry)))?;
+                    continue;
+                }
                 let value: mlua::Value = lua.load(source).set_name(format!("@{}/{}", manifest.id, entry)).into_function()?.call(())?;
+                check_instruction_budget(&budget)?;
                 let script_callbacks = match value {
                     mlua::Value::Table(table) => table,
                     mlua::Value::Nil if resource.is_some() => continue,
@@ -1383,11 +1443,18 @@ impl Vm {
                     } else { callbacks.set(key, function)?; }
                 }
             }
+            let managed=resource.filter(|r|r.language()=="csharp").map(|r|crate::managed::Managed::new(&lua,&callbacks,&r.limits,budget.clone(),managed_sources)).transpose()?;
             Ok(Self {
                 lua,
                 callbacks,
                 advance,
                 timers_due,
+                resource_advance,
+                resource_due,
+                budget_units,
+                metrics: resource.map(|r|r.metrics.clone()).unwrap_or_default(),
+                _javascript: javascript,
+                _managed: managed,
                 budget,
                 queue,
             })
@@ -1396,17 +1463,19 @@ impl Vm {
     }
 
     pub(crate) fn resource_callbacks(&mut self, callbacks:Vec<mlua::Function>, payload:Value, sender:u64, snapshot:&Arc<Value>, fields:&crate::SnapshotFields) -> Result<Vec<Command>,String> {
-        self.budget.store(LUA_BUDGET_UNITS, Ordering::Relaxed);
+        let timer=crate::runtime_metrics::Timer::start();
+        self.budget.store(self.budget_units, Ordering::Relaxed);
         let invoke = || -> mlua::Result<()> {
             let sdk = self.lua.globals().get::<Table>("sdk")?;
             sdk.set("snapshot", lazy_snapshot_fields(&self.lua,snapshot.clone(),None,fields.clone())?)?;
-            for callback in callbacks { callback.call::<()>((json_to_lua(&self.lua,&payload)?,sender.to_string()))?; }
+            for callback in callbacks { callback.call::<()>((json_to_lua(&self.lua,&payload)?,sender.to_string()))?; check_instruction_budget(&self.budget)?; }
             self.lua.gc_step()?;
             Ok(())
         };
         // Events and commands may be delivered while another resource owns the
         // engine bridge. They never borrow that caller's native body namespace.
         let result = crate::query::without_host(invoke);
+        timer.record(&self.metrics,"event_or_command",self.budget_units.saturating_sub(self.budget.load(Ordering::Relaxed)),result.as_ref().err().map(ToString::to_string).as_deref());
         let commands = std::mem::take(&mut *self.queue.lock().unwrap());
         result.map(|_|commands).map_err(|e|e.to_string())
     }
@@ -1430,7 +1499,8 @@ impl Vm {
     }
 
     pub fn call_shared(&mut self,name:&str,payload:Value,snapshot:&Arc<Value>,physics:Option<Value>,fields:&crate::SnapshotFields)->Result<Vec<Command>,String> {
-        self.budget.store(LUA_BUDGET_UNITS, Ordering::Relaxed);
+        let timer=crate::runtime_metrics::Timer::start();
+        self.budget.store(self.budget_units, Ordering::Relaxed);
         let invoke = || -> mlua::Result<bool> {
             let callback=self.callbacks.get::<Option<mlua::Function>>(name)?;
             if callback.is_none() {
@@ -1439,8 +1509,9 @@ impl Vm {
                 // Advance the clock even for mods with no update callback. Only
                 // a due timer can observe this frame, so otherwise no snapshot
                 // or native closures need to be allocated at render frequency.
-                if !self.timers_due.call::<bool>(dt)? {
+                if !self.timers_due.call::<bool>(dt)? && !self.resource_due.as_ref().map(|f|f.call::<bool>(dt)).transpose()?.unwrap_or(false) {
                     self.advance.call::<()>(dt)?;
+                    if let Some(advance) = &self.resource_advance { advance.call::<()>(dt)?; }
                     return Ok(true);
                 }
             }
@@ -1465,21 +1536,32 @@ impl Vm {
             if name == "on_update" {
                 self.advance
                     .call::<()>(payload["dt"].as_f64().unwrap_or(0.))?;
+                if let Some(advance) = &self.resource_advance { advance.call::<()>(payload["dt"].as_f64().unwrap_or(0.))?; }
             }
             Ok(true)
         };
         let result = invoke().and_then(|ran| {
+            check_instruction_budget(&self.budget)?;
             if ran { self.lua.gc_step().map(|_| ()) } else { Ok(()) }
         });
         let remaining = self.budget.load(Ordering::Relaxed);
-        let used = LUA_BUDGET_UNITS.saturating_sub(remaining);
-        let approx_instructions = used * LUA_INSTRUCTIONS_PER_BUDGET_UNIT;
+        let budget_units = self.budget_units;
+        let used = budget_units.saturating_sub(remaining);
+        timer.record(&self.metrics,name,used,result.as_ref().err().map(ToString::to_string).as_deref());
+        let runtime_name = if self._managed.is_some() { "C#" } else if self._javascript.is_some() { "JavaScript" } else { "Lua" };
+        let work_description = || if self._managed.is_some() {
+            format!("{used} shared host operation/checkpoint units")
+        } else if self._javascript.is_some() {
+            format!("{used} shared engine checkpoint units")
+        } else {
+            format!("~{} Lua instructions", used * LUA_INSTRUCTIONS_PER_BUDGET_UNIT)
+        };
         let commands = std::mem::take(&mut *self.queue.lock().unwrap());
         match result {
             Ok(()) => {
-                if used > LUA_BUDGET_UNITS * 9 / 10 {
+                if used > budget_units * 9 / 10 {
                     eprintln!(
-                        "Lua budget warning [{name}]: used {used}/{LUA_BUDGET_UNITS} units (~{approx_instructions} instructions)"
+                        "{runtime_name} budget warning [{name}]: used {used}/{budget_units} units ({})", work_description()
                     );
                 }
                 Ok(commands)
@@ -1488,16 +1570,21 @@ impl Vm {
                 let msg = e.to_string();
                 if msg.contains("instruction budget exhausted") {
                     eprintln!(
-                        "Lua budget exhausted [{name}]: used {used}/{LUA_BUDGET_UNITS} units (~{approx_instructions} instructions)"
+                        "{runtime_name} budget exhausted [{name}]: used {used}/{budget_units} units ({})", work_description()
                     );
                     Err(format!(
-                        "{msg} (used {used}/{LUA_BUDGET_UNITS} budget units, ~{approx_instructions} instructions)"
+                        "{msg} (used {used}/{budget_units} budget units, {})", work_description()
                     ))
                 } else {
                     Err(msg)
                 }
             }
         }
+    }
+    pub(crate) fn measure_memory(&self,metrics:&mut crate::runtime_metrics::RuntimeMetrics) {
+        metrics.lua_heap_bytes=Some(self.lua.used_memory());
+        metrics.javascript_heap_bytes=self._javascript.as_ref().map(|js|js.used_memory());
+        metrics.managed_resident_bytes=self._managed.as_ref().and_then(|managed|managed.resident_bytes());
     }
 }
 

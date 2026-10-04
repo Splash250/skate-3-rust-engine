@@ -23,6 +23,8 @@ default = ["dev-dynamic"]
 dev-dynamic = ["bevy/dynamic_linking"]
 
 [dependencies]
+skate-voice = { path = "../skate-voice", features = ["devices"] }
+skate-accounts = { path = "../skate-accounts" }
 bevy = { workspace = true, features = ["jpeg", "trace", "debug", "bevy_audio", "wav"] }
 skate-core.workspace = true
 skate-data.workspace = true
@@ -40,6 +42,8 @@ skate-audio = { path = "../skate-audio" }
 gltf = { version = "=1.4.1", default-features = true }
 # SDL3 gamepad input for every platform, built from source and statically linked.
 sdl3 = { version = "=0.20.0", features = ["build-from-source-static"] }
+
+skate-browser = { path = "../skate-browser" }
 
 [dev-dependencies]
 naga = { version = "=27.0.3", features = ["wgsl-in"] }

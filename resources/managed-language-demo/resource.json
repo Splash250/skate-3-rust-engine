@@ -1,0 +1,1 @@
+{"format":1,"api":1,"id":"managed-language-demo","version":"1.0.0","language":"csharp","client_scripts":["client.cs"],"server_scripts":["server.cs"],"dependencies":{"lua-rule-adapter":"1.0.0"},"capabilities":["resource.network","resource.state","resource.storage","resource.exports","engine.ui"]}

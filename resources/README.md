@@ -1,6 +1,6 @@
 # Redistributable resource examples
 
-These original Lua scripts and the text UI asset are distributed under the
+These original resource scripts, UI assets and the authored community park are distributed under the
 repository's [GPL-3.0 license](../LICENSE). They contain no retail game data,
 credentials, downloaded native code or CitizenFX source.
 
@@ -43,3 +43,43 @@ use new exact digests even if the resource's version label is unchanged.
 See the [authoring API](../sdk/RESOURCES.md),
 [server and cache guide](../docs/multiplayer/resources.md) and
 [Cfx comparison](../docs/multiplayer/resource-compatibility.md).
+
+## Platform extension examples
+
+Run `cargo run --locked -p skate-server -- --test-world --max-players 64
+--resources resources/platform-examples.json` (one command line). This selects:
+
+- `cross-language-demo`: downloaded JavaScript client/server scripts call a Lua
+  dependency which calls a JavaScript rules export. Its lightweight engine UI
+  shows results; this is not an HTML browser host.
+- `persistent-progression`: SQLite migrations and transactional inventory, with
+  trusted console commands documented in its README. `progress_award test 100`,
+  `progress_buy test`, and `progress_inspect test` are prefixed with `command`.
+  Labels are local administrator data keys, not authenticated player identities.
+- `shared-objects`: authoritative moving objects and private instances. Its
+  server console commands are documented in its README.
+- `inventory-ui`: a downloaded HTML inventory backed by authenticated accounts
+  and SQLite transactions. Start the server with `--accounts` and the game with
+  `--account-config`; see [account setup](../docs/multiplayer/accounts-and-administration.md).
+
+Optional examples are granted in the config but added to `ensure` explicitly:
+`voice-room` supplies radio administration and proximity controls (`--voice` is
+the local client opt-in); `managed-language-demo` requires the isolated .NET
+worker. Add `community-park` to select its downloadable map and native rail.
+Only one required resource world may be active at a time.
+`verified-course` depends on that park and adds server-validated checkpoints,
+pickups and a private competition instance; see the
+[competition contract](../docs/multiplayer/verified-competitions.md).
+`presentation-demo` imports an original clip, mascot and bone attachment and
+replicates their descriptors within each instance; see its
+[setup and controls](presentation-demo/README.md). Clients must explicitly grant
+its `engine.animation` capability for the server origin before activation.
+
+Lua and QuickJS are embedded; SQLite and HTTPS support are built into the server.
+Neither Node.js nor a database service is required. The authenticated inventory
+uses locally created credentials. Browser pages require the separately built
+`skate-browser-host` companion and its platform prerequisites; see
+[browser interfaces](../docs/multiplayer/browser-interfaces.md). Managed resources
+require .NET10 and the trusted worker. See [voice setup](../docs/multiplayer/voice.md).
+See [extension evidence](../docs/multiplayer/platform-extension-evidence.md) for
+precise implemented and open capabilities.

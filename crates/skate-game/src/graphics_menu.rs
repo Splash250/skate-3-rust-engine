@@ -105,6 +105,18 @@ pub(crate) struct Menu {
 }
 impl Menu {
     #[cfg(test)]
+    pub(crate) fn transition_test_menu() -> Self {
+        Self {
+            open: true, selected: 0, settings: GraphicsSettings::default(),
+            path: PathBuf::new(), difficulty: Difficulty::Easy,
+            custom: Tuning::default(), custom_defaults: Tuning::default(),
+            custom_apply: false, custom_dirty: false, status: String::new(),
+            maps: Vec::new(), selected_map: 0, multiplayer: false, browser: false,
+            network_page: 0, browser_count: 0, daylight: false, section: 0,
+            custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn advance_day(&mut self, seconds: f32) -> f32 {
         if !self.open && self.settings.day_speed > 0 {
             self.settings.hour = (self.settings.hour + seconds * self.settings.day_speed as f32 / 3600.).rem_euclid(24.);

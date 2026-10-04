@@ -13,6 +13,7 @@ pub(crate) struct SourceIdentity {
     pub section_index: u64,
     pub section_offset: u64,
 }
+#[derive(Clone)]
 struct Asset {
     #[cfg(test)]
     source: SourceIdentity,
@@ -20,6 +21,7 @@ struct Asset {
     indices: Vec<usize>,
     tree: Octree,
 }
+#[derive(Clone)]
 pub(crate) struct StaticProvider {
     primitives: Vec<Primitive>,
     metadata: Vec<spline::PrimitiveMetadata>,
@@ -142,6 +144,31 @@ impl StaticProvider {
         #[cfg(test)]
         let source_rail_indices = primitives.iter().map(|p| p.owner - 1).collect();
         Ok(Self { #[cfg(test)] source_for_primitive: vec![0; primitives.len()], primitives, metadata, #[cfg(test)] rail_guids, assets, #[cfg(test)] source_rail_indices })
+    }
+
+    /// Resource overlays retain stock registration order and use independent
+    /// owner handles after the immutable base provider.
+    pub fn with_authored(&self,rails:&[skate_data::skate_map::Rail])->Result<Self,String> {
+        let mut overlay=Self::authored(rails)?;
+        let mut merged=self.clone();
+        let primitive_offset=merged.primitives.len();
+        let owner_offset=merged.primitives.iter().map(|p|p.owner).max().unwrap_or(0);
+        for primitive in &mut overlay.primitives {
+            primitive.owner=primitive.owner.checked_add(owner_offset).ok_or("Native grind owner handles exhausted")?;
+        }
+        for asset in &mut overlay.assets {
+            for index in &mut asset.indices {*index=index.checked_add(primitive_offset).ok_or("Native grind primitive indices exhausted")?;}
+        }
+        #[cfg(test)] {
+            let asset_offset=merged.assets.len();
+            merged.source_for_primitive.extend(overlay.source_for_primitive.into_iter().map(|index|index+asset_offset));
+            merged.rail_guids.extend(overlay.rail_guids);
+            merged.source_rail_indices.extend(overlay.source_rail_indices);
+        }
+        merged.primitives.extend(overlay.primitives);
+        merged.metadata.extend(overlay.metadata);
+        merged.assets.extend(overlay.assets);
+        Ok(merged)
     }
 
     pub fn primitives(&self) -> &[Primitive] { &self.primitives }

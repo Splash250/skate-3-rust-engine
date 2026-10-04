@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "persistent-progression",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "client_scripts": [],
+  "server_scripts": ["server.lua"],
+  "files": [],
+  "dependencies": {},
+  "exports": [],
+  "capabilities": ["resource.database", "resource.events", "resource.commands"]
+}

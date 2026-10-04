@@ -12,6 +12,7 @@ pub(super) trait Transport: Send + Sync {
     fn send(&mut self, peer: u64, data: &[u8]) -> io::Result<()>;
     fn receive(&mut self) -> io::Result<Vec<(u64, Vec<u8>)>>;
     fn status(&self) -> String;
+    fn actor_id(&self) -> Option<u64> { None }
     fn command(&mut self, _command: LobbyCommand) -> Result<(), String> {
         Err("Leave local multiplayer before browsing Steam lobbies".into())
     }
@@ -82,6 +83,55 @@ impl Transport for Direct {
         "Direct connection (Steam not required)".into()
     }
 }
+/// Authenticated dedicated UDP. A fresh TLS login creates each codec exactly
+/// once; dropping it retires its nonce state, so reconnects must log in again.
+pub(super) struct SecureDirect {
+    socket: UdpSocket,
+    server: SocketAddr,
+    codec: skate_accounts::ClientSession,
+}
+impl SecureDirect {
+    pub fn login(path: &Path, server: SocketAddr) -> Result<Self,String> {
+        use std::io::Read;
+        let mut bytes=Vec::new();
+        std::fs::File::open(path).map_err(|e|format!("Account configuration: {e}"))?.take(16385).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+        if bytes.len()>16384 {return Err("Account configuration exceeds 16 KiB".into());}
+        let mut config:skate_accounts::ClientCredentials=serde_json::from_slice(&bytes).map_err(|_|"Invalid account configuration")?;
+        let parent=path.parent().unwrap_or(Path::new("."));
+        if config.ca_certificate.is_relative(){config.ca_certificate=parent.join(config.ca_certificate);}
+        if config.password_file.is_relative(){config.password_file=parent.join(config.password_file);}
+        let (_,codec)=skate_accounts::login_client(&config,Duration::from_secs(10)).map_err(|e|e.to_string())?;
+        Self::new(server,codec).map_err(|e|e.to_string())
+    }
+    fn new(server:SocketAddr,codec:skate_accounts::ClientSession)->io::Result<Self>{
+        endpoint(server)?;
+        let socket=UdpSocket::bind("0.0.0.0:0")?;skate_net::socket::configure(&socket)?;
+        Ok(Self{socket,server,codec})
+    }
+}
+impl Transport for SecureDirect {
+    fn actor_id(&self)->Option<u64>{Some(self.codec.actor)}
+    fn loopback(&self)->bool{self.server.ip().is_loopback()}
+    fn status(&self)->String{"Authenticated direct connection (TLS login, encrypted UDP)".into()}
+    fn send(&mut self,peer:u64,data:&[u8])->io::Result<()>{
+        if endpoint(self.server)?!=peer {return Err(io::Error::other("Authenticated datagrams require their admitted server"));}
+        let packet=self.codec.encode(data).map_err(|e|io::Error::other(e.to_string()))?;
+        self.socket.send_to(&packet,self.server).map(|_|())
+    }
+    fn receive(&mut self)->io::Result<Vec<(u64,Vec<u8>)>>{
+        let mut result=Vec::new();let mut buffer=[0u8;1500];
+        for _ in 0..4096 {
+            match self.socket.recv_from(&mut buffer){
+                Ok((len,from)) if from==self.server=>if let Ok(plain)=self.codec.decode(&buffer[..len]){result.push((endpoint(from)?,plain));},
+                Ok(_)=>{},
+                Err(e) if matches!(e.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::ConnectionReset|io::ErrorKind::ConnectionRefused)=>break,
+                Err(e)=>return Err(e),
+            }
+        }
+        Ok(result)
+    }
+}
+
 pub(super) struct Steam {
     socket: UdpSocket,
     child: Child,
@@ -435,5 +485,45 @@ impl Transport for Steam {
     }
     fn congested(&self) -> bool {
         self.congested
+    }
+}
+
+#[cfg(test)]
+mod authenticated_tests {
+    use super::*;
+    use skate_accounts::{AccountStore, AdminBridge, AdminConfig, AdminServer, ServerTransport};
+    struct Temp(std::path::PathBuf);
+    impl Drop for Temp {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    #[test]
+    fn game_transport_logs_in_and_rejects_forged_endpoints_and_replays() {
+        let fixture=Temp(std::env::temp_dir().join(format!("skate-game-auth-{}",std::process::id())));
+        std::fs::create_dir(&fixture.0).unwrap();
+        let auth=fixture.0.join("auth");
+        skate_accounts::initialize(&auth,"player","local-game-test-password").unwrap();
+        let store=AccountStore::open(auth.join("accounts.sqlite3")).unwrap();
+        let server=AdminServer::bind(store.clone(),AdminConfig{bind:"127.0.0.1:0".parse().unwrap(),certificate:auth.join("certificate.pem"),key:auth.join("private-key.pem")},AdminBridge::new()).unwrap();
+        let password=fixture.0.join("password");std::fs::write(&password,"local-game-test-password").unwrap();
+        #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&password,std::fs::Permissions::from_mode(0o600)).unwrap();}
+        let config=fixture.0.join("client.json");
+        std::fs::write(&config,serde_json::to_vec(&serde_json::json!({"endpoint":format!("https://localhost:{}",server.local_addr().port()),"ca_certificate":"auth/certificate.pem","username":"player","password_file":"password"})).unwrap()).unwrap();
+        let socket=UdpSocket::bind("127.0.0.1:0").unwrap();socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let address=socket.local_addr().unwrap();let peer=endpoint(address).unwrap();
+        let mut client=SecureDirect::login(&config,address).unwrap();
+        let mut authority=ServerTransport::new(store).unwrap();
+        assert_eq!(client.actor_id(),Some(client.codec.actor));
+        assert!(client.send(peer.wrapping_add(1),b"outside").is_err());
+        client.send(peer,b"movement").unwrap();
+        let mut bytes=[0;2048];let (len,from)=socket.recv_from(&mut bytes).unwrap();
+        let (verified,plain)=authority.decode(&bytes[..len]).unwrap();assert_eq!(plain,b"movement");assert_eq!(verified.actor(),client.actor_id().unwrap());
+        let response=authority.encode(&verified,b"accepted").unwrap();
+        let stranger=UdpSocket::bind("127.0.0.1:0").unwrap();stranger.send_to(&response,from).unwrap();
+        socket.send_to(b"plaintext-spoof",from).unwrap();
+        assert!(client.receive().unwrap().is_empty());
+        socket.send_to(&response,from).unwrap();socket.send_to(&response,from).unwrap();
+        let until=Instant::now()+Duration::from_secs(1);let mut received=Vec::new();
+        while received.is_empty(){received.extend(client.receive().unwrap());assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
+        assert_eq!(received,vec![(peer,b"accepted".to_vec())]);assert!(client.receive().unwrap().is_empty());
+        let oversized=fixture.0.join("oversized.json");std::fs::write(&oversized,vec![b' ';16_385]).unwrap();
+        assert!(SecureDirect::login(&oversized,address).is_err());
     }
 }

@@ -1,0 +1,28 @@
+[package]
+name = "skate-browser"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+host = ["dep:wry", "dep:winit", "dep:gtk"]
+
+[[bin]]
+name = "skate-browser-host"
+path = "src/main.rs"
+required-features = ["host"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+skate-resources = { path = "../skate-resources" }
+wry = { version = "=0.57.0", optional = true }
+winit = { version = "=0.30.13", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "=0.18.2", optional = true }
+libc = "=0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }

@@ -102,6 +102,8 @@ pub(crate) struct GamePhysics {
     /// Accepted server impulses applied after native movement, before the solve.
     pub(crate) network_delta_velocity: [f32; 3],
     pub(crate) network_contacts: usize,
+    /// Distinct shared-entity IDs with actual native solver contacts this tick.
+    pub(crate) network_contact_ids: Vec<u64>,
     clock: clock::SimulationClock,
     pub board: BoardRuntime,
     pub riding: RidingOutputs,
@@ -232,6 +234,13 @@ impl GamePhysics {
 
     pub(crate) fn difficulty_index(&self) -> u32 { self.animation_profile.physics_mode }
 
+    pub(crate) fn grind_provider(&self)->std::sync::Arc<crate::grind_world::StaticProvider> {std::sync::Arc::clone(&self.grind_world)}
+    pub(crate) fn replace_grind_provider(&mut self,skater:&mut SkaterRuntime,provider:std::sync::Arc<crate::grind_world::StaticProvider>)->Result<(),String> {
+        player_state::retire_world_queries(self,skater)?;
+        skater.trajectory.bind_grind_world(std::sync::Arc::clone(&provider));
+        self.grind_world=provider;Ok(())
+    }
+
     pub(crate) fn world_triangles(&self) -> &[skate_core::physics::board_world::WorldTriangle] { self.world.triangles() }
 
     pub(crate) fn set_external_queries(&mut self, queries: Option<std::sync::Arc<dyn skate_core::physics::board_world::ExternalQueries>>) {
@@ -330,6 +339,7 @@ impl GamePhysics {
             network_active: false,
             network_delta_velocity: [0.; 3],
             network_contacts: 0,
+            network_contact_ids: Vec::new(),
             clock: clock::SimulationClock::default(),
             board,
             riding,

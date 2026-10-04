@@ -125,6 +125,7 @@ pub struct Extension {
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
+    budget: Option<std::rc::Rc<std::cell::Cell<usize>>>,
 }
 
 /// MOBJ schema 3 stores editor ownership of ranges in the base geometry.
@@ -132,7 +133,7 @@ struct Reader<'a> {
 /// body types still require a runtime adapter and must not be flattened.
 pub fn validate_static_objects(map: &SkateMap, extension: &Extension) -> Result<(), String> {
     if extension.schema != 3 { return Err("Unsupported MOBJ schema".into()); }
-    let mut r = Reader { bytes: &extension.payload, at: 0 };
+    let mut r = Reader { bytes: &extension.payload, at: 0, budget: None };
     let count = r.u()?;
     r.check_count(count, 80)?;
     let mut ids = std::collections::HashSet::new();
@@ -206,10 +207,17 @@ impl<'a> Reader<'a> {
         self.check_count(n, 12)?;
         (0..n).map(|_| self.floats()).collect()
     }
+    fn charge(&self, bytes: usize) -> Result<(), String> {
+        if let Some(budget) = &self.budget {
+            budget.set(budget.get().checked_sub(bytes).ok_or("SKATE aggregate decoded-byte budget exhausted")?);
+        }
+        Ok(())
+    }
     fn stored_block(&mut self, expected: usize) -> Result<StoredBlock<'a>, String> {
         if expected > 2_147_483_648 {
             return Err("SKATE decoded block exceeds 2 GiB reader limit".into());
         }
+        self.charge(expected)?;
         let method = self.u()?;
         let n = self.u()? as usize;
         let bytes = self.take(n)?;
@@ -364,6 +372,19 @@ impl SkateMap {
             map.name, disk.as_millis(), parse_started.elapsed().as_millis(), data.len());
         Ok(map)
     }
+    /// Parse downloaded world content under an aggregate decoded-byte budget.
+    pub fn parse_bounded(data: &[u8], max_decoded_bytes: usize) -> Result<Self, String> {
+        Self::parse_budgeted(data,&mut {max_decoded_bytes},false)
+    }
+    /// Charge a base world and its authored render LODs to the same budget.
+    pub fn parse_budgeted(data:&[u8],remaining:&mut usize,render_only:bool)->Result<Self,String> {
+        let budget=std::rc::Rc::new(std::cell::Cell::new(*remaining));
+        let result=Self::parse_inner(data,2,!render_only,Some(budget.clone()));
+        *remaining=budget.get();
+        let map=result?;
+        if render_only {Self::validate_render_only(&map)?;}
+        Ok(map)
+    }
     pub fn parse(data: &[u8]) -> Result<Self, String> {
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
         Self::parse_with_decode_workers(data, workers)
@@ -371,24 +392,28 @@ impl SkateMap {
     /// Data tools can request one worker for reproducible serial comparisons.
     /// The decoder caps concurrency at eight and skips threading for small maps.
     pub fn parse_with_decode_workers(data: &[u8], workers: usize) -> Result<Self, String> {
-        Self::parse_inner(data, workers, true)
+        Self::parse_inner(data, workers, true, None)
     }
 
     /// Decode a supplemental presentation package without requiring collision.
     /// Playable map loading continues to use `parse`/`load`.
     pub fn parse_render_only(data: &[u8]) -> Result<Self, String> {
-        let map = Self::parse_inner(data, 4, false)?;
+        let map = Self::parse_inner(data, 4, false, None)?;
+        Self::validate_render_only(&map)?;
+        Ok(map)
+    }
+    fn validate_render_only(map:&Self)->Result<(),String> {
         if !map.geometry.collision.is_empty() || !map.rails.is_empty()
             || !map.doors.is_empty() || !map.lights.is_empty() || !map.routes.is_empty()
             || map.extensions.iter().any(|e| e.tag != *b"WMET")
         {
             return Err("SKATE render-only package contains non-presentation data".into());
         }
-        Ok(map)
+        Ok(())
     }
-    fn parse_inner(data: &[u8], workers: usize, require_collision: bool) -> Result<Self, String> {
+    fn parse_inner(data: &[u8], workers: usize, require_collision: bool, budget: Option<std::rc::Rc<std::cell::Cell<usize>>>) -> Result<Self, String> {
         let parse_started = Instant::now();
-        let mut r = Reader { bytes: data, at: 0 };
+        let mut r = Reader { bytes: data, at: 0, budget };
         let magic = r.take(8)?;
         if &magic[..5] != b"SKATE"
             || magic[7] != 0
@@ -437,8 +462,9 @@ impl SkateMap {
         } else { None };
         let mut package_reader = None;
         if let Some(bytes) = &material_bytes {
+            let budget = r.budget.clone();
             package_reader = Some(r);
-            r = Reader { bytes, at: 0 };
+            r = Reader { bytes, at: 0, budget };
         }
         r.check_count(counts[0], if version >= 2 { 80 } else { 48 })?;
         let mut materials = Vec::new();
@@ -544,6 +570,7 @@ impl SkateMap {
             let block = if version >= 9 {
                 r.stored_block(expected)?
             } else {
+                r.charge(expected)?;
                 let bytes = r.u()? as usize;
                 if bytes != expected {
                     return Err("Invalid SKATE embedded texture size".into());
@@ -577,9 +604,11 @@ impl SkateMap {
             Reader {
                 bytes: &bytes,
                 at: 0,
+                budget: r.budget.clone(),
             }
             .geometry(geometry_counts, materials.len(), version)?
         } else {
+            r.charge(counts[2] as usize * 44 + counts[3] as usize * 4 + counts[4] as usize * 44)?;
             r.geometry(geometry_counts, materials.len(), version)?
         };
         let geometry_time = geometry_started.elapsed();

@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "verified-course",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": ["client.lua"],
+  "server_scripts": ["server.lua"],
+  "dependencies": {"community-park": "1.0.0"},
+  "capabilities": ["resource.competition", "resource.commands", "resource.events", "resource.state", "resource.network", "resource.teleport", "resource.entities", "engine.ui"]
+}

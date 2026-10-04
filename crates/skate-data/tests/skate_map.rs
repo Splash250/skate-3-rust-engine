@@ -276,3 +276,48 @@ fn rejects_bad_vertex_and_material_references() {
     bad[offset - 4..offset].copy_from_slice(&0u32.to_le_bytes());
     assert!(SkateMap::parse(&bad).unwrap_err().contains("reference"));
 }
+
+#[test]
+fn downloaded_world_decoded_budget_covers_all_compressed_blocks() {
+    for version in 9..=15 {
+        let data=fixture(version);
+        assert!(SkateMap::parse_bounded(&data, data.len()+1024).is_ok());
+        assert!(SkateMap::parse_bounded(&data, 20).unwrap_err().contains("budget"));
+    }
+}
+
+#[test]
+fn base_and_lod_decodes_consume_one_shared_budget() {
+    let data=fixture(9);let mut remaining=1024*1024;
+    SkateMap::parse_budgeted(&data,&mut remaining,false).unwrap();
+    let used=1024*1024-remaining;assert!(used>0,"each package must debit the shared decoded budget");
+    remaining=used*2-1;
+    SkateMap::parse_budgeted(&data,&mut remaining,false).unwrap();
+    assert!(SkateMap::parse_budgeted(&data,&mut remaining,false).unwrap_err().contains("budget"));
+}
+
+#[test]
+fn authored_far_lod_is_render_only_and_keeps_collision_in_the_base_world() {
+    let mut remaining=1024*1024;
+    let base=SkateMap::parse_budgeted(include_bytes!("../../../resources/community-park/park.skate"),&mut remaining,false).unwrap();
+    let far=SkateMap::parse_budgeted(include_bytes!("../../../resources/community-park/park-low.skate"),&mut remaining,true).unwrap();
+    skate_data::resource_world::validate_render(&far).unwrap();
+    assert!(far.geometry.collision.is_empty() && far.rails.is_empty());
+    assert!(far.geometry.indices.len()<base.geometry.indices.len());
+    assert!(SkateMap::parse_budgeted(include_bytes!("../../../resources/community-park/park.skate"),&mut remaining,true).is_err());
+}
+
+#[test]
+fn redistributable_resource_park_loads_collision_rendering_and_authored_grind_rail() {
+    let bytes=include_bytes!("../../../resources/community-park/park.skate");
+    let map=SkateMap::parse_bounded(bytes,1024*1024).unwrap();
+    skate_data::resource_world::validate(&map).unwrap();
+    assert_eq!(map.name,"Community Practice Park");
+    assert_eq!(map.spawn,[-8.,1.,0.]);
+    assert_eq!(map.rails.len(),1);
+    assert_eq!(map.rails[0].points,[[5.,0.75,-4.],[5.,0.75,4.]]);
+    assert!(map.geometry.collision.len()>20);
+    assert!(map.geometry.indices.len()/3>map.geometry.collision.len(),"markers are visual, not hidden solid barriers");
+    let mut bad=map;bad.geometry.collision[0].points=[[0.;3];3];
+    assert!(skate_data::resource_world::validate(&bad).unwrap_err().contains("degenerate"));
+}

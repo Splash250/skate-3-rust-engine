@@ -17,6 +17,8 @@ pub struct Manifest {
     pub id: String,
     pub version: String,
     pub language: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world: Option<World>,
     #[serde(default)]
     pub client_scripts: Vec<String>,
     #[serde(default)]
@@ -32,6 +34,23 @@ pub struct Manifest {
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
+/// One required server-selected world package. Geometry and all referenced
+/// textures are embedded in the validated SKATE file; resource dependencies
+/// retain their normal dependency-order activation semantics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct World {
+    pub map: String,
+    pub required: bool,
+    #[serde(default = "world_decoded_budget")]
+    pub max_decoded_bytes: u64,
+    #[serde(default,skip_serializing_if="Vec::is_empty")]
+    pub lods:Vec<WorldLod>,
+}
+#[derive(Debug,Clone,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldLod {pub map:String,pub distance:u32}
+fn world_decoded_budget() -> u64 { 256 * 1024 * 1024 }
 impl Manifest {
     pub fn read(root: &Path) -> Result<Self> {
         let path = checked_file(root, "resource.json", true)?;
@@ -41,7 +60,7 @@ impl Manifest {
         Ok(manifest)
     }
     pub fn validate(&self) -> Result<()> {
-        if self.format != 1 || self.api != 1 || self.language != "lua" {
+        if self.format != 1 || self.api != 1 || !matches!(self.language.as_str(), "lua" | "javascript" | "csharp") {
             return Err(Error(format!(
                 "{}: unsupported format/API/language ({}/{}/{})",
                 self.id, self.format, self.api, self.language
@@ -65,9 +84,10 @@ impl Manifest {
         ] {
             for path in list {
                 validate_path(path)?;
-                if scripts && !path.ends_with(".lua") {
+                let extension=match self.language.as_str() { "javascript"=>".js", "csharp"=>".cs", _=>".lua" };
+                if scripts && !path.ends_with(extension) {
                     return Err(Error(format!(
-                        "{}: script must be a .lua file: {path}",
+                        "{}: script must be a {extension} file: {path}",
                         self.id
                     )));
                 }
@@ -81,6 +101,23 @@ impl Manifest {
         }
         if paths.len() > 2048 {
             return Err(Error(format!("{}: too many files", self.id)));
+        }
+        if let Some(world) = &self.world {
+            validate_path(&world.map)?;
+            if !world.required || !world.map.ends_with(".skate") || !self.files.contains(&world.map)
+                || !(1024 * 1024..=512 * 1024 * 1024).contains(&world.max_decoded_bytes) {
+                return Err(Error(format!("{}: world requires a public .skate file, required=true, and a 1..512 MiB decoded budget", self.id)));
+            }
+            let mut distance=0;let mut maps=BTreeSet::from([world.map.as_str()]);
+            if world.lods.len()>4 {return Err(Error("A world may declare at most four authored render LODs".into()));}
+            for lod in &world.lods {
+                validate_path(&lod.map)?;
+                if !lod.map.ends_with(".skate") || !self.files.contains(&lod.map) || !maps.insert(&lod.map)
+                    || !(10..=10000).contains(&lod.distance) || lod.distance<=distance {
+                    return Err(Error("World LODs need distinct public .skate files and increasing distances10..10000m".into()));
+                }
+                distance=lod.distance;
+            }
         }
         // A file may not also be another file's directory (portable materialization).
         for path in &paths {

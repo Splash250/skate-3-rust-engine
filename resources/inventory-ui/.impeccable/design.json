@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-04T17:59:07.726858Z",
+  "title": "Design System: Inventory example",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15.00% 0.01110 89.72)",
+          "oklch(26.43% 0.01110 89.72)",
+          "oklch(37.86% 0.01110 89.72)",
+          "oklch(49.29% 0.01110 89.72)",
+          "oklch(60.71% 0.01110 89.72)",
+          "oklch(72.14% 0.01110 89.72)",
+          "oklch(83.57% 0.01110 89.72)",
+          "oklch(95.00% 0.01110 89.72)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.02849 173.03)",
+          "oklch(26.43% 0.02849 173.03)",
+          "oklch(37.86% 0.02849 173.03)",
+          "oklch(49.29% 0.02849 173.03)",
+          "oklch(60.71% 0.02849 173.03)",
+          "oklch(72.14% 0.02849 173.03)",
+          "oklch(83.57% 0.02849 173.03)",
+          "oklch(95.00% 0.02849 173.03)"
+        ]
+      },
+      "quiet": {
+        "role": "neutral",
+        "displayName": "Quiet ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.01973 167.78)",
+          "oklch(26.43% 0.01973 167.78)",
+          "oklch(37.86% 0.01973 167.78)",
+          "oklch(49.29% 0.01973 167.78)",
+          "oklch(60.71% 0.01973 167.78)",
+          "oklch(72.14% 0.01973 167.78)",
+          "oklch(83.57% 0.01973 167.78)",
+          "oklch(95.00% 0.01973 167.78)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Ledger rule",
+        "tonalRamp": [
+          "oklch(15.00% 0.01980 133.10)",
+          "oklch(26.43% 0.01980 133.10)",
+          "oklch(37.86% 0.01980 133.10)",
+          "oklch(49.29% 0.01980 133.10)",
+          "oklch(60.71% 0.01980 133.10)",
+          "oklch(72.14% 0.01980 133.10)",
+          "oklch(83.57% 0.01980 133.10)",
+          "oklch(95.00% 0.01980 133.10)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Shop green",
+        "tonalRamp": [
+          "oklch(15.00% 0.07162 165.04)",
+          "oklch(26.43% 0.07162 165.04)",
+          "oklch(37.86% 0.07162 165.04)",
+          "oklch(49.29% 0.07162 165.04)",
+          "oklch(60.71% 0.07162 165.04)",
+          "oklch(72.14% 0.07162 165.04)",
+          "oklch(83.57% 0.07162 165.04)",
+          "oklch(95.00% 0.07162 165.04)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "Deep shop green",
+        "tonalRamp": [
+          "oklch(15.00% 0.05773 164.38)",
+          "oklch(26.43% 0.05773 164.38)",
+          "oklch(37.86% 0.05773 164.38)",
+          "oklch(49.29% 0.05773 164.38)",
+          "oklch(60.71% 0.05773 164.38)",
+          "oklch(72.14% 0.05773 164.38)",
+          "oklch(83.57% 0.05773 164.38)",
+          "oklch(95.00% 0.05773 164.38)"
+        ]
+      },
+      "wash": {
+        "role": "neutral",
+        "displayName": "Soft wash",
+        "tonalRamp": [
+          "oklch(15.00% 0.01883 130.19)",
+          "oklch(26.43% 0.01883 130.19)",
+          "oklch(37.86% 0.01883 130.19)",
+          "oklch(49.29% 0.01883 130.19)",
+          "oklch(60.71% 0.01883 130.19)",
+          "oklch(72.14% 0.01883 130.19)",
+          "oklch(83.57% 0.01883 130.19)",
+          "oklch(95.00% 0.01883 130.19)"
+        ]
+      },
+      "error": {
+        "role": "secondary",
+        "displayName": "Recovery red",
+        "tonalRamp": [
+          "oklch(15.00% 0.14403 28.74)",
+          "oklch(26.43% 0.14403 28.74)",
+          "oklch(37.86% 0.14403 28.74)",
+          "oklch(49.29% 0.14403 28.74)",
+          "oklch(60.71% 0.14403 28.74)",
+          "oklch(72.14% 0.14403 28.74)",
+          "oklch(83.57% 0.14403 28.74)",
+          "oklch(95.00% 0.14403 28.74)"
+        ]
+      },
+      "selection": {
+        "role": "primary",
+        "displayName": "Selection green",
+        "tonalRamp": [
+          "oklch(15.00% 0.11396 123.62)",
+          "oklch(26.43% 0.11396 123.62)",
+          "oklch(37.86% 0.11396 123.62)",
+          "oklch(49.29% 0.11396 123.62)",
+          "oklch(60.71% 0.11396 123.62)",
+          "oklch(72.14% 0.11396 123.62)",
+          "oklch(83.57% 0.11396 123.62)",
+          "oklch(95.00% 0.11396 123.62)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page title."
+      },
+      "display-narrow": {
+        "displayName": "Display narrow",
+        "purpose": "Page title at widths of 680px or less."
+      },
+      "balance": {
+        "displayName": "Balance",
+        "purpose": "Available coin count with tabular numerals."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Bag and shop section titles."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Catalog item names."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Regular text and buttons."
+      },
+      "description": {
+        "displayName": "Description",
+        "purpose": "Catalog descriptions."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Account note and footer status."
+      },
+      "key": {
+        "displayName": "Key",
+        "purpose": "Escape key hint; hidden on narrow windows."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "680px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Purchase button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Coin-priced purchase action. The preview uses an illustrative value, not inventory data.",
+      "html": "<button type=\"button\" class=\"ds-button ds-purchase\" aria-label=\"Buy example item for 10 coins\">10 coins</button>",
+      "css": ".ds-button { font:400 16px/1.5 system-ui,sans-serif; color:var(--paper,#f4f1e9); background:var(--accent,#1d5842); border:0; border-radius:6px; padding:10px 16px; cursor:pointer; min-height:44px; } .ds-button:hover { background:#103d2c; } .ds-button:disabled { opacity:.55; cursor:default; } .ds-button:focus-visible { outline:3px solid var(--accent,#1d5842); outline-offset:4px; } .ds-purchase { min-width:110px; font-variant-numeric:tabular-nums; }"
+    },
+    {
+      "name": "Quiet button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Refresh or return action without a filled resting surface.",
+      "html": "<button type=\"button\" class=\"ds-button ds-quiet\">Refresh</button>",
+      "css": ".ds-button { font:400 16px/1.5 system-ui,sans-serif; color:var(--paper,#f4f1e9); background:var(--accent,#1d5842); border:0; border-radius:6px; padding:10px 16px; cursor:pointer; min-height:44px; } .ds-button:hover { background:#103d2c; } .ds-button:disabled { opacity:.55; cursor:default; } .ds-button:focus-visible { outline:3px solid var(--accent,#1d5842); outline-offset:4px; } .ds-quiet { color:var(--ink,#172b25); background:transparent; } .ds-quiet:hover { background:var(--wash,#e5ecdf); }"
+    },
+    {
+      "name": "Stock ledger row",
+      "kind": "custom",
+      "refersTo": "shop-row",
+      "description": "Item copy beside its price and purchase action. Preview copy and price are illustrative.",
+      "html": "<ul class=\"ds-catalog\"><li class=\"ds-stock\"><div><h3 class=\"ds-item-name\">Example item</h3><p class=\"ds-item-description\">An illustrative catalog description.</p></div><button type=\"button\" class=\"ds-button ds-purchase\" aria-label=\"Buy example item for 10 coins\">10 coins</button></li></ul>",
+      "css": ".ds-button { font:400 16px/1.5 system-ui,sans-serif; color:var(--paper,#f4f1e9); background:var(--accent,#1d5842); border:0; border-radius:6px; padding:10px 16px; cursor:pointer; min-height:44px; } .ds-button:hover { background:#103d2c; } .ds-button:disabled { opacity:.55; cursor:default; } .ds-button:focus-visible { outline:3px solid var(--accent,#1d5842); outline-offset:4px; } .ds-purchase { min-width:110px; font-variant-numeric:tabular-nums; } .ds-catalog { list-style:none; padding:0; margin:0; } .ds-stock { color:var(--ink,#172b25); font:400 16px/1.5 system-ui,sans-serif; padding:18px 0; display:grid; grid-template-columns:1fr auto; gap:16px; align-items:center; border-top:1px solid var(--line,#c5cdc0); } .ds-item-name { font-size:17px; font-weight:650; margin:0; } .ds-item-description { color:var(--quiet,#52605a); font-size:14px; margin:4px 0 0; }"
+    },
+    {
+      "name": "Owned item row",
+      "kind": "custom",
+      "refersTo": "owned-row",
+      "description": "Owned item and aligned quantity. Preview values are illustrative.",
+      "html": "<ul class=\"ds-owned\"><li class=\"ds-owned-row\"><span>Example item</span><strong class=\"ds-quantity\">× 2</strong></li></ul>",
+      "css": ".ds-owned { list-style:none; padding:0; margin:10px 0 32px; color:var(--ink,#172b25); font:400 16px/1.5 system-ui,sans-serif; } .ds-owned-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 0; border-bottom:1px solid var(--line,#c5cdc0); } .ds-quantity { font-variant-numeric:tabular-nums; }"
+    },
+    {
+      "name": "Available coins",
+      "kind": "custom",
+      "refersTo": "balance",
+      "description": "Labelled balance separated from bag contents by a rule; unresolved balance shown in this preview.",
+      "html": "<div class=\"ds-balance\"><span>Available coins</span><strong class=\"ds-coins\">—</strong></div>",
+      "css": ".ds-balance { color:var(--ink,#172b25); font:400 16px/1.5 system-ui,sans-serif; display:flex; align-items:baseline; justify-content:space-between; gap:16px; padding-top:18px; margin-top:auto; border-top:1px solid var(--line,#c5cdc0); } .ds-coins { font:600 28px Georgia,serif; font-variant-numeric:tabular-nums; }"
+    },
+    {
+      "name": "Recovery status",
+      "kind": "custom",
+      "refersTo": "status-error",
+      "description": "Polite live status in recovery red; the text includes the next action.",
+      "html": "<p class=\"ds-status ds-error\" role=\"status\" aria-live=\"polite\">The server has not replied. Use Refresh to check the result before purchasing again.</p>",
+      "css": ".ds-status { font:400 13px/1.5 system-ui,sans-serif; color:var(--quiet,#52605a); margin:0; max-width:65ch; } .ds-error { color:var(--error,#982d24); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Shop stock ledger",
+    "overview": "The shop stock ledger keeps inventory work direct: paper, dark green ink, ruled lists and restrained green actions. Georgia gives the title and coin balance a familiar printed character; system text keeps descriptions and controls readable. The compact desktop layout also supports a narrow native browser window.\n\nThis system is scoped to the inventory example. It records the code-led direction already chosen for this surface, with no approved visual comp or formal FORM key. Assets and fonts remain local. The original exploration retained tonal hierarchy, aligned quantities and stable item order; alternative visual worlds were not adopted.",
+    "keyCharacteristics": [
+      "Flat paper surfaces with single ledger rules.",
+      "Distinct serif title and balance; practical system text elsewhere.",
+      "Visible keyboard focus and explicit loading, empty, error and recovery states."
+    ],
+    "rules": [
+      {
+        "name": "The Ledger Rule",
+        "body": "Separate entries with single rules and space; keep the item name, price and action together.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Aligned Numbers Rule",
+        "body": "Use tabular numerals for coin balances, purchase prices and owned quantities.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do keep the bag and available coins together and preserve server-provided item order.",
+      "Do retain visible keyboard focus, descriptive purchase names and textual recovery instructions.",
+      "Do show balances and quantities from server responses, with an unresolved balance shown as a dash."
+    ],
+    "donts": [
+      "Don't replace ruled lists with decorative cards, textures or imagery for this scoped ledger.",
+      "Don't introduce remote assets or fonts.",
+      "Don't show an optimistic purchase success or unlock buying after an uncertain purchase until a valid inventory response arrives."
+    ]
+  }
+}

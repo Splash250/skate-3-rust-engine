@@ -202,3 +202,8 @@ SKATE3_ASSET_ROOT=/path/to/assets cargo test --locked -p skate-game --bin skate3
 
 The asset root contains `private/`. These two tests are explicitly ignored in
 ordinary runs because the repository does not distribute the owned game data.
+
+The [platform extension](platform-extension.md) documents shared entities,
+movement epochs, 64-client capacity, bounded large values, browser interfaces,
+voice, accounts, backend services, resource worlds, animation and Lua/JS/C#.
+See its [evidence ledger](platform-extension-evidence.md) for open requirements.

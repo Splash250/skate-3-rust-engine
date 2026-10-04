@@ -2,6 +2,7 @@
 use super::Multiplayer;
 use bevy::prelude::*;
 
+const VISIBLE_ROWS: usize = 16;
 pub(super) const PING_KEY: &str = "mp:ping";
 #[derive(Component)]
 pub(super) struct RosterRoot;
@@ -22,7 +23,7 @@ pub(super) fn setup(mut commands: Commands) {
         panel.spawn((RosterTitle, Text::new("FREESKATE"),
             TextFont { font_size: 14., ..default() }, TextColor(Color::srgb(0.55, 0.81, 1.)),
             Node { margin: UiRect::bottom(px(5)), ..default() }));
-        for row in 0..skate_net::dedicated::MAX_PLAYERS {
+        for row in 0..VISIBLE_ROWS {
             panel.spawn((RosterRow(row), Node { width: percent(100), min_height: px(30),
                 align_items: AlignItems::Center, padding: UiRect::axes(px(8), px(4)),
                 column_gap: px(8), display: Display::None, ..default() },
@@ -44,7 +45,7 @@ fn remote_ping(bytes: &[u8]) -> Option<u64> {
     (value <= 60_000).then_some(value)
 }
 pub(super) fn draw(
-    net: Res<Multiplayer>, windows: Query<&Window>,
+    net: Res<Multiplayer>, windows: Query<&Window>, keys: Res<ButtonInput<KeyCode>>, mut page: Local<usize>,
     mut nodes: Query<(&mut Node, Option<&RosterRoot>, Option<&RosterRow>, Option<&RosterText>), Or<(With<RosterRoot>, With<RosterRow>, With<RosterText>)>>,
     mut labels: Query<(&mut Text, &mut TextFont, Option<&RosterText>, Option<&RosterTitle>), Or<(With<RosterText>, With<RosterTitle>)>>,
 ) {
@@ -65,6 +66,17 @@ pub(super) fn draw(
             roster.push((name, ping.map_or_else(|| "--".into(), |ms| format!("{ms} ms"))));
         }
     }
+    // Keep gameplay legible at small heights; additional players remain
+    // reachable without shrinking names or extending the overlay off-screen.
+    let height = windows.iter().next().map_or(1080., Window::height);
+    let visible = (((height * 0.7 / scale - 64.) / 33.).floor() as usize).clamp(1,VISIBLE_ROWS);
+    let count = roster.len();
+    let pages = count.div_ceil(visible).max(1);
+    if keys.just_pressed(KeyCode::PageDown) { *page = (*page + 1) % pages; }
+    if keys.just_pressed(KeyCode::PageUp) { *page = (*page + pages - 1) % pages; }
+    *page = (*page).min(pages-1);
+    let roster_title = if pages > 1 {format!("FREESKATE  {count} players\nPage {}/{}  PgUp/PgDn",*page+1,pages)} else {"FREESKATE".into()};
+    let roster:Vec<_> = roster.into_iter().skip(*page*visible).take(visible).collect();
     for (mut node, root, row, field) in &mut nodes {
         if root.is_some() {
             node.display = if roster.is_empty() { Display::None } else { Display::Flex };
@@ -84,7 +96,7 @@ pub(super) fn draw(
         if let Some(field) = field {
             font.font_size = if field.ping { 16. } else { 18. } * scale;
             text.0 = roster.get(field.row).map(|(name, ping)| if field.ping { ping.clone() } else { name.clone() }).unwrap_or_default();
-        } else if title.is_some() { font.font_size = 14. * scale; }
+        } else if title.is_some() { font.font_size = 14. * scale; text.0 = roster_title.clone(); }
     }
 }
 #[cfg(test)]

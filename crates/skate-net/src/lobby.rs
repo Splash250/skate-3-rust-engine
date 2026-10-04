@@ -12,8 +12,18 @@ pub const REJECT: u8 = 8;
 pub const GOODBYE: u8 = 9;
 pub const APPLICATION: u8 = 10;
 pub const APPLICATION_ACK: u8 = 11;
-pub const DEDICATED_HELLO: u8 = 15;
-pub const DEDICATED_ROSTER: u8 = 16;
+pub const DEDICATED_HELLO: u8 = 19;
+pub const DEDICATED_ROSTER: u8 = 20;
+pub const MOVEMENT_RESET: u8 = 21;
+pub const MOVEMENT_RESET_ACK: u8 = 22;
+pub const SHARED_ENTITY: u8 = 23;
+const ROSTER_CHUNK: usize = 20;
+#[derive(Default)]
+struct RosterParts {
+    sequence: u32,
+    incarnation: u64,
+    parts: Vec<Option<Vec<(Info, u64, u64)>>>,
+}
 pub const MAX_APP_KEYS: usize = 256;
 pub const MAX_APP_VALUE: usize = 1024;
 #[derive(Clone, Debug)]
@@ -80,6 +90,12 @@ impl Stream {
     }
 }
 pub struct Actor {
+    pub movement_epoch: u64,
+    pub instance: u64,
+    reset_anchor: Option<([f32;3], u64)>,
+    // Admission retires replication history, but cannot authorize a new
+    // location. This private reference bounds the first new-epoch sample.
+    admission_baseline: Option<Revision>,
     pub info: Info,
     pub body: Stream,
     pub pose: Stream,
@@ -89,6 +105,10 @@ impl Actor {
     fn new(info: Info) -> Self {
         Self {
             info,
+            movement_epoch: 0,
+            instance: 0,
+            reset_anchor: None,
+            admission_baseline: None,
             body: Stream::default(),
             pose: Stream::default(),
             application: BTreeMap::new(),
@@ -106,8 +126,11 @@ impl Actor {
     }
 }
 struct Link {
+    entities: crate::entities::Publisher,
     actor: u64,
     incarnation: u64,
+    reset_acks: BTreeMap<u64,u64>,
+    reset_sent: BTreeMap<u64,u64>,
     seen: u64,
     acks: BTreeMap<(u64, u8), u32>,
     sent: BTreeMap<(u64, u8), (u64, u32)>,
@@ -117,6 +140,7 @@ struct Link {
     app_sent: BTreeMap<(u64, String), (u64, u32)>,
     app_acks: BTreeMap<(u64,String),u32>,
     app_round: usize,
+    physics_round: [usize; 2],
     last_ack: u64,
     last_ping: u64,
     rtt: u64,
@@ -124,8 +148,11 @@ struct Link {
 impl Link {
     fn new(actor: u64, now: u64) -> Self {
         Self {
+            entities: Default::default(),
             actor,
             incarnation: 0,
+            reset_acks: BTreeMap::new(),
+            reset_sent: BTreeMap::new(),
             seen: now,
             acks: BTreeMap::new(),
             sent: BTreeMap::new(),
@@ -133,6 +160,7 @@ impl Link {
             credits: 2400.,
             app_credits: APP_CREDIT_CAP,
             app_sent: BTreeMap::new(), app_acks: BTreeMap::new(), app_round: 0,
+            physics_round: [0;2],
             last_ack: 0,
             last_ping: 0,
             rtt: 0,
@@ -156,6 +184,8 @@ pub struct Outgoing {
     pub data: Vec<u8>,
 }
 pub struct Session {
+    pub entities: crate::entities::Replica,
+    shared_objects: Vec<crate::entities::Entity>,
     pub local: u64,
     pub session: u64,
     pub actors: BTreeMap<u64, Actor>,
@@ -172,6 +202,10 @@ pub struct Session {
     last_roster: u64,
     roster_seq: u32,
     received_roster: u32,
+    roster_parts: RosterParts,
+    resets: BTreeMap<u64, crate::dedicated::MovementReset>,
+    local_reset: Option<crate::dedicated::MovementReset>,
+    resource_epoch_floor: u64,
     received_incarnation: u64,
     next_incarnation: u64,
     application_seq: u32,
@@ -192,6 +226,8 @@ impl Session {
             links.insert(peer, Link::new(0, 0));
         }
         Self {
+            entities: Default::default(),
+            shared_objects: Vec::new(),
             local: info.id,
             session,
             actors,
@@ -208,6 +244,10 @@ impl Session {
             last_roster: 0,
             roster_seq: 0,
             received_roster: 0,
+            roster_parts: RosterParts::default(),
+            resets: BTreeMap::new(),
+            local_reset: None,
+            resource_epoch_floor: 0,
             received_incarnation: 0,
             next_incarnation: 0,
             application_seq: 0,
@@ -235,16 +275,113 @@ impl Session {
         let mut result = Self::new(session, info, None);
         result.dedicated = true;
         result.max_players = max_players;
+        // Preserve per-slot throughput as dedicated capacity grows; the per-link
+        // ceiling and global token bucket still bound bursts and sustained bytes.
+        result.budget = DEFAULT_HOST_BUDGET * (max_players as f64 / 16.).max(1.);
         result.next_incarnation = incarnation;
         result
+    }
+    pub fn pending_movement_reset(&self) -> Option<crate::dedicated::MovementReset> { self.local_reset }
+    /// Call only after the owner's simulation has accepted the travel command.
+    pub fn complete_movement_reset(&mut self, epoch: u64) {
+        if self.local_reset.is_some_and(|reset| reset.epoch == epoch) { self.local_reset = None; }
+    }
+    pub(crate) fn service_clock(&self) -> u64 { self.last_service }
+    pub(crate) fn peer_for_actor(&self, actor:u64)->Option<u64> {self.links.iter().find(|(_,link)|link.actor==actor).map(|(&peer,_)|peer)}
+    pub(crate) fn publish_entities(&mut self, objects: Vec<crate::entities::Entity>) -> Result<(),String> {
+        if !self.dedicated || !self.is_host() || objects.len() > crate::entities::MAX_ENTITIES
+            || objects.iter().any(|e| !e.valid())
+            || objects.iter().map(|e| e.id).collect::<BTreeSet<_>>().len() != objects.len() {
+            return Err("Invalid shared entity snapshot".into());
+        }
+        self.shared_objects=objects; self.shared_objects.sort_by_key(|e|e.id); Ok(())
+    }
+    pub(crate) fn entity_observations(&self)->serde_json::Value {
+        serde_json::Value::Array(self.shared_objects.iter().map(crate::entities::Entity::observation).collect())
+    }
+    /// Retry the last pre-recovery sample while prediction is paused. This
+    /// allows an admitted owner whose initial keyframe was lost to establish
+    /// its server-owned recovery point without submitting the new local jump.
+    pub fn retry_owner_body(&mut self) {
+        if !self.dedicated || self.is_host() {return;}
+        for link in self.links.values_mut() {
+            link.sent.remove(&(self.local,BODY));
+            link.keys.remove(&(self.local,BODY));
+        }
+    }
+    pub fn movement_epoch(&self) -> u64 { self.actors[&self.local].movement_epoch }
+    pub fn resource_epoch_floor(&self)->u64 {self.resource_epoch_floor}
+    pub fn resource_scope_epoch(&self)->u64 {self.received_incarnation.max(self.resource_epoch_floor)}
+    pub fn visible_resource_scopes(&self)->Vec<crate::resources::Scope> {
+        use crate::resources::Scope;
+        if !self.dedicated || !self.connected() {return Vec::new();}
+        let mut result=vec![Scope::Resource,Scope::Player{id:self.local},Scope::Instance{id:self.actors[&self.local].instance}];
+        result.extend(self.entities.entities().keys().map(|&id|Scope::Entity{id})); result
+    }
+    pub(crate) fn advance_movement_epoch(&mut self, epoch: u64) { self.next_incarnation = self.next_incarnation.max(epoch); }
+    pub(crate) fn reset_movement(&mut self, actor: u64, destination: crate::dedicated::TeleportDestination, now: u64) -> Result<u64,String> {
+        if !self.dedicated || !self.is_host() || !self.actors.contains_key(&actor) || actor == self.local || !destination.valid() { return Err("Invalid movement reset".into()); }
+        self.next_incarnation = self.next_incarnation.checked_add(1).ok_or("Movement epoch exhausted")?;
+        let reset = crate::dedicated::MovementReset { actor, epoch: self.next_incarnation, destination };
+        self.apply_movement_reset(reset, now);
+        self.resets.insert(actor, reset);
+        self.last_roster = 0;
+        Ok(reset.epoch)
+    }
+    fn apply_movement_reset(&mut self, reset: crate::dedicated::MovementReset, now: u64) {
+        let actor = self.actors.get_mut(&reset.actor).unwrap();
+        let visibility_changed=actor.instance!=reset.destination.instance;
+        if reset.actor==self.local && visibility_changed {self.resource_epoch_floor=reset.epoch;}
+        let old = actor.body.latest().map(|r| (r.state.captured, r.state.unpack_body()));
+        actor.body = Stream::default(); actor.pose = Stream::default();
+        actor.admission_baseline = None;
+        actor.movement_epoch = reset.epoch; actor.instance = reset.destination.instance;
+        actor.reset_anchor = Some((reset.destination.position,now));
+        if let Some((captured, Some(mut state))) = old {
+            // Preserve articulated offsets, but never retain a previous sample for
+            // collision sweep or interpolation across this authorized discontinuity.
+            reset.destination.relocate(&mut state);
+            if let Some(mut packed) = Packed::body(&state) { packed.captured = captured; actor.body.push(0, packed, now); }
+        }
+        for link in self.links.values_mut() {
+            link.reset_acks.remove(&reset.actor);
+            link.reset_sent.remove(&reset.actor);
+            link.acks.retain(|(id,_),_| *id != reset.actor);
+            link.sent.retain(|(id,_),_| *id != reset.actor);
+            link.keys.retain(|(id,_),_| *id != reset.actor);
+            if visibility_changed {
+                // A filtered roster retires remote metadata on the receiver.
+                // Replay it when either endpoint returns to this instance.
+                link.app_acks.retain(|(id,_),_| *id==self.local || (*id!=reset.actor && link.actor!=reset.actor));
+                link.app_sent.retain(|(id,_),_| *id==self.local || (*id!=reset.actor && link.actor!=reset.actor));
+            }
+        }
+        if reset.actor == self.local { self.local_reset = Some(reset);self.entities.reset(reset.epoch,reset.destination.instance); }
     }
     pub fn is_dedicated(&self) -> bool { self.dedicated }
     pub(crate) fn require_resources(&mut self) {
         self.resources_required = true;
+        // service() publishes membership before the new resource authority
+        // writes its first offer. Retire old ACK/effect snapshots before that
+        // first batch can combine them with a new connection incarnation.
+        self.actors.get_mut(&self.local).unwrap().application.retain(|key,_|!crate::dedicated::server_key(key));
         self.resource_ready.clear();
-        for (&id, actor) in &mut self.actors {
-            if id != self.local { actor.body = Stream::default(); actor.pose = Stream::default(); }
+        self.resets.clear();
+        // Hot reload creates an admission boundary for movement as well as Lua
+        // events. Old datagrams cannot repopulate newly cleared histories.
+        for link in self.links.values_mut() {
+            self.next_incarnation = self.next_incarnation.checked_add(1).expect("Connection generations exhausted");
+            link.incarnation = self.next_incarnation;
+            link.acks.clear(); link.sent.clear(); link.keys.clear();
+            link.app_acks.clear(); link.app_sent.clear();
+            link.reset_acks.clear(); link.reset_sent.clear();
+            let actor = self.actors.get_mut(&link.actor).unwrap();
+            actor.movement_epoch = link.incarnation;
+            actor.admission_baseline = actor.body.latest().cloned().or_else(||actor.admission_baseline.take());
+            actor.body = Stream::default(); actor.pose = Stream::default();
+            for key in [crate::dedicated::TELEPORT_KEY,crate::dedicated::SHOVE_KEY,crate::dedicated::EFFECT_ACK_KEY,crate::resources::CLIENT_KEY] { actor.application.remove(key); }
         }
+        self.last_roster = 0;
     }
     pub(crate) fn resource_admission(&mut self, actor:u64, ready:bool) {
         if ready { self.resource_ready.insert(actor); } else { self.resource_ready.remove(&actor); }
@@ -276,6 +413,8 @@ impl Session {
         }
         self.actors.retain(|id, _| *id == self.local);
         self.pending.clear();
+        self.roster_parts = RosterParts::default();
+        self.resets.clear(); self.local_reset = None;
         self.received_roster = 0;
         self.received_incarnation = 0;
         self.roster_seq = 0;
@@ -323,12 +462,15 @@ impl Session {
         self.link_budget = if congested { base * 0.5 } else { base };
     }
     fn session_credit_cap(&self) -> f64 {
-        if self.loopback { LOOPBACK_CREDIT_CAP } else { SESSION_CREDIT_CAP }
+        if self.loopback { LOOPBACK_CREDIT_CAP } else if self.dedicated && self.is_host() {
+            SESSION_CREDIT_CAP * (self.max_players as f64 / 16.).max(1.)
+        } else { SESSION_CREDIT_CAP }
     }
     fn link_credit_cap(&self) -> f64 {
         if self.loopback { LOOPBACK_CREDIT_CAP } else { LINK_CREDIT_CAP }
     }
     pub fn publish(&mut self, kind: u8, mut state: Packed, now: u64) {
+        if self.dedicated && self.local_reset.is_some() { return; }
         state.captured = now;
         let stream = self.actors.get_mut(&self.local).unwrap().stream_mut(kind);
         let seq = stream.latest().map_or(1, |r| {
@@ -362,7 +504,7 @@ impl Session {
         }
     }
     fn queue(&mut self, peer: u64, data: Vec<u8>) {
-        if self.pending.len() < 64 && data.len() <= packed::MTU {
+        if self.pending.len() < (crate::dedicated::MAX_PLAYERS + 1) * 5 && data.len() <= packed::MTU {
             self.pending.push(Outgoing { peer, data });
         }
     }
@@ -422,7 +564,10 @@ impl Session {
                 self.next_incarnation = self.next_incarnation.checked_add(1).expect("Connection generations exhausted");
                 link.incarnation = self.next_incarnation;
                 self.links.insert(peer, link);
-                self.actors.insert(actor, Actor::new(info));
+                let mut admitted = Actor::new(info);
+                admitted.movement_epoch = self.next_incarnation;
+                self.actors.insert(actor, admitted);
+                self.resets.remove(&actor);
                 self.resource_ready.remove(&actor);
                 self.last_roster = 0;
             }
@@ -440,29 +585,46 @@ impl Session {
             if !self.dedicated && seq <= self.received_roster {
                 return;
             }
-            let Some(count) = r.byte() else {
-                return;
-            };
-            if count == 0 || count as usize > self.roster_limit() {
-                return;
-            }
-            let mut infos = vec![];
-            for _ in 0..count {
-                let Some(info) = read_info(&mut r) else {
-                    return;
-                };
-                if info.id == 0
-                    || infos.iter().any(|i: &Info| i.id == info.id)
-                {
-                    return;
+            let mut epochs = BTreeMap::new();
+            let (infos, incarnation) = if self.dedicated {
+                let (Some(incarnation), Some(part), Some(total), Some(count)) = (r.u64(), r.byte(), r.byte(), r.byte()) else { return; };
+                if incarnation == 0 || total == 0 || total as usize > self.roster_limit().div_ceil(ROSTER_CHUNK)
+                    || part >= total || count == 0 || count as usize > ROSTER_CHUNK
+                    || incarnation < self.received_incarnation
+                    || (incarnation == self.received_incarnation && seq <= self.received_roster) { return; }
+                let mut entries = Vec::new();
+                for _ in 0..count {
+                    let (Some(info),Some(epoch),Some(instance)) = (read_info(&mut r),r.u64(),r.u64()) else {return;};
+                    if info.id == 0 || (info.id != actor && epoch == 0) { return; }
+                    entries.push((info,epoch,instance));
                 }
-                infos.push(info);
-            }
-            let incarnation = if self.dedicated {
-                let Some(value) = r.u64() else { return; };
-                if value == 0 { return; }
-                value
-            } else { 0 };
+                if !r.0.is_empty() { return; }
+                if self.roster_parts.incarnation > incarnation || (self.roster_parts.incarnation == incarnation && self.roster_parts.sequence > seq) { return; }
+                if self.roster_parts.incarnation != incarnation || self.roster_parts.sequence != seq {
+                    self.roster_parts = RosterParts { sequence:seq, incarnation, parts:vec![None;total as usize] };
+                }
+                if self.roster_parts.parts.len() != total as usize {return;}
+                self.roster_parts.parts[part as usize] = Some(entries);
+                if self.roster_parts.parts.iter().any(Option::is_none) { return; }
+                let all:Vec<_> = self.roster_parts.parts.iter().flatten().flatten().copied().collect();
+                if all.len() > self.roster_limit() { return; }
+                let mut infos = Vec::new();
+                for (info,epoch,instance) in all {
+                    if epochs.insert(info.id,(epoch,instance)).is_some() {return;}
+                    infos.push(info);
+                }
+                (infos,incarnation)
+            } else {
+                let Some(count) = r.byte() else {return;};
+                if count == 0 || count as usize > self.roster_limit() { return; }
+                let mut infos = Vec::new();
+                for _ in 0..count {
+                    let Some(info) = read_info(&mut r) else {return;};
+                    if info.id == 0 || infos.iter().any(|i:&Info| i.id == info.id) {return;}
+                    infos.push(info);
+                }
+                (infos,0)
+            };
             if !r.0.is_empty() || infos[0].id != actor || !infos.iter().any(|i| i.id == self.local)
             {
                 return;
@@ -476,9 +638,16 @@ impl Session {
                 self.links.insert(peer, Link::new(actor, now));
                 self.actors.retain(|id, _| *id == self.local);
                 let local = self.actors.get_mut(&self.local).unwrap();
+                local.application.remove(crate::dedicated::TELEPORT_KEY);
                 local.application.remove(crate::dedicated::SHOVE_KEY);
                 local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
                 local.application.remove(crate::resources::CLIENT_KEY);
+                if self.received_incarnation != 0 { local.body = Stream::default(); local.pose = Stream::default(); }
+                local.movement_epoch = 0;
+                local.reset_anchor = None;
+                local.admission_baseline = None;
+                self.local_reset = None;
+                self.resource_epoch_floor = 0;
                 self.received_incarnation = incarnation;
             }
             self.received_roster = seq;
@@ -487,9 +656,11 @@ impl Session {
             self.actors
                 .retain(|id, _| infos.iter().any(|i| i.id == *id));
             for info in infos {
-                self.actors
-                    .entry(info.id)
-                    .or_insert_with(|| Actor::new(info));
+                let entry = self.actors.entry(info.id).or_insert_with(|| Actor::new(info));
+                if self.dedicated && entry.movement_epoch == 0 {
+                    let (epoch,instance) = epochs[&info.id];
+                    entry.movement_epoch = epoch; entry.instance = instance;
+                }
             }
             self.notice.clear();
             return;
@@ -518,13 +689,51 @@ impl Session {
             }
             return;
         }
+        if kind == MOVEMENT_RESET && self.dedicated && self.host == Some(peer) && self.links[&peer].actor == actor {
+            let Ok(reset) = serde_json::from_slice::<crate::dedicated::MovementReset>(r.0) else {return;};
+            if reset.epoch == 0 || !reset.destination.valid() { return; }
+            let Some(target) = self.actors.get(&reset.actor) else {return;};
+            if reset.epoch > target.movement_epoch || (reset.actor == self.local
+                && reset.epoch == target.movement_epoch && target.reset_anchor.is_none()) {
+                self.apply_movement_reset(reset,now);
+            }
+            let mut ack = packed::header(self.session,self.local,MOVEMENT_RESET_ACK,0);
+            ack.extend(reset.actor.to_le_bytes()); ack.extend(reset.epoch.to_le_bytes());
+            self.queue(peer,ack);
+            return;
+        }
+        if kind == MOVEMENT_RESET_ACK && self.dedicated && self.is_host() && self.links[&peer].actor == actor {
+            let (Some(target),Some(epoch)) = (r.u64(),r.u64()) else {return;};
+            if r.0.is_empty() && self.resets.get(&target).is_some_and(|reset| reset.epoch == epoch) {
+                self.links.get_mut(&peer).unwrap().reset_acks.insert(target,epoch);
+            }
+            return;
+        }
+        if kind == SHARED_ENTITY {
+            if self.dedicated && self.host == Some(peer) && self.links[&peer].actor == actor && actor != 0 {
+                let local=&self.actors[&self.local];
+                self.entities.reset(local.movement_epoch,local.instance);
+                if let Ok(frame)=serde_json::from_slice(r.0) { self.entities.receive(frame); }
+            }
+            return;
+        }
         if self.links[&peer].actor != actor && !matches!(kind, BODY | POSE | APPLICATION) {
             return;
         }
         if kind == APPLICATION_ACK {
             let Some(origin)=r.u64() else {return;};
+            if self.dedicated {
+                let (Some(origin_epoch),Some(receiver_epoch))=(r.u64(),r.u64()) else {return;};
+                let (Some(source),Some(receiver))=(self.actors.get(&origin),self.actors.get(&actor)) else {return;};
+                // Both endpoints participate in visibility. In particular an
+                // ACK delayed from before a round trip must not acknowledge a
+                // replay that was lost after returning to the same instance.
+                if source.movement_epoch!=origin_epoch || receiver.movement_epoch!=receiver_epoch
+                    || (self.is_host() && origin!=self.local && source.instance!=receiver.instance) {return;}
+            }
             let Ok(key)=std::str::from_utf8(r.0) else {return;};
-            if self.actors.get(&origin).and_then(|a|a.application.get(key)).is_some_and(|record|seq<=record.seq) {
+            if self.actors.get(&origin).and_then(|a|a.application.get(key)).is_some_and(|record|seq<=record.seq)
+                && self.links[&peer].app_sent.get(&(origin,key.into())).is_some_and(|&(_,sent)|seq<=sent) {
                 let link=self.links.get_mut(&peer).unwrap();
                 let ack=link.app_acks.entry((origin,key.into())).or_default();*ack=(*ack).max(seq);link.seen=now;
             }
@@ -552,7 +761,12 @@ impl Session {
             }
             let latest=a.application.get(key).map_or(seq,|r|r.seq);
             let mut ack=packed::header(self.session,self.local,APPLICATION_ACK,latest);
-            ack.extend(actor.to_le_bytes());ack.extend(key.as_bytes());self.queue(peer,ack);
+            ack.extend(actor.to_le_bytes());
+            if self.dedicated {
+                ack.extend(self.actors[&actor].movement_epoch.to_le_bytes());
+                ack.extend(self.actors[&self.local].movement_epoch.to_le_bytes());
+            }
+            ack.extend(key.as_bytes());self.queue(peer,ack);
             self.links.get_mut(&peer).unwrap().seen = now;
             return;
         }
@@ -604,15 +818,16 @@ impl Session {
                 let (Some(id), Some(body), Some(pose)) = (r.u64(), r.u32(), r.u32()) else {
                     return;
                 };
-                ack.push((id, body, pose));
+                let epoch = if self.dedicated { let Some(epoch)=r.u64() else{return;}; epoch } else {0};
+                ack.push((id, body, pose, epoch));
             }
             if !r.0.is_empty() {
                 return;
             }
             let link = self.links.get_mut(&peer).unwrap();
             link.seen = now;
-            for (id, body, pose) in ack {
-                if self.actors.contains_key(&id) {
+            for (id, body, pose, epoch) in ack {
+                if self.actors.get(&id).is_some_and(|a| !self.dedicated || epoch == a.movement_epoch) {
                     link.acks.insert((id, BODY), body);
                     link.acks.insert((id, POSE), pose);
                 }
@@ -627,6 +842,15 @@ impl Session {
             return;
         }
         if self.resources_required && self.is_host() && !self.resource_ready.contains(&actor) { return; }
+        let data = if self.dedicated {
+            if data.len() < HEADER + 8 { return; }
+            let split = data.len()-8;
+            let epoch = u64::from_le_bytes(data[split..].try_into().unwrap());
+            if epoch == 0 || epoch != self.actors[&actor].movement_epoch { self.stats.late += 1; return; }
+            &data[..split]
+        } else { data };
+        let anchor = self.actors[&actor].reset_anchor;
+        let admission_baseline = self.actors[&actor].admission_baseline.clone();
         let stream = self.actors.get_mut(&actor).unwrap().stream_mut(kind);
         if stream.latest().is_some_and(|s| seq <= s.seq) {
             self.stats.late += 1;
@@ -644,12 +868,17 @@ impl Session {
             self.stats.invalid += 1;
             return;
         };
+        if self.dedicated && self.host.is_none() && kind == BODY && stream.latest().is_none()
+            && anchor.is_some_and(|(target, at)| distance(state.position(), target) > 10. + 200. * (now.saturating_sub(at).min(1000) as f32 / 1000.)) {
+            self.stats.invalid += 1; return;
+        }
         if self.dedicated && self.host.is_none() && kind == BODY
-            && !crate::dedicated::plausible_body(&state, stream.latest(), now) {
+            && !crate::dedicated::plausible_body(&state, stream.latest().or(admission_baseline.as_ref()), now) {
             self.stats.invalid += 1;
             return;
         }
         stream.push(seq, state, now);
+        if kind == BODY {self.actors.get_mut(&actor).unwrap().admission_baseline=None;}
         self.stats.decoded += 1;
         self.links.get_mut(&peer).unwrap().seen = now;
     }
@@ -688,6 +917,7 @@ impl Session {
                 let peer = self.host.unwrap();
                 self.links.insert(peer, Link::new(0, now));
                 let local = self.actors.get_mut(&self.local).unwrap();
+                local.application.remove(crate::dedicated::TELEPORT_KEY);
                 local.application.remove(crate::dedicated::SHOVE_KEY);
                 local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
                 local.application.remove(crate::resources::CLIENT_KEY);
@@ -696,7 +926,10 @@ impl Session {
         }
     }
     fn prune_links(&mut self) {
+        self.resets.retain(|id,_| self.actors.contains_key(id));
         for link in self.links.values_mut() {
+            link.reset_acks.retain(|id,_| self.actors.contains_key(id));
+            link.reset_sent.retain(|id,_| self.actors.contains_key(id));
             link.acks.retain(|(id, _), _| self.actors.contains_key(id));
             link.sent.retain(|(id, _), _| self.actors.contains_key(id));
             link.keys.retain(|(id, _), _| self.actors.contains_key(id));
@@ -705,6 +938,8 @@ impl Session {
         }
     }
     pub fn service(&mut self, now: u64) -> Vec<Outgoing> {
+        let local=&self.actors[&self.local];
+        self.entities.reset(local.movement_epoch,local.instance);
         let dt = now.saturating_sub(self.last_service).min(1000) as f64 / 1000.;
         self.last_service = now;
         self.credits = (self.credits + dt * self.budget).min(self.session_credit_cap());
@@ -723,45 +958,65 @@ impl Session {
                 self.last_hello = now.max(1);
             }
         } else if now.saturating_sub(self.last_roster) >= 500 || self.last_roster == 0 {
-            self.roster_seq = self.roster_seq.wrapping_add(1);
-            let mut b = packed::header(self.session, self.local, if self.dedicated { DEDICATED_ROSTER } else { ROSTER }, self.roster_seq);
-            b.push(self.actors.len() as u8);
-            write_info(&mut b, self.local_info());
-            for (&id, a) in &self.actors {
-                if id != self.local {
-                    write_info(&mut b, a.info);
-                }
-            }
+            if self.last_roster == 0 { self.roster_seq = self.roster_seq.checked_add(1).expect("Roster sequence exhausted"); }
             for peer in self.links.keys().copied().collect::<Vec<_>>() {
-                let mut roster = b.clone();
-                if self.dedicated { roster.extend(self.links[&peer].incarnation.to_le_bytes()); }
-                self.queue(peer, roster);
+                let recipient = self.links[&peer].actor;
+                let visible:Vec<_> = std::iter::once(&self.actors[&self.local]).chain(self.actors.iter()
+                    .filter(|(id,a)| **id != self.local && (!self.dedicated || a.instance == self.actors[&recipient].instance)).map(|(_,a)|a)).collect();
+                if self.dedicated {
+                    let chunks = visible.len().div_ceil(ROSTER_CHUNK);
+                    let packets:Vec<_> = visible.chunks(ROSTER_CHUNK).enumerate().map(|(index,entries)| {
+                        let mut b = packed::header(self.session,self.local,DEDICATED_ROSTER,self.roster_seq);
+                        b.extend(self.links[&peer].incarnation.to_le_bytes());
+                        b.extend([index as u8,chunks as u8,entries.len() as u8]);
+                        for a in entries {write_info(&mut b,a.info); b.extend(a.movement_epoch.to_le_bytes()); b.extend(a.instance.to_le_bytes());}
+                        b
+                    }).collect();
+                    for b in packets {self.queue(peer,b);}
+                } else {
+                    let mut b=packed::header(self.session,self.local,ROSTER,self.roster_seq);
+                    b.push(visible.len() as u8);
+                    for a in visible {write_info(&mut b,a.info);}
+                    self.queue(peer,b);
+                }
             }
             self.last_roster = now.max(1);
         }
         let mut output = std::mem::take(&mut self.pending);
-        let mut ids: Vec<_> = self.actors.keys().copied().collect();
-        if !ids.is_empty() {
-            let offset = self.round % ids.len();
-            ids.rotate_left(offset);
-        }
+        let ids: Vec<_> = self.actors.keys().copied().collect();
         self.round = self.round.wrapping_add(1);
         let mut peers: Vec<_> = self.links.keys().copied().collect();
         if !peers.is_empty() {
             let offset = self.round % peers.len();
             peers.rotate_left(offset);
         }
+        if self.dedicated && self.is_host() {
+            for &peer in &peers {
+                let link = self.links.get_mut(&peer).unwrap();
+                for (&id,reset) in &self.resets {
+                    if id != link.actor && self.actors[&id].instance != self.actors[&link.actor].instance { continue; }
+                    if link.reset_acks.get(&id) == Some(&reset.epoch) || link.reset_sent.get(&id).is_some_and(|at| now.saturating_sub(*at)<100) {continue;}
+                    let mut data=packed::header(self.session,self.local,MOVEMENT_RESET,0);
+                    data.extend(serde_json::to_vec(reset).expect("Validated reset serializes"));
+                    output.push(Outgoing{peer,data}); link.reset_sent.insert(id,now);
+                }
+            }
+        }
         for &peer in &peers {
             let link = self.links.get_mut(&peer).unwrap();
             if now.saturating_sub(link.last_ack) >= 100 {
-                let mut b = packed::header(self.session, self.local, ACK, 0);
-                b.push(self.actors.len() as u8);
-                for (&id, a) in &self.actors {
-                    b.extend(id.to_le_bytes());
-                    b.extend(a.body.latest().map_or(0, |r| r.seq).to_le_bytes());
-                    b.extend(a.pose.latest().map_or(0, |r| r.seq).to_le_bytes());
+                let actors:Vec<_> = self.actors.iter().collect();
+                for entries in actors.chunks(if self.dedicated {48} else {MAX_PLAYERS}) {
+                    let mut b = packed::header(self.session, self.local, ACK, 0);
+                    b.push(entries.len() as u8);
+                    for &(id,a) in entries {
+                        b.extend(id.to_le_bytes());
+                        b.extend(a.body.latest().map_or(0, |r| r.seq).to_le_bytes());
+                        b.extend(a.pose.latest().map_or(0, |r| r.seq).to_le_bytes());
+                        if self.dedicated { b.extend(a.movement_epoch.to_le_bytes()); }
+                    }
+                    output.push(Outgoing { peer, data: b });
                 }
-                output.push(Outgoing { peer, data: b });
                 link.last_ack = now;
             }
             if now.saturating_sub(link.last_ping) >= 1000 {
@@ -776,6 +1031,7 @@ impl Session {
         // budget remains. Snapshot spawn is not leftover traffic.
         self.write_physics(&mut output, &peers, &ids, BODY, now);
         self.write_application(&mut output, now);
+        self.write_entities(&mut output, now);
         self.write_physics(&mut output, &peers, &ids, POSE, now);
         let members = self.actors.keys().copied().collect();
         let peers: Vec<_> = self.links.iter().map(|(&peer, link)| (peer, link.actor, link.rtt)).collect();
@@ -788,9 +1044,15 @@ impl Session {
     fn write_physics(&mut self, output: &mut Vec<Outgoing>, peers: &[u64], ids: &[u64], kind: u8, now: u64) {
         for &peer in peers {
             let Some(link_actor) = self.links.get(&peer).map(|l| l.actor) else { continue };
-            for &id in ids {
+            let stream_index = usize::from(kind != BODY);
+            let offset = self.links[&peer].physics_round[stream_index];
+            for step in 0..ids.len() {
+                let index = (offset + step) % ids.len();
+                let id = ids[index];
                 if self.resources_required && self.host.is_none()
                     && (!self.resource_ready.contains(&link_actor) || !self.resource_ready.contains(&id)) { continue; }
+                if self.dedicated && ((self.host.is_none() && id != self.local && self.actors[&id].instance != self.actors[&link_actor].instance)
+                    || (id == self.local && (self.local_reset.is_some() || self.actors[&id].movement_epoch == 0))) { continue; }
                 if id == link_actor || (self.host.is_some() && id != self.local) {
                     continue;
                 }
@@ -846,8 +1108,9 @@ impl Session {
                     .get(&(id, kind))
                     .and_then(|&seq| stream.at(seq).map(|s| (seq, s)))
                     .filter(|_| !keyframe);
-                let data =
+                let mut data =
                     packed::delta(self.session, id, kind, latest.seq, &latest.state, baseline);
+                if self.dedicated { data.extend(actor.movement_epoch.to_le_bytes()); }
                 if data.len() > packed::MTU {
                     self.stats.invalid += 1;
                     continue;
@@ -860,10 +1123,25 @@ impl Session {
                 link.credits -= bytes;
                 self.credits -= bytes;
                 link.sent.insert((id, kind), (now, latest.seq));
+                link.physics_round[stream_index] = (index + 1) % ids.len();
                 if baseline.is_none() {
                     link.keys.insert((id, kind), now);
                 }
                 output.push(Outgoing { peer, data });
+            }
+        }
+    }
+    fn write_entities(&mut self, output: &mut Vec<Outgoing>, now: u64) {
+        if !self.dedicated || !self.is_host() {return;}
+        for (&peer,link) in &mut self.links {
+            let actor=&self.actors[&link.actor];
+            let ready=!self.resources_required || self.resource_ready.contains(&link.actor);
+            let position=actor.body.latest().map(|r|r.state.position());
+            let objects:Vec<_>=self.shared_objects.iter().filter(|e|ready && e.instance==actor.instance
+                && position.is_none_or(|p|distance(p,e.position)<=500.)).collect();
+            for bytes in link.entities.frames(actor.movement_epoch,actor.instance,&objects,now) {
+                let mut data=packed::header(self.session,self.local,SHARED_ENTITY,0); data.extend(bytes);
+                output.push(Outgoing {peer,data});
             }
         }
     }
@@ -884,7 +1162,7 @@ impl Session {
                 .flat_map(|(&id, a)| a.application.iter().map(move |(key, record)| (id, key, record)))
                 .filter(|(id, key, _)| !self.dedicated || self.host.is_some()
                     || (*id == self.local && (**key == crate::dedicated::effects_key(link.actor) || **key == crate::resources::server_key(link.actor)))
-                    || (*id != self.local && (!self.resources_required || (self.resource_ready.contains(id) && self.resource_ready.contains(&link.actor))) && matches!(key.as_str(), crate::dedicated::GAMEPLAY_KEY | "mp:name" | "mp:ping")))
+                    || (*id != self.local && self.actors[id].instance == self.actors[&link.actor].instance && (!self.resources_required || (self.resource_ready.contains(id) && self.resource_ready.contains(&link.actor))) && matches!(key.as_str(), crate::dedicated::GAMEPLAY_KEY | "mp:name" | "mp:ping")))
                 .collect();
             let count = records.len();
             for offset in 0..count {

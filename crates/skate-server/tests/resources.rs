@@ -50,6 +50,7 @@ fn fixture(t: &Temp) -> PathBuf {
 }
 fn host(config: PathBuf) -> Host {
     Host::bind(Options {
+        accounts: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: 16,
@@ -531,4 +532,282 @@ fn distinct_server_configurations_isolate_storage_even_in_same_storage_root() {
         1,
         "server config paths must isolate persistent resource data"
     );
+}
+
+#[test]
+fn resource_database_transactions_and_generation_cleanup_survive_server_restart() {
+    let temp = Temp::new();
+    let config = fixture(&temp);
+    let manifest = temp.0.join("resources/challenge/resource.json");
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    data["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!("resource.events"), json!("resource.database")]);
+    std::fs::write(manifest, serde_json::to_vec(&data).unwrap()).unwrap();
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    data["grants"]["challenge"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!("resource.events"), json!("resource.database")]);
+    std::fs::write(&config, serde_json::to_vec(&data).unwrap()).unwrap();
+    std::fs::write(temp.0.join("resources/challenge/private.lua"),r#"
+resource.on('service_result', function(event)
+    assert(event.result.ok, 'backend operation failed')
+    if event.key=='migration' then
+        resource.services.submit('increment', {kind='transaction',statements={
+            {sql='INSERT INTO progress(id,visits) VALUES (1,1) ON CONFLICT(id) DO UPDATE SET visits=visits+1'},
+            {sql='SELECT visits FROM progress WHERE id=?',params={{type='integer',value=1}}}
+        }},5000)
+    elseif event.key=='increment' then
+        resource.state.set('visits',event.result.value.results[2].rows[1][1].value)
+    end
+end)
+resource.services.submit('migration',{kind='migrate',migrations={{version=1,statements={
+    {sql='CREATE TABLE progress(id INTEGER PRIMARY KEY, visits INTEGER NOT NULL)'}
+}}}},5000)
+"#).unwrap();
+    for expected in [1, 2] {
+        let mut server = host(config.clone());
+        let mut guest = Guest::new(server.local_addr().unwrap(), 2);
+        guest.wait_offer(&mut server);
+        // This client does not run gameplay; it exercises admission and actual state delivery.
+        guest.wire.set_ready(true);
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut seen = false;
+        while Instant::now() < until {
+            guest.step(&mut server);
+            for m in guest.wire.take_incoming() {
+                if m.name == "visits" {
+                    assert_eq!(m.value, json!(expected));
+                    seen = true;
+                }
+            }
+            if seen {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(seen, "database result never reached resource state");
+        assert!(
+            server
+                .resource_command("stop challenge")
+                .unwrap()
+                .contains("stop")
+        );
+        server.shutdown();
+    }
+}
+
+#[test]
+fn resource_granted_teleport_resets_without_a_one_second_observation_gap() {
+    let temp = Temp::new();
+    let config = fixture(&temp);
+    let manifest = temp.0.join("resources/challenge/resource.json");
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    data["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("resource.teleport"));
+    std::fs::write(manifest, serde_json::to_vec(&data).unwrap()).unwrap();
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    data["grants"]["challenge"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("resource.teleport"));
+    std::fs::write(&config, serde_json::to_vec(&data).unwrap()).unwrap();
+    std::fs::write(
+        temp.0.join("resources/challenge/private.lua"),
+        r#"
+resource.on_net('travel',function(payload,sender)
+    resource.teleport(sender,{position={400,20,100},instance=7})
+end)
+"#,
+    )
+    .unwrap();
+    let mut server = host(config);
+    let mut guest = Guest::new(server.local_addr().unwrap(), 2);
+    guest.wait_offer(&mut server);
+    guest.wire.set_ready(true);
+    guest
+        .wire
+        .emit("challenge", 1, "travel", json!({}))
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        guest.step(&mut server);
+        if let Some(reset) = guest.session.pending_movement_reset() {
+            assert_eq!(reset.destination.position, [400., 20., 100.]);
+            assert_eq!(reset.destination.instance, 7);
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "resource teleport was not delivered"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn failed_service_callback_retires_already_drained_later_operations() {
+    let temp = Temp::new();
+    let config = fixture(&temp);
+    for path in [
+        temp.0.join("resources/challenge/resource.json"),
+        config.clone(),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let caps = if path == config {
+            &mut value["grants"]["challenge"]
+        } else {
+            &mut value["capabilities"]
+        };
+        caps.as_array_mut()
+            .unwrap()
+            .extend([json!("resource.events"), json!("resource.database")]);
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+    std::fs::write(temp.0.join("resources/challenge/private.lua"),r#"
+resource.on('service_result',function() error('retire this resource') end)
+resource.services.submit('invalid',{kind='query',statement={sql='SELECT 1'}},120000)
+resource.services.submit('must_not_run',{kind='transaction',statements={{sql='CREATE TABLE forbidden(value INTEGER)'}}},5000)
+"#).unwrap();
+    let mut server = host(config);
+    for _ in 0..20 {
+        server.step().unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        server
+            .resource_command("resources")
+            .unwrap()
+            .contains("challenge: stopped")
+    );
+    fn databases(root: &std::path::Path) -> usize {
+        std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| {
+                if e.path().is_dir() {
+                    databases(&e.path())
+                } else {
+                    usize::from(e.path().extension().is_some_and(|ext| ext == "sqlite3"))
+                }
+            })
+            .sum()
+    }
+    assert_eq!(
+        databases(&temp.0.join("store/services")),
+        0,
+        "retired resource created database"
+    );
+}
+
+#[test]
+fn downloaded_javascript_executes_on_both_sides_over_real_udp_and_http() {
+    let temp = Temp::new();
+    let config = fixture(&temp);
+    let root = temp.0.join("resources/challenge");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();
+    manifest["language"] = json!("javascript");
+    manifest["client_scripts"] = json!(["client.js"]);
+    manifest["server_scripts"] = json!(["private.js"]);
+    std::fs::write(
+        root.join("resource.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("client.js"),
+        "sdk.ui.text('welcome', sdk.readText('title.txt')); resource.send('join',{action:'join'});",
+    )
+    .unwrap();
+    std::fs::write(root.join("private.js"),"resource.onNet('join',(data,sender)=>{ if(data.action!=='join')return; const visits=(resource.storage.get('visits')||0)+1; resource.storage.set('visits',visits); resource.state.set('joined',{sender,visits}); });").unwrap();
+    let mut server = host(config);
+    let cache = Cache::open(temp.0.join("js-cache"), Limits::default()).unwrap();
+    let mut guest = Guest::new(server.local_addr().unwrap(), 2);
+    guest.wait_offer(&mut server);
+    let (mut runtime, bytes) = guest.activate(&cache, "javascript-server");
+    assert!(bytes > 0);
+    let state = guest.wait_state(&mut server, &mut runtime);
+    assert_eq!(state["visits"], 1);
+    assert_eq!(state["sender"], "2");
+    let old_revision = guest.wire.offer().unwrap().revision.clone();
+    server.resource_command("restart challenge").unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    while guest
+        .wire
+        .offer()
+        .is_some_and(|o| o.revision == old_revision)
+    {
+        guest.step(&mut server);
+        assert!(Instant::now() < until);
+    }
+    assert!(!guest.wire.ready());
+    runtime.disconnect();
+    assert!(!runtime.running("challenge"));
+}
+
+#[test]
+fn explicit_bulk_script_handles_report_delivery_cancellation_and_deadlines_over_udp() {
+    let temp=Temp::new();let config=fixture(&temp);
+    let root=temp.0.join("resources/challenge");
+    let mut manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();
+    manifest["capabilities"].as_array_mut().unwrap().push(json!("resource.events"));
+    std::fs::write(root.join("resource.json"),serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let mut configuration:serde_json::Value=serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    configuration["grants"]["challenge"].as_array_mut().unwrap().push(json!("resource.events"));
+    std::fs::write(&config,serde_json::to_vec(&configuration).unwrap()).unwrap();
+    std::fs::write(root.join("client.lua"),"sdk.ui.text('bulk','Bulk transfers')").unwrap();
+    std::fs::write(root.join("private.lua"),r#"
+        resource.on("transfer_progress", function(event)
+            resource.state.set("transfer_"..event.key, event)
+        end)
+        resource.on_net("upload", function(payload,sender)
+            if type(payload)~="string" or #payload~=12000 then return end
+            resource.transfer.start("delivered", "download", payload, {recipient=sender,timeout_ms=15000})
+            resource.transfer.start("cancelled", "never_cancelled", payload, {recipient=sender})
+            resource.transfer.cancel("cancelled")
+            resource.transfer.start("expired", "never_expired", payload, {recipient=sender,timeout_ms=1})
+        end)
+    "#).unwrap();
+    let mut server=host(config);let mut guest=Guest::new(server.local_addr().unwrap(),2);
+    guest.wait_offer(&mut server);
+    let cache=Cache::open(temp.0.join("cache"),Limits::default()).unwrap();
+    let (_lua,_)=guest.activate(&cache,"bulk-real-udp");
+    let ticket=guest.wire.start_large("challenge",1,"upload",json!("x".repeat(12000))).unwrap();
+    let mut events=Vec::new();let mut terminal=std::collections::BTreeMap::new();
+    let until=Instant::now()+Duration::from_secs(18);
+    while Instant::now()<until {
+        guest.step(&mut server);
+        for message in guest.wire.take_incoming() {
+            if message.kind==Kind::Event {events.push(message);}
+            else if message.name.starts_with("transfer_") {terminal.insert(message.name,message.value);}
+        }
+        if terminal.get("transfer_delivered").is_some_and(|v|v["state"]=="delivered")
+            && terminal.get("transfer_cancelled").is_some_and(|v|v["state"]=="cancelled")
+            && terminal.get("transfer_expired").is_some_and(|v|v["state"]=="timed_out") {break;}
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(events.len(),1,"only completed transfer reaches remote callback");
+    assert_eq!(events[0].name,"download");assert_eq!(events[0].value.as_str().unwrap().len(),12000);
+    assert!(matches!(guest.wire.large_progress(ticket).unwrap(),skate_net::bulk::Progress::Delivered{..}));
+    for (key,state) in [("delivered","delivered"),("cancelled","cancelled"),("expired","timed_out")] {
+        assert_eq!(terminal.get(&format!("transfer_{key}")).unwrap()["state"],state);
+    }
+    assert!(terminal["transfer_delivered"]["acknowledged_bytes"].as_u64().unwrap()>12000);
+    let metrics:serde_json::Value=serde_json::from_str(&server.resource_command("metrics challenge").unwrap()).unwrap();
+    assert_eq!(metrics["generation"],1);
+    assert_eq!(metrics["running"],true);
+    assert!(metrics["invocations"].as_u64().unwrap()>0);
+    assert!(metrics["lua_heap_bytes"].as_u64().unwrap()>0);
+    assert!(server.resource_command("metrics absent").is_err());
+    server.shutdown();
 }

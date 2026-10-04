@@ -40,6 +40,7 @@ pub(crate) struct PlayerInputRuntime {
     pub grind: grind::GrindInputState,
     pending_teleport: Option<AnimationPartTransform>,
     pending_velocity: Option<[f32; 3]>,
+    pending_actor_reset: bool,
     pub pending_grind: Option<grind::Pending>,
     pub grind_observation: Option<super::grind::ManagerObservation>,
 }
@@ -50,6 +51,16 @@ impl PlayerInputRuntime {
 
     pub fn request_teleport(&mut self, target: AnimationPartTransform) -> Result<(), String> {
         self.request_teleport_ex(target, None)
+    }
+
+    /// Retain the host target/velocity until the native actor reply reaches
+    /// State61. Direct callbacks and actor publication must not both relocate.
+    pub fn request_actor_teleport_ex(
+        &mut self, target: AnimationPartTransform, velocity: Option<[f32; 3]>,
+    ) -> Result<(), String> {
+        self.request_teleport_ex(target, velocity)?;
+        self.pending_actor_reset = true;
+        Ok(())
     }
 
     pub fn request_teleport_ex(
@@ -65,6 +76,7 @@ impl PlayerInputRuntime {
                 return Err("Teleport velocity out of range".into());
             }
         }
+        self.pending_actor_reset = false;
         self.pending_teleport = Some(target);
         self.pending_velocity = velocity;
         Ok(())
@@ -86,6 +98,7 @@ impl PlayerInputRuntime {
             grind: grind::GrindInputState::load(data)?,
             pending_teleport: None,
             pending_velocity: None,
+            pending_actor_reset: false,
             pending_grind: None,
             grind_observation: None,
         })
@@ -155,6 +168,7 @@ impl PlayerInputRuntime {
             toolkit: &mut self.toolkit,
             pending_teleport: &mut self.pending_teleport,
             pending_velocity: &mut self.pending_velocity,
+            pending_actor_reset: &mut self.pending_actor_reset,
         };
         match stage {
             InputStage::ThroughTeleport => input_phase::start_input(

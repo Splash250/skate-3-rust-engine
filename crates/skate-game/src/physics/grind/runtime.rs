@@ -34,6 +34,7 @@ impl Runtime {
             chromosome: grind_chromosome::Chromosome::uninitialized(),
         })
     }
+    pub(crate) fn retire_geometry(&mut self) {self.manager=None;}
     pub fn active_name(&self) -> Option<&'static str> {
         Some(match self.active? {
             Family::FiftyFifty => "50-50",

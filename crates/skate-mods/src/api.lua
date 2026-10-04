@@ -5,6 +5,9 @@ sdk._native_capabilities = nil
 
 local submit = sdk._submit
 sdk._submit = nil
+-- Shared typed entry point for every language; Rust still validates capability
+-- and command shape before it reaches the game host.
+sdk.submit = submit
 local assets_objects = sdk._assets_objects
 sdk._assets_objects = nil
 local raycast_host = sdk._raycast
@@ -21,6 +24,11 @@ sdk._local_ang_accel_impulse = nil
 function sdk.log(text) submit{kind="log",text=text} end
 
 sdk.ui = { version = 1 }
+sdk.ui.browser = {}
+function sdk.ui.browser.open(key, options) submit{kind="ui_browser_open",key=key,options=options} end
+function sdk.ui.browser.send(key, value) submit{kind="ui_browser_message",key=key,value=value} end
+function sdk.ui.browser.focus(key, focused) submit{kind="ui_browser_focus",key=key,focused=focused} end
+function sdk.ui.browser.close(key) submit{kind="ui_browser_close",key=key} end
 function sdk.ui.menu(key, options) submit{kind="ui_menu",key=key,options=options} end
 function sdk.ui.remove_menu(key) submit{kind="ui_remove_menu",key=key} end
 function sdk.ui.text(key, text) submit{kind="overlay",key=key,text=text} end
@@ -649,6 +657,8 @@ function sdk.input.override_action(id,value)
 end
 
 sdk.graphs = {}
+sdk.animation = { version = 1 }
+function sdk.animation.submit(operation) submit{kind="animation",version=1,operation=operation} end
 function sdk.graphs.read(graph) return (sdk.engine.read("graphs") or {})[graph] end
 function sdk.graphs.set_enabled(graph,target,index,enabled) submit{kind="graph_gate",graph=graph,target=target,index=index,enabled=enabled} end
 

@@ -31,7 +31,8 @@ pub struct PublishedSet {
     pub set: ResourceSet,
     pub blobs: BTreeMap<String, Vec<u8>>,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub max_file_bytes: u64,
     pub max_set_bytes: u64,
@@ -43,13 +44,44 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_file_bytes: 16 * 1024 * 1024,
-            max_set_bytes: 128 * 1024 * 1024,
-            max_resources: 32,
-            max_files: 4096,
+            max_file_bytes: 64 * 1024 * 1024,
+            max_set_bytes: 256 * 1024 * 1024,
+            max_resources: 128,
+            max_files: 16384,
             max_cache_bytes: 1024 * 1024 * 1024,
             max_history: 512,
         }
+    }
+}
+impl Limits {
+    pub fn protocol_maximum() -> Self {
+        Self {
+            max_file_bytes: 256 * 1024 * 1024,
+            max_set_bytes: 1024 * 1024 * 1024,
+            max_resources: 256,
+            max_files: 65536,
+            max_cache_bytes: 64 * 1024 * 1024 * 1024,
+            max_history: 10000,
+        }
+    }
+    pub fn validate(self) -> Result<()> {
+        let hard = Self::protocol_maximum();
+        if self.max_file_bytes == 0
+            || self.max_file_bytes > hard.max_file_bytes
+            || self.max_set_bytes == 0
+            || self.max_set_bytes > hard.max_set_bytes
+            || self.max_resources == 0
+            || self.max_resources > hard.max_resources
+            || self.max_files == 0
+            || self.max_files > hard.max_files
+            || self.max_cache_bytes == 0
+            || self.max_cache_bytes > hard.max_cache_bytes
+            || self.max_history == 0
+            || self.max_history > hard.max_history
+        {
+            return Err(Error("content/cache budget outside protocol bounds".into()));
+        }
+        Ok(())
     }
 }
 pub const MAX_SET_JSON_BYTES: usize = 2 * 1024 * 1024;
@@ -82,9 +114,13 @@ fn revision(resources: &[Resource]) -> Result<String> {
 }
 impl ResourceSet {
     pub fn validate(&self, limits: Limits) -> Result<()> {
+        limits.validate()?;
         validate_digest(&self.revision)?;
         if self.resources.len() > limits.max_resources {
             return Err(Error("resource count exceeds limit".into()));
+        }
+        if self.resources.iter().filter(|r| r.manifest.world.is_some()).count() > 1 {
+            return Err(Error("resource set selects more than one required world".into()));
         }
         let manifests: Vec<_> = self.resources.iter().map(|r| r.manifest.clone()).collect();
         let order = ordered_manifests(&manifests)?;
@@ -192,7 +228,10 @@ impl PublishedSet {
         Ok(published)
     }
     pub fn validate(&self) -> Result<()> {
-        self.set.validate(Limits::default())?;
+        self.validate_with_limits(Limits::protocol_maximum())
+    }
+    pub fn validate_with_limits(&self, limits: Limits) -> Result<()> {
+        self.set.validate(limits)?;
         let mut expected = BTreeMap::new();
         for resource in &self.set.resources {
             for file in resource.files.values() {
@@ -221,7 +260,14 @@ impl PublishedSet {
     }
 }
 pub fn build_set(root: &Path, selected: &BTreeMap<String, u64>) -> Result<PublishedSet> {
-    let limits = Limits::default();
+    build_set_with_limits(root, selected, Limits::default())
+}
+pub fn build_set_with_limits(
+    root: &Path,
+    selected: &BTreeMap<String, u64>,
+    limits: Limits,
+) -> Result<PublishedSet> {
+    limits.validate()?;
     let mut manifests = BTreeMap::new();
     let mut pending: Vec<_> = selected.keys().cloned().collect();
     for (id, generation) in selected {

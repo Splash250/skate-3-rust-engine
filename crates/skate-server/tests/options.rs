@@ -50,7 +50,7 @@ fn invalid_or_ambiguous_options_do_not_start_a_server() {
         vec!["--test-world", "--session", "0"],
         vec!["--test-world", "--session", "nan"],
         vec!["--test-world", "--max-players", "0"],
-        vec!["--test-world", "--max-players", "17"],
+        vec!["--test-world", "--max-players", "65"],
         vec!["--test-world", "--bind", "[::1]:31030"],
         vec!["--test-world", "--bind", "255.255.255.255:31030"],
         vec!["--test-world", "--plugin", "x"],
@@ -82,4 +82,9 @@ fn map_fingerprint_matches_streamed_bytes_and_reports_missing_files() {
 fn resource_configuration_is_explicit_and_preserves_native_paths() {
     let result = parse(&["--test-world", "--resources", "Server Files/server.json"]);
     assert!(result.is_ok(), "resource configuration option missing: {result:?}");
+}
+
+#[test]
+fn accepts_sixty_four_players() {
+    assert_eq!(parse(&["--test-world","--max-players","64"]).unwrap().unwrap().max_players,64);
 }

@@ -52,6 +52,16 @@ class LinuxScriptTests(unittest.TestCase):
                        env=self._env(RUSTFLAGS='-C debuginfo=1',FAKE_LDD='musl libc'))
         self.assertIn('RUSTFLAGS=-C debuginfo=1 -C target-feature=-crt-static',self.log.read_text())
 
+    def test_browser_companion_uses_matching_build_profile(self):
+        for arguments in [('--browser',), ('--release', '--browser')]:
+            with self.subTest(arguments=arguments):
+                self.log.unlink(missing_ok=True)
+                subprocess.run([self.root/'BUILD.sh', *arguments],check=True,env=self._env(RUSTFLAGS=''))
+                builds=self.log.read_text().splitlines()
+                self.assertEqual(len(builds),3)
+                self.assertIn('<-p> <skate-browser> <--features> <host>',builds[-1])
+                self.assertTrue(all(('<--release>' in line)==('--release' in arguments) for line in builds))
+
     def test_steam_option_builds_and_stages_each_profile_with_either_flag_order(self):
         sdk=self.root/'cargo registry'/'steamworks-sys-0.13.0'
         library=sdk/'lib'/'steam'/'redistributable_bin'/'linux64'/'libsteam_api.so'
@@ -85,7 +95,7 @@ class LinuxScriptTests(unittest.TestCase):
                 self.assertEqual((staged/'libsteam_api.so').read_bytes(),library.read_bytes())
 
     def test_invalid_build_arguments_fail_before_building(self):
-        for args in [('--unknown',),('--release','--release'),('--steam','--steam'),
+        for args in [('--unknown',),('--release','--release'),('--steam','--steam'),('--browser','--browser'),
                      ('--release','unexpected')]:
             with self.subTest(args=args):
                 result=subprocess.run([self.root/'BUILD.sh',*args],text=True,capture_output=True,env=self._env())

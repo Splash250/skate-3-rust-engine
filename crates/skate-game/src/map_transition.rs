@@ -10,7 +10,7 @@ use crate::{config::Config, map_library::Entry, map_render::PreparedScene,
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MapTransitionSet;
 #[derive(Message)]
-pub(crate) struct WorldChanged;
+pub(crate) struct WorldChanged { pub preserve_connection: bool }
 
 
 #[cfg(test)]
@@ -38,6 +38,8 @@ impl CurrentMap {
 }
 
 struct PreparedWorld {
+    preserve_connection: bool,
+    streaming:Option<crate::map_render::streaming::Options>,
     map_fingerprint: u64,
     scene: PreparedScene,
     physics: GamePhysics,
@@ -58,14 +60,26 @@ enum Phase {
     Publishing { frames: u8, notice: String },
 }
 #[derive(Resource)]
-pub(crate) struct MapTransition { phase: Phase }
+pub(crate) struct MapTransition {
+    phase: Phase,
+    desired: Option<ResourceTarget>,
+    active: Option<String>,
+    base: Option<Entry>,
+    operation: Option<(Option<String>, Option<usize>)>,
+    resource_error: Option<(String,String)>,
+    // Resource reloads may supersede each other while a worker is in flight.
+    // The whole chain owns one temporary loading pause, not the user's menu.
+    resource_pause: Option<(bool, bool)>,
+}
+#[derive(Clone)]
+struct ResourceTarget { key:String, entry:Entry, decoded_budget:usize,lods:Vec<(PathBuf,u32)>,streaming:crate::map_render::streaming::Options }
 impl Default for MapTransition {
-    fn default() -> Self { Self { phase: Phase::Idle } }
+    fn default() -> Self { Self { phase: Phase::Idle,desired:None,active:None,base:None,operation:None,resource_error:None,resource_pause:None } }
 }
 impl MapTransition {
     pub fn busy(&self) -> bool { !matches!(self.phase, Phase::Idle) }
     pub fn request(&mut self, entry: Entry) {
-        if !self.busy() { self.phase = Phase::Requested(entry); }
+        if !self.busy() && self.desired.is_none() { self.phase = Phase::Requested(entry); }
     }
     pub fn label(&self) -> String {
         match &self.phase {
@@ -81,6 +95,30 @@ impl MapTransition {
     }
 }
 
+/// A resource remains unready until collision, native rails and rendering have
+/// been atomically published. This uses the normal loader without leaving the
+/// admitted dedicated session or changing its original wire-map identity.
+pub(crate) fn mount_resource(world:&mut World,key:String,entry:Entry,decoded_budget:usize,lods:Vec<(PathBuf,u32)>,streaming:crate::map_render::streaming::Options)->Result<bool,String> {
+    let base={let current=world.resource::<CurrentMap>();Entry {label:current.name.clone(),path:current.path.clone()}};
+    let mut transition=world.resource_mut::<MapTransition>();
+    if let Some((failed,error))=&transition.resource_error {if failed==&key {return Err(error.clone());}}
+    if transition.active.as_ref()==Some(&key) && !transition.busy() {return Ok(true);}
+    if transition.base.is_none() {transition.base=Some(base);}
+    transition.desired=Some(ResourceTarget {key,entry,decoded_budget,lods,streaming});
+    Ok(false)
+}
+pub(crate) fn resource_world_idle(world:&World)->Result<bool,String> {
+    let transition=world.resource::<MapTransition>();
+    if let Some((key,error))=&transition.resource_error {if key.is_empty() {return Err(error.clone());}}
+    Ok(transition.base.is_none() && !transition.busy())
+}
+pub(crate) fn unmount_resource(world:&mut World) {
+    if let Some(mut transition)=world.get_resource_mut::<MapTransition>() {
+        transition.desired=None;transition.resource_error=None;
+        if transition.active.is_none() && !transition.busy() {transition.base=None;}
+    }
+}
+
 pub(crate) struct MapTransitionPlugin;
 impl Plugin for MapTransitionPlugin {
     fn build(&self, app: &mut App) {
@@ -89,7 +127,7 @@ impl Plugin for MapTransitionPlugin {
         app.insert_resource(current)
             .init_resource::<MapTransition>()
             .add_message::<WorldChanged>()
-            .add_systems(PreUpdate, poll.in_set(MapTransitionSet).after(crate::graphics_menu::MenuInput)
+            .add_systems(PreUpdate, (crate::map_render::streaming::update,poll).chain().in_set(MapTransitionSet).after(crate::graphics_menu::MenuInput)
                 .before(crate::input::poll_controllers))
             .configure_sets(FixedUpdate, (
                 crate::app::SimulationSet::Input, crate::app::SimulationSet::Controls,
@@ -105,6 +143,12 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let graphs = world.resource::<crate::graph_runtime::StockGraphs>().clone();
     let source = world.resource::<SkaterRuntime>().animation.source.clone();
     let preferences = world.resource::<PlayerControls>().preferences;
+    let operation=world.get_resource::<MapTransition>().and_then(|t|t.operation.clone());
+    let resource=world.get_resource::<MapTransition>().and_then(|t|t.desired.clone())
+        .filter(|target|operation.as_ref().is_some_and(|(key,_)|key.as_ref()==Some(&target.key)));
+    let streaming=resource.as_ref().map(|r|r.streaming);
+    let preserve_connection=operation.is_some();
+    let decoded_budget=operation.and_then(|(_,budget)|budget);
     let mut scene = PreparedScene::new(world);
     let selected = entry.clone();
     let progress = Arc::new(AtomicU8::new(0));
@@ -112,7 +156,28 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let job = std::thread::Builder::new().name("map-loader".into()).spawn(move || {
         let _span = info_span!("load_map_transition").entered();
         let started = Instant::now();
-        let map = info_span!("read_map").in_scope(|| selected.path.as_deref().map(skate_data::skate_map::SkateMap::load).transpose())?;
+        let mut remaining=decoded_budget.unwrap_or(usize::MAX);
+        let map = info_span!("read_map").in_scope(|| selected.path.as_deref().map(|path| {
+            if decoded_budget.is_some() {
+                use std::io::Read;
+                let file=std::fs::File::open(path).map_err(|e|e.to_string())?;
+                let mut bytes=Vec::new();file.take(512*1024*1024+1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+                if bytes.len()>512*1024*1024 {return Err("Required world file exceeds 512 MiB".into());}
+                let map=skate_data::skate_map::SkateMap::parse_budgeted(&bytes,&mut remaining,false)?;
+                skate_data::resource_world::validate(&map)?;Ok(map)
+            } else {skate_data::skate_map::SkateMap::load(path)}
+        }).transpose())?;
+        let mut lods=Vec::new();
+        if let Some(resource)=&resource {
+            for (path,distance) in &resource.lods {
+                use std::io::Read;
+                let mut bytes=Vec::new();std::fs::File::open(path).map_err(|e|e.to_string())?.take(512*1024*1024+1)
+                    .read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+                if bytes.len()>512*1024*1024 {return Err("Required world LOD exceeds512MiB".into());}
+                let lod=skate_data::skate_map::SkateMap::parse_budgeted(&bytes,&mut remaining,true)?;
+                skate_data::resource_world::validate_render(&lod)?;lods.push((lod,*distance));
+            }
+        }
         let map_fingerprint = crate::config::map_fingerprint(selected.path.as_deref())?;
         let read_time = started.elapsed();
         let validation_started = Instant::now();
@@ -129,7 +194,8 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
                 let rendering = std::thread::Builder::new().name("map-render-loader".into())
                     .spawn_scoped(scope, || {
                         let render_started = Instant::now();
-                        scene.prepare(map.as_ref(), &root);
+                        if let Some(map)=map.as_ref().filter(|_|resource.is_some()) {scene.prepare_resource(map,&lods,&root);}
+                        else {scene.prepare(map.as_ref(), &root);}
                         render_started.elapsed()
                     }).map_err(|e| format!("Could not start render loader: {e}"))?;
                 let simulation_started = Instant::now();
@@ -157,12 +223,34 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
             simulation_time.as_millis(), render_time.as_millis(), started.elapsed().as_millis());
         // Drop the decoded package on this worker. Physics and rendering now
         // own their data; retaining it would double large-city CPU memory.
-        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty })
+        Ok(PreparedWorld { preserve_connection, streaming, map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty })
     }).map_err(|e| format!("Could not start map loader: {e}"))?;
     Ok(Phase::Loading { entry, progress, job })
 }
 
 fn poll(world: &mut World) {
+    let mut pause=false;
+    {
+        let mut transition=world.resource_mut::<MapTransition>();
+        if matches!(transition.phase,Phase::Idle) {
+            if let Some(target)=transition.desired.clone() {
+                if transition.active.as_ref()!=Some(&target.key) && !transition.resource_error.as_ref().is_some_and(|(key,_)|key==&target.key) {
+                    transition.operation=Some((Some(target.key),Some(target.decoded_budget)));
+                    transition.phase=Phase::Requested(target.entry);pause=true;
+                }
+            } else if let Some(base)=transition.base.clone() {
+                if !transition.resource_error.as_ref().is_some_and(|(key,_)|key.is_empty()) {
+                    transition.operation=Some((None,None));transition.phase=Phase::Requested(base);pause=true;
+                }
+            }
+        }
+    }
+    if pause {
+        let prior = (world.resource::<crate::graphics_menu::Menu>().open,
+            world.resource::<Time<Virtual>>().is_paused());
+        world.resource_mut::<MapTransition>().resource_pause.get_or_insert(prior);
+        world.resource_mut::<Time<Virtual>>().pause();
+    }
     let ready = match &world.resource::<MapTransition>().phase {
         Phase::Idle => false,
         Phase::Loading { job, .. } => job.is_finished(),
@@ -173,24 +261,50 @@ fn poll(world: &mut World) {
     let next = match phase {
         Phase::Requested(entry) => match start(world, entry) {
             Ok(phase) => phase,
-            Err(error) => { failed(world, error); Phase::Idle }
+            Err(error) => { transition_failed(world, error); Phase::Idle }
         },
-        Phase::Loading { job, .. } => match job.join().unwrap_or_else(|_| Err("Map loader failed unexpectedly".into())) {
-            Ok(prepared) => {
-                let mut notice = commit(world, prepared);
-                let config = world.resource::<Config>();
-                match crate::map_library::save_default(&config.asset_root, config.map_path.as_deref()) {
-                    Ok(()) => notice.push_str(" Default map saved."),
-                    Err(error) => notice.push_str(&format!(" Could not save default: {error}")),
+        Phase::Loading { job, .. } => {
+            let operation=world.resource::<MapTransition>().operation.clone();
+            let desired=world.resource::<MapTransition>().desired.as_ref().map(|t|t.key.clone());
+            let result=job.join().unwrap_or_else(|_| Err("Map loader failed unexpectedly".into()));
+            if operation.as_ref().is_some_and(|(key,_)|*key!=desired) {
+                // A new offer invalidated this worker, including its errors.
+                // If it retained the active world, release our loading pause
+                // through the same boundary as a successful publication.
+                drop(result);
+                if world.resource::<MapTransition>().active==desired {
+                    if desired.is_none() {world.resource_mut::<MapTransition>().base=None;}
+                    Phase::Publishing {frames:0,notice:"Current world retained.".into()}
+                } else {Phase::Idle}
+            } else {
+                match result {
+                    Ok(prepared) => {
+                    let mut notice = commit(world, prepared);
+                    if let Some((key,_))=operation {
+                        let mut transition=world.resource_mut::<MapTransition>();
+                        transition.active=key.clone();transition.resource_error=None;
+                        if key.is_none() {transition.base=None;}
+                    } else {
+                        let config = world.resource::<Config>();
+                        match crate::map_library::save_default(&config.asset_root, config.map_path.as_deref()) {
+                            Ok(()) => notice.push_str(" Default map saved."),
+                            Err(error) => notice.push_str(&format!(" Could not save default: {error}")),
+                        }
+                    }
+                    Phase::Publishing { frames: 3, notice }
+                    }
+                    Err(error) => { transition_failed(world, error); Phase::Idle }
                 }
-                Phase::Publishing { frames: 3, notice }
             }
-            Err(error) => { failed(world, error); Phase::Idle }
         },
         Phase::Publishing { frames, notice } if frames > 0 => Phase::Publishing { frames: frames - 1, notice },
+        Phase::Publishing {notice,..} if !crate::map_render::streaming::ready(world) => Phase::Publishing {frames:1,notice},
         Phase::Publishing { notice, .. } => {
-            world.resource_mut::<crate::graphics_menu::Menu>().transition_finished(notice, true);
-            world.resource_mut::<Time<Virtual>>().unpause();
+            let (menu_open,paused)=world.resource_mut::<MapTransition>().resource_pause.take().unwrap_or((false,false));
+            world.resource_mut::<crate::graphics_menu::Menu>().transition_finished(notice, !menu_open);
+            if paused {world.resource_mut::<Time<Virtual>>().pause();}
+            else {world.resource_mut::<Time<Virtual>>().unpause();}
+            world.resource_mut::<MapTransition>().operation=None;
             Phase::Idle
         }
         Phase::Idle => Phase::Idle,
@@ -198,6 +312,12 @@ fn poll(world: &mut World) {
     world.resource_mut::<MapTransition>().phase = next;
 }
 
+fn transition_failed(world:&mut World,error:String) {
+    if let Some((key,_))=world.resource::<MapTransition>().operation.clone() {
+        world.resource_mut::<MapTransition>().resource_error=Some((key.unwrap_or_default(),error.clone()));
+    }
+    failed(world,error);
+}
 fn failed(world: &mut World, error: String) {
     warn!("MAP_TRANSITION_FAILED {error}");
     world.resource_mut::<crate::graphics_menu::Menu>()
@@ -211,6 +331,12 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     // No simulation system can observe a mixture of the two worlds.
     crate::map_render::MapAssets::retire(world);
     prepared.scene.publish(world);
+    if let Some(options)=prepared.streaming {
+        // Options and source meshes were validated during preparation. Keep
+        // admission paused until bounded uploads make every nearby cell ready.
+        crate::map_render::streaming::install(world,options,prepared.metadata.spawn)
+            .expect("Prepared resource mesh residency must install");
+    }
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));
     info!("SKATE_TRIGGERS map={:?} volumes={} source={}", prepared.metadata.name, prepared.triggers.map.len(), prepared.triggers.origin);
@@ -242,7 +368,7 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
         prepared.metadata.generation, prepared.metadata.name, prepared.metadata.spawn,
         prepared.metadata.heading, std::process::id());
     if let Some(mut messages) = world.get_resource_mut::<Messages<WorldChanged>>() {
-        messages.write(WorldChanged);
+        messages.write(WorldChanged {preserve_connection:prepared.preserve_connection});
     }
     world.insert_resource(prepared.metadata);
     eprintln!("MAP_PUBLISH_TIMING cpu_ms={}", publication_started.elapsed().as_millis());

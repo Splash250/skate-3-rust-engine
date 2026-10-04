@@ -292,3 +292,20 @@ and direct mutation of another peer's native joints remain unexposed. New needs
 should extend these engine interfaces rather than adding mod-specific functions.
 
 Contact lifecycle refers to force-bearing native solver reports: an end means no positive normal response was reported for that pair. It is not proof that the collider shapes have geometrically separated.
+
+
+## JavaScript resource adapter
+
+JavaScript resources use the same validated `Command` schema and grant checks
+through `sdk.submit(command)`. They also expose `sdk.log`, declared-asset
+`sdk.readText`, and client `sdk.ui.text/remove/menu/canvas`. The Lua convenience
+wrappers elsewhere in this guide retain their Lua syntax; they are not all
+JavaScript functions. Resource lifecycle, storage, services and cross-language
+exports are described in [RESOURCES.md](RESOURCES.md#javascript-resources).
+JavaScript has no arbitrary native pointer, filesystem, process or network API.
+
+C# source resources use the same command schema through `Resource.Submit(JsonNode)`
+and receive lifecycle `on_event` results. They execute in the managed worker,
+subject to the capability checks and process limits documented in
+[RESOURCES.md](RESOURCES.md#c-resources); they do not receive native pointers or
+arbitrary .NET/native libraries.

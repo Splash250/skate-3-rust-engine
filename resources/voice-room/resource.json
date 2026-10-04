@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "voice-room",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": ["client.lua"],
+  "server_scripts": ["server.lua"],
+  "capabilities": ["resource.voice", "engine.voice", "resource.commands", "resource.network", "resource.events"]
+}

@@ -986,7 +986,8 @@ impl Request {
         let macro_scale = definition.scalar("macroOverlayUVScale").unwrap_or(0.);
         let macro_opacity = definition.scalar("macroOverlayOpacity").unwrap_or(0.);
         let detail_scale = definition.scalar("detailNormalUVScale").unwrap_or(0.);
-        let flags = u32::from(normal.is_some())
+        let portable_albedo = definition.shader.is_empty() && diffuse.is_none();
+        let flags = (u32::from(portable_albedo) << 10) | u32::from(normal.is_some())
             | (u32::from(detail.is_some() && detail_scale > 0.) << 1)
             | (u32::from(
                 macro_map.is_some()
@@ -1014,6 +1015,9 @@ impl Request {
                 *to = Vec4::from_array(*from);
             }
         }
+        // Portable color-only materials have no diffuse page. Carry the
+        // authored albedo explicitly; retail missing-texture behavior stays unchanged.
+        if portable_albedo { water[3] = Vec4::new(material.color[0], material.color[1], material.color[2], 1.); }
         if definition.family == 14 {
             water[1] = Vec4::new(
                 definition.scalar("uAnimationSpeed").unwrap_or(0.),
@@ -1507,6 +1511,22 @@ pub(crate) fn world_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_color_only_material_keeps_authored_albedo() {
+        let map=SkateMap::parse(include_bytes!("../../../resources/community-park/park.skate")).unwrap();
+        let material=&map.materials[0];
+        assert_eq!(material.textures[0],0);
+        let request=Request::new(material,&Definition::portable(),&MaterialTuning::default(),
+            &crate::retail_sky::SkyEnvironment::default(),&canonical_texture_ids(&map.textures),&map);
+        assert_ne!(request.params.mode.y as u32 & 1024,0,"missing diffuse must select portable albedo");
+        assert_eq!(request.params.water[3].truncate().to_array(),material.color);
+        assert_eq!(request.params.water[3].w,1.);
+        let mut retail=Definition::portable();retail.shader="retail_shader".into();
+        let request=Request::new(material,&retail,&MaterialTuning::default(),
+            &crate::retail_sky::SkyEnvironment::default(),&canonical_texture_ids(&map.textures),&map);
+        assert_eq!(request.params.mode.y as u32 & 1024,0,"retail definitions preserve their own sampling contract");
+    }
 
     /// The per-vertex material index only works if no vertex is shared between
     /// triangles of different materials. `main` never had to care: it split

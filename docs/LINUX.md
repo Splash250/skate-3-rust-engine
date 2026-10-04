@@ -8,7 +8,7 @@ gilrs.
 On Debian or Ubuntu, a representative dependency set is:
 
 ```sh
-sudo apt install build-essential pkg-config clang libclang-dev libudev-dev \
+sudo apt install build-essential cmake pkg-config clang libclang-dev libudev-dev \
   libasound2-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
   libwayland-dev libxkbcommon-dev libvulkan-dev vulkan-tools
 ```
@@ -16,7 +16,7 @@ sudo apt install build-essential pkg-config clang libclang-dev libudev-dev \
 On Fedora, use the corresponding packages:
 
 ```sh
-sudo dnf install gcc gcc-c++ pkgconf-pkg-config clang clang-devel systemd-devel \
+sudo dnf install gcc gcc-c++ cmake pkgconf-pkg-config clang clang-devel systemd-devel \
   alsa-lib-devel libX11-devel libXcursor-devel libXi-devel libXrandr-devel \
   wayland-devel libxkbcommon-devel vulkan-loader-devel vulkan-tools
 ```
@@ -98,3 +98,24 @@ The ordinary `./BUILD.sh` and `./BUILD.sh --release` commands remain
 Steam-independent. [Dedicated multiplayer](multiplayer/README.md) uses direct
 UDP with `--connect`; it does not need Steam or this helper. Steam lobbies do
 not provide a Steam transport for the dedicated server.
+
+## Resource platform companions
+
+`./BUILD.sh --browser` builds the optional `skate-browser-host` companion beside
+`skate3rust`. Building it requires the WebKitGTK4.1 development package (on
+Debian/Ubuntu, `libwebkit2gtk-4.1-dev`); running it needs a working X11/Wayland
+session and delegated cgroup v2 memory/pids controllers. The page process fails
+closed if those controls are unavailable. See the [browser host guide](multiplayer/browser-interfaces.md)
+for bounds and diagnostics. Existing canvas and menu resources do not need it.
+
+Voice builds the Opus codec and uses ALSA through CPAL (`libasound2-dev` at build
+time). Capture requires the game's explicit `--voice` option and physical V
+push-to-talk. Resource radio policy cannot override local opt-out, mute or deafen.
+See [voice setup and device tests](multiplayer/voice.md).
+
+For C# resources, install .NET10 and `bubblewrap`/`util-linux`, publish the trusted
+worker from `crates/skate-mods/managed-host`, and configure `SKATE_DOTNET_ROOT` and
+`SKATE_MANAGED_HOST` as documented in the [resource SDK](../sdk/RESOURCES.md).
+A downloaded C# resource contains source, not arbitrary DLL/SO plugins. The
+worker requires unprivileged user namespaces and its sandbox prerequisites; it
+fails closed when they are unavailable.

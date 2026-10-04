@@ -59,12 +59,14 @@ impl Bounds {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Bucket { entries: Vec<(usize, bool)>, child: Option<usize> }
+#[derive(Clone)]
 struct Node { bounds: Bounds, resident: Vec<usize>, buckets: [Bucket; 8] }
 impl Node {
     fn new(bounds: Bounds) -> Self { Self { bounds, resident: Vec::new(), buckets: std::array::from_fn(|_| Bucket::default()) } }
 }
+#[derive(Clone)]
 pub(super) struct Octree { nodes: Vec<Node>, bounds: Vec<Bounds>, node_capacity: usize }
 impl Octree {
     pub fn new(asset_bounds: Bounds, bounds: Vec<Bounds>) -> Result<Self, String> {

@@ -102,10 +102,12 @@ content unavailable for execution. Reconnection retries missing content; verifie
 unchanged blobs can be reused. Script startup failures produce resource-specific
 diagnostics rather than admitting a partly initialized gameplay session.
 
-The reliable channel alternates queued events and state updates. State updates
-coalesce per key with FIFO key ordering; events retain order. Clients may send
-20 events per second, with 64 pending events and 384-byte payloads. Queue/rate
-overload disconnects the client instead of silently losing required traffic.
+The reliable channel has bounded small-event and chunked-message lanes. State
+updates coalesce per key and share an ordered lane. Default limits are 60 events
+per second, 64 pending messages and 16 KiB JSON values; negotiated administrator
+budgets have hard ceilings. Queue/rate overload disconnects a slow peer instead
+of silently losing required traffic. Small events can overtake chunked events.
+See [current transfer and budget contract](platform-extension.md#bounded-transfer-and-configuration).
 
 ## Persistent cache and grants
 
@@ -121,7 +123,8 @@ cannot collide just because their labels match. Cached immutable bytes are share
 Lua state, persisted data and permission decisions are scoped separately.
 
 The client default grant policy permits requested `resource.*` capabilities and
-`engine.ui`, `engine.audio`, `engine.graphics`, `engine.inspect`. Sensitive
+`engine.ui`, `engine.audio`, `engine.graphics`, `engine.inspect` and
+`engine.voice`. Voice device use still requires the client's `--voice` opt-in. Sensitive
 player, physics, camera, input, world and animation grants require explicit
 source-specific additions in `grants.json` inside the cache root. For example:
 
@@ -163,8 +166,8 @@ normally releases the pin. After a crash, use `forget` for an abandoned pin.
 executing scripts; it is useful for diagnosing distribution independently.
 
 The cache stores `blobs/<digest>`, `sets/<revision>/<resource-id>`, source pins
-under `active/`, and `inventory.json`. The default bounds are 16 MiB per file,
-128 MiB per set, 32 resources, 4096 total files, 1 GiB of cache storage and 512
+under `active/`, and `inventory.json`. The default bounds are 64 MiB per file,
+256 MiB per set, 128 resources, 16384 total files, 1 GiB of cache storage and 512
 history entries with an 8 MiB audit cap. Disk accounting includes materialized
 copies and staging. An operating-system lock coordinates cache writers. A
 malformed manifest without usable resource identity is rejected before an
@@ -193,3 +196,5 @@ See [resource authoring](../../sdk/RESOURCES.md), the
 [redistributable examples](../../resources/README.md), and the
 [Cfx compatibility/API audit](resource-compatibility.md). For transport setup and
 the limits of Hybrid Authority, see [dedicated multiplayer](README.md).
+
+Explicit bulk transfer keys, progress, deadlines and cancellation are documented in [Large resource messages](large-messages.md). Browser inventory and voice examples are described in [Browser interfaces](browser-interfaces.md) and [Voice](voice.md).

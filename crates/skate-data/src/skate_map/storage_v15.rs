@@ -2,7 +2,7 @@
 use super::{Reader, StoredBlock};
 
 pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u8>, String> {
-    let mut input = Reader { bytes, at: 0 };
+    let mut input = Reader { bytes, at: 0, budget: None };
     let size = input.u()? as usize;
     // Transformed records are at most a small multiple of their decoded size.
     // Bound both lengths before allocating or decompressing untrusted data.
@@ -13,7 +13,7 @@ pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u
         expected: size, method: if method <= 6 { 2 } else { 1 },
         bytes: &bytes[4..],
     }.decode()?;
-    let mut source = Reader { bytes: &data, at: 0 };
+    let mut source = Reader { bytes: &data, at: 0, budget: None };
     let mut result = Vec::new();
     match method {
         3 | 7 => {

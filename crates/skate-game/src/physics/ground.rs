@@ -13,7 +13,7 @@ use skate_core::{
     },
 };
 
-pub(crate) const HEIGHT: f32 = -0.035;
+pub(crate) const HEIGHT: f32 = skate_data::resource_world::TEST_WORLD_SPAWN[1];
 
 /// One authored terrain selection drives both presentation and live queries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

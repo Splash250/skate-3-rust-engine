@@ -24,6 +24,7 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(3);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 /// A replaceable immutable allowlist; no request path can reach the server filesystem.
 pub struct HttpServer {
+    limits: crate::Limits,
     address: SocketAddr,
     published: Arc<RwLock<Arc<PublishedSet>>>,
     stop: Arc<AtomicBool>,
@@ -31,7 +32,14 @@ pub struct HttpServer {
 }
 impl HttpServer {
     pub fn bind(addr: SocketAddr, published: PublishedSet) -> Result<Self> {
-        published.validate()?;
+        Self::bind_with_limits(addr, published, crate::Limits::default())
+    }
+    pub fn bind_with_limits(
+        addr: SocketAddr,
+        published: PublishedSet,
+        limits: crate::Limits,
+    ) -> Result<Self> {
+        published.validate_with_limits(limits)?;
         let listener = TcpListener::bind(addr)?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
@@ -81,6 +89,7 @@ impl HttpServer {
                 }
             })?;
         Ok(Self {
+            limits,
             address,
             published,
             stop,
@@ -91,7 +100,7 @@ impl HttpServer {
         self.address
     }
     pub fn replace(&self, published: PublishedSet) -> Result<()> {
-        published.validate()?;
+        published.validate_with_limits(self.limits)?;
         *self
             .published
             .write()

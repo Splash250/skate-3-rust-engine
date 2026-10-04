@@ -94,6 +94,23 @@ impl PlayerState {
         self.post.trajectory_available = false;
     }
 }
+/// Dynamic resource geometry invalidates acquisition queries, never position.
+/// Use the physical lifecycle so grind/handplant exit restores native bodies.
+pub(crate) fn retire_world_queries(physics:&mut GamePhysics,skater:&mut SkaterRuntime)->Result<(),String> {
+    let current=skater.player_state.current();
+    if current.is_grind() || matches!(current,PhysicalStateId::KnownAir|PhysicalStateId::HandPlant) {
+        transition::set(physics,skater,PhysicalStateId::PhysicsAir)?;
+    }
+    skater.player_input.pending_grind=None;
+    skater.player_input.grind_observation=None;
+    skater.player_input.grind.reset();
+    skater.player_input.grind.engagement=Default::default();
+    skater.player_input.grind.control=Default::default();
+    skater.player_input.grind.balance=Default::default();
+    skater.grind.retire_geometry();
+    skater.handplant.reset();
+    Ok(())
+}
 ///Call once before first input; startup constructs the toolkit from live board/reset inputs.
 pub(crate) fn initialize(
     physics: &mut GamePhysics,
@@ -180,3 +197,6 @@ pub(super) fn enter_network_wipeout(physics: &mut GamePhysics, skater: &mut Skat
     transition::set(physics, skater, PhysicalStateId::WipeoutGround)?;
     publish(physics, skater)
 }
+
+#[cfg(test)]
+mod resource_world_tests;

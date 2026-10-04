@@ -635,3 +635,20 @@ fn corrupt_set_metadata_is_isolated_on_reopen_without_losing_verified_blobs() {
         cache.prune(0).unwrap();
     }
 }
+
+#[test]
+fn configured_content_limits_exceed_old_caps_and_reject_invalid_budgets() {
+    let t=Temp::new();
+    fixture(&t,"return {}");
+    // Redistributable synthetic asset larger than the previous 16MiB ceiling.
+    std::fs::write(t.0.join("resources/challenge/ui.txt"), vec![b'a';17*1024*1024]).unwrap();
+    let limits=Limits {max_file_bytes:20*1024*1024, ..Default::default()};
+    let published=skate_resources::build_set_with_limits(&t.0.join("resources"),&selection(),limits).unwrap();
+    let revision=published.set.revision.clone();
+    let http=HttpServer::bind_with_limits("127.0.0.1:0".parse().unwrap(),published,limits).unwrap();
+    let cache=Cache::open(t.0.join("large-cache"),limits).unwrap();
+    let report=download_set(http.local_addr(),&revision,&cache,"large-test",&AtomicBool::new(false)).unwrap();
+    assert!(report.downloaded_bytes>16*1024*1024);
+    assert!(Cache::open(t.0.join("bad"),Limits {max_file_bytes:u64::MAX,..limits}).is_err());
+    assert!(skate_resources::build_set_with_limits(&t.0.join("resources"),&selection(),Limits {max_file_bytes:1024,..limits}).is_err());
+}

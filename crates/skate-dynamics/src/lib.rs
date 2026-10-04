@@ -1388,6 +1388,17 @@ impl DynamicsWorld {
         self.prev_pairs.keys().copied().collect()
     }
 
+    /// Solid body pairs with active solver contacts in the last step. Unlike
+    /// contact edges, this excludes proximity candidates and sensor overlaps.
+    pub fn active_solver_contact_pairs(&self) -> impl Iterator<Item=(u64,u64)> + '_ {
+        self.narrow_phase.contact_pairs().filter(|pair|pair.has_any_active_contact()).filter_map(|pair| {
+            let a=self.colliders.get(pair.collider1)?.parent()?;
+            let b=self.colliders.get(pair.collider2)?.parent()?;
+            let (&a,&b)=(self.reverse.get(&a)?,self.reverse.get(&b)?);
+            Some(if a<b {(a,b)} else {(b,a)})
+        })
+    }
+
     /// Raycast that only returns a hit on the static map trimesh (`GROUND_BODY_ID`).
     pub fn raycast_ground(
         &self,
@@ -2001,6 +2012,21 @@ mod tests {
             }
         }
         assert!(saw, "sensor should report contact with static box");
+    }
+
+    #[test]
+    fn solver_contact_query_excludes_separation_and_sensors() {
+        let mut world=DynamicsWorld::default();
+        world.gravity=Vector::ZERO;
+        let a=world.spawn(box_desc(BodyType::Static,[0.,0.,0.],[0.5;3])).unwrap();
+        let b=world.spawn(box_desc(BodyType::Dynamic,[0.9,0.,0.],[0.5;3])).unwrap();
+        let sensor=world.spawn(BodyDesc {sensor:true,..box_desc(BodyType::Dynamic,[0.,0.,0.],[0.2;3])}).unwrap();
+        world.step(0.001);
+        assert_eq!(world.active_solver_contact_pairs().collect::<Vec<_>>(),vec![(a,b)]);
+        assert!(world.drain_contacts().iter().any(|event|event.body_a==sensor||event.body_b==sensor));
+        world.set_pose(b,[1.03,0.,0.],[0.,0.,0.,1.]);world.set_linvel(b,[0.;3]);
+        world.step(0.001);
+        assert!(world.active_solver_contact_pairs().next().is_none());
     }
 
     #[test]

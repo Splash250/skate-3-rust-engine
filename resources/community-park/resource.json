@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "community-park",
+  "version": "1.0.0",
+  "language": "lua",
+  "files": [
+    "park.skate",
+    "markers.json",
+    "placements.json",
+    "park-low.skate",
+    "placements-low.json"
+  ],
+  "world": {
+    "map": "park.skate",
+    "required": true,
+    "lods": [
+      {
+        "map": "park-low.skate",
+        "distance": 200
+      }
+    ]
+  },
+  "client_scripts": [
+    "client.lua"
+  ],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "capabilities": [
+    "resource.state",
+    "resource.commands",
+    "resource.world",
+    "resource.teleport",
+    "engine.ui"
+  ]
+}

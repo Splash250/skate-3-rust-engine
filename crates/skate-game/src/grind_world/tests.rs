@@ -147,3 +147,27 @@ fn malformed_native_counts_and_inverted_authored_bounds_are_errors() {
     rail.native.as_mut().unwrap()[28+80..28+84].copy_from_slice(&2f32.to_le_bytes());
     assert!(spline::build_rails(&[rail]).is_err());
 }
+
+#[test]
+fn resource_park_rails_register_native_primitives_and_spatial_queries() {
+    let map=skate_data::skate_map::SkateMap::parse(include_bytes!("../../../../resources/community-park/park.skate")).unwrap();
+    let provider=StaticProvider::new(Some(&map)).unwrap();
+    assert_eq!(provider.primitives().len(),1);
+    let candidates=provider.query([4.,0.,-2.],[6.,2.,2.]).unwrap();
+    assert_eq!(candidates,vec![0]);
+    let edge=provider.primitives()[0];
+    assert_eq!(&edge.start[..3],&[5.,0.75,-4.]);
+    assert_eq!(&edge.end[..3],&[5.,0.75,4.]);
+    assert!(provider.metadata(0).is_some());
+}
+
+#[test]
+fn runtime_rail_overlay_adds_native_candidates_without_aliasing_base_owners() {
+    let base=StaticProvider::authored(&[skate_data::skate_map::Rail {name:"base".into(),closed:false,points:vec![[0.,1.,0.],[0.,1.,5.]],native:None}]).unwrap();
+    let combined=base.with_authored(&[skate_data::skate_map::Rail {name:"runtime".into(),closed:false,points:vec![[10.,1.,0.],[10.,1.,5.]],native:None}]).unwrap();
+    assert_eq!(combined.primitives().len(),2);
+    assert_eq!(combined.query([9.,0.,1.],[11.,2.,3.]).unwrap(),vec![1]);
+    assert_ne!(combined.primitives()[0].owner,combined.primitives()[1].owner);
+    assert_eq!(base.primitives().len(),1,"base provider must stay immutable for unload");
+    assert!(combined.metadata(1).is_some());
+}

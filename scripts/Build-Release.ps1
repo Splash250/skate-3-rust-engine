@@ -30,6 +30,8 @@ try {
     # Link this invocation directly into private staging; never copy a generic cache EXE.
     & cargo rustc --release --locked --target x86_64-pc-windows-msvc --target-dir $TargetDirectory -p skate-game --bin skate3rust --no-default-features -- -C extra-filename= --emit "link=$stage/skate3rust.exe" -C "link-arg=/PDB:$symbols/skate3rust.pdb"
     if ($LASTEXITCODE -ne 0) { throw 'Release compilation failed' }
+    & cargo rustc --release --locked --target x86_64-pc-windows-msvc --target-dir $TargetDirectory -p skate-browser --features host --bin skate-browser-host -- -C extra-filename= -C debuginfo=0 --emit "link=$stage/skate-browser-host.exe"
+    if ($LASTEXITCODE -ne 0) { throw 'Browser companion compilation failed' }
     & cargo build --release --locked --target x86_64-pc-windows-msvc --target-dir $TargetDirectory -p skate-steam-relay
     if ($LASTEXITCODE -ne 0) { throw 'Steam relay compilation failed' }
     & (Join-Path $PSScriptRoot 'Stage-SteamRelay.ps1') `
@@ -107,6 +109,7 @@ try {
     ) "$stage/docs"
     Copy-IfExists @('docs/images/skating-crab.png') "$stage/docs/images"
     New-Item -ItemType Directory -Path "$stage/licenses" -Force | Out-Null
+    Copy-Item -LiteralPath tools/server-package/PLATFORM-NOTICES.txt -Destination "$stage/licenses/ResourcePlatform.txt"
     Copy-Item -LiteralPath tools/mixamo_to_skate/licenses/FBX2glTF.txt -Destination "$stage/licenses/FBX2glTF.txt"
     Copy-Item -LiteralPath tools/vendor/utt/LICENSE -Destination "$stage/licenses/UTT.txt"
     Copy-Item -LiteralPath tools/vendor/university/LICENSE-PROJECT.md -Destination "$stage/licenses/CustomEngineLayer.txt"

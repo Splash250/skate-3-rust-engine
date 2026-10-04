@@ -43,6 +43,8 @@ impl Config {
             match arg.to_str() {
                 Some("--trace" | "--trace-seconds" | "--trace-delay" | "--trace-min-us") => { args.next().ok_or("Trace option requires a value")?; }
                 Some("--trace-wait" | "--trace-gpu") => {}
+                Some("--account-config") => config.multiplayer.account_config=Some(args.next().ok_or("--account-config requires a credentials configuration file")?.into()),
+                Some("--voice") => config.multiplayer.voice_enabled=true,
                 Some("--connect") => config.multiplayer.connect = Some(args.next().ok_or("--connect requires an IPv4:PORT server address")?.to_string_lossy().parse().map_err(|_| "Invalid dedicated server address; expected IPv4:PORT")?),
                 Some("--net-host") => config.multiplayer.host = Some(args.next().ok_or("Missing host bind address")?.to_string_lossy().parse().map_err(|_|"Invalid host bind address")?),
                 Some("--net-local") => {
@@ -96,7 +98,7 @@ impl Config {
                 }
                 _ => {
                     return Err(format!(
-                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets | --validate-maps] [--start-paused] [--mute] [--connect IPv4:PORT] [--net-session NUMBER]"
+                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets | --validate-maps] [--start-paused] [--mute] [--connect IPv4:PORT] [--net-session NUMBER] [--account-config FILE] [--voice]"
                     ));
                 }
             }
@@ -158,6 +160,7 @@ pub(crate) fn map_fingerprint(path: Option<&std::path::Path>) -> Result<u64, Str
 }
 
 fn validate_network_options(options: &mut crate::multiplayer::Options, explicit_session: bool) -> Result<(), String> {
+    if options.account_config.is_some() && options.connect.is_none() {return Err("--account-config requires --connect to an authenticated dedicated server".into());}
     if let Some(server) = options.connect {
         if options.host.is_some() || options.direct.is_some() { return Err("--connect cannot be combined with --net-host or --net-local".into()); }
         if !server.is_ipv4() || server.port() == 0 || server.ip().is_unspecified() || server.ip().is_multicast() || server.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST) { return Err("--connect requires a unicast IPv4 address and a nonzero port".into()); }
@@ -169,6 +172,13 @@ fn validate_network_options(options: &mut crate::multiplayer::Options, explicit_
 #[cfg(test)]
 mod dedicated_config_tests {
     use super::*;
+    #[test]
+    fn account_credentials_require_a_dedicated_connection() {
+        let mut options=crate::multiplayer::Options {account_config:Some("client.json".into()),..Default::default()};
+        assert!(validate_network_options(&mut options,false).is_err());
+        options.connect=Some("127.0.0.1:31030".parse().unwrap());
+        validate_network_options(&mut options,false).unwrap();
+    }
     #[test]
     fn dedicated_session_defaults_and_explicit_override_are_order_independent() {
         let mut options = crate::multiplayer::Options { connect: Some("127.0.0.1:31030".parse().unwrap()), ..Default::default() };

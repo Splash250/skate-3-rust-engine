@@ -31,7 +31,7 @@ fn hex(text: &str) -> Vec<u8> {
 
 fn hello() -> Vec<u8> {
     hex("53 4b 38 4e 45 54 30 35 08 07 06 05 04 03 02 01
-         02 00 00 00 00 00 00 00 0f 00 00 00 00
+         02 00 00 00 00 00 00 00 13 00 00 00 00
          02 00 00 00 00 00 00 00 28 27 26 25 24 23 22 21
          38 37 36 35 34 33 32 31 48 47 46 45 44 43 42 41
          58 57 56 55 54 53 52 51")
@@ -39,14 +39,16 @@ fn hello() -> Vec<u8> {
 
 fn roster() -> Vec<u8> {
     hex("53 4b 38 4e 45 54 30 35 08 07 06 05 04 03 02 01
-         63 00 00 00 00 00 00 00 10 01 00 00 00 02
+         63 00 00 00 00 00 00 00 14 01 00 00 00
+         68 67 66 65 64 63 62 61 00 01 02
          63 00 00 00 00 00 00 00 28 27 26 25 24 23 22 21
          38 37 36 35 34 33 32 31 48 47 46 45 44 43 42 41
          00 00 00 00 00 00 00 00
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
          02 00 00 00 00 00 00 00 28 27 26 25 24 23 22 21
          38 37 36 35 34 33 32 31 48 47 46 45 44 43 42 41
          58 57 56 55 54 53 52 51
-         68 67 66 65 64 63 62 61")
+         68 67 66 65 64 63 62 61 00 00 00 00 00 00 00 00")
 }
 
 #[test]
@@ -73,10 +75,15 @@ fn dedicated_admission_uses_fixed_width_little_endian_identity_and_fingerprints(
         .iter()
         .find(|p| packed::envelope(&p.data).unwrap().2 == lobby::DEDICATED_ROSTER)
         .unwrap();
-    // The final eight bytes are a runtime-generated connection epoch.
-    assert_eq!(&generated.data[..110], &roster()[..110]);
-    assert_eq!(generated.data.len(), 118);
-    assert_ne!(&generated.data[110..], &[0; 8]);
+    // Admission and movement epoch fields are generated at runtime; all other
+    // bytes are an independently authored contract shared by Windows and Linux.
+    let mut actual = generated.data.clone();
+    assert_eq!(actual.len(), 152);
+    assert_ne!(&actual[29..37], &[0; 8]);
+    assert_eq!(&actual[29..37], &actual[136..144]);
+    actual[29..37].copy_from_slice(&roster()[29..37]);
+    actual[136..144].copy_from_slice(&roster()[136..144]);
+    assert_eq!(actual, roster());
 
     client.receive(1, &roster(), 1);
     assert!(client.connected());

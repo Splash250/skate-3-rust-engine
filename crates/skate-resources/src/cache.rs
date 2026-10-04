@@ -80,17 +80,7 @@ impl Drop for Staging {
 }
 impl Cache {
     pub fn open(root: impl AsRef<Path>, limits: Limits) -> Result<Self> {
-        if limits.max_history == 0
-            || limits.max_history > 10000
-            || limits.max_file_bytes > 16 * 1024 * 1024
-            || limits.max_set_bytes > 128 * 1024 * 1024
-            || limits.max_resources > 32
-            || limits.max_files > 4096
-        {
-            return Err(Error(
-                "cache limits exceed protocol bounds or history is zero".into(),
-            ));
-        }
+        limits.validate()?;
         let root = root.as_ref().to_path_buf();
         real_directory(&root)?;
         for dir in ["blobs", "sets", "active", "tmp"] {

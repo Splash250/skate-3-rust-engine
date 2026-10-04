@@ -1,0 +1,305 @@
+Extend the existing FiveM-style resource platform and resolve the remaining capability boundaries in:
+
+/run/media/csanad/Linux-Big/skate/skatemp/skate-3-rust-engine
+
+This is an implementation request. Create a concrete plan, then execute it through integration, testing, documentation and review. Continue beyond the first working demonstration.
+
+The scope below is approved. Make reasonable, reversible implementation decisions autonomously. Ask only when a consequential ambiguity cannot be resolved from the repository or when an unavoidable external requirement needs user action. Continue independent work while waiting.
+
+REPOSITORY BASELINE
+
+Continue on branch:
+cross-platform-dedicated-server
+
+Baseline commit:
+69ed3779342bd61ecff7f8d40628269152a79afc
+
+The existing work is committed in these five commits, oldest first:
+- 60c7b1e — Native Linux runtime, setup and Steam relay.
+- 8a53beb — Verified resource content cache and isolated Lua runtime.
+- dc6ab6a — Dedicated hosting and server-selected resource integration.
+- 6ccbca5 — Standalone server packaging and cross-platform CI.
+- 69ed377 — Scoped repository guidance and local Graphify ignore rules.
+
+The working tree was clean at handoff. The implementation is present in the committed branch; it does not depend on uncommitted source changes.
+
+The branch has not been pushed. Use this existing local checkout. Verify the current branch, git status and that HEAD contains the baseline commit before editing. Preserve any subsequent committed, uncommitted or untracked work. Do not reset, discard or overwrite existing work.
+
+Graphify output is intentionally local and ignored. Use it when available. If it is absent or the command fails, follow the repository guide's fallback investigation workflow.
+
+Do not create new commits, push, publish or deploy during this task.
+
+PRODUCT TARGET
+
+Provide the engine and platform capabilities needed to build sophisticated Skate multiplayer servers through resources: shared objects, private instances, rich interfaces, voice, persistent accounts and progression, custom parks, animations and multiple scripting languages.
+
+This explicitly supersedes the previous instruction to defer JavaScript and C#. Both runtimes are now included, alongside Lua.
+
+Target equivalent capabilities appropriate to this Skate engine. Arbitrary GTA/FiveM resources, GTA binaries/assets, and GTA-specific vehicle/weapon/ped systems are not compatibility requirements. Implement and document a useful Cfx-style scripting compatibility subset.
+
+Keep direct UDP usable without Steam. Dedicated Steam transport remains a separate follow-up. Local development must work without paid services, cloud accounts or production credentials.
+
+READ AND VERIFY FIRST
+
+Read:
+- AGENTS.md and applicable nested guides.
+- CONTEXT.md.
+- docs/multiplayer/README.md.
+- docs/multiplayer/resource-compatibility.md.
+- docs/multiplayer/resource-validation.md.
+- sdk/AGENTS.md.
+- sdk/RESOURCES.md.
+- sdk/GENERAL_API.md.
+- sdk/ENGINE_API.md.
+- Relevant existing design and implementation plans.
+
+Inspect git status before editing. Follow the repository's Graphify workflow and verify findings against current source.
+
+The resource foundation already exists: manifests, dependencies, lifecycle, Lua hosts, events, server-owned resource state, HTTP content delivery, persistent verified cache, capability grants and client integration. Extend this foundation rather than rebuilding it.
+
+Research current official Cfx documentation and relevant upstream implementations where needed. Preserve dependency licenses and provenance. Treat historical test results as context; run fresh verification.
+
+The broader skate-mods integration suite has a documented private skyline.glb fixture prerequisite. Do not weaken or remove that test to obtain a passing result. Run the applicable fixture-free suites and report unavailable private-fixture validation separately.
+
+Maintain a requirement-to-evidence ledger, with each requirement marked:
+- Pending.
+- In progress.
+- Implemented but unverified.
+- Implemented and verified.
+- Blocked, with the concrete prerequisite.
+
+IMPLEMENTATION SCOPE
+
+1. Shared entities, state and instances
+
+Implement a transport-independent network entity system:
+- Stable entity identities, resource ownership and generation checks.
+- Creation, updates, deletion, late-join snapshots and interest management.
+- Explicit authority, ownership transfer and disconnect recovery.
+- Server simulation of shared dynamic objects, with client interpolation/prediction and reconciliation where appropriate.
+- Entity-, player- and resource-scoped state with enforceable ownership and visibility rules.
+- Separate instances comparable to routing buckets.
+
+Instance isolation must apply to entity replication, scoped state/events, relevant physics interactions and voice. Moving between instances must retire stale state and handle in-flight messages.
+
+Acceptance:
+Two real clients observe and interact with the same moving collidable object. A late join receives its current state. Owner disconnect, resource restart and spoofed updates behave correctly. Players in different instances cannot see, hear or collide with each other or receive each other's scoped data.
+
+2. Teleports and authoritative gameplay
+
+Add a server-approved teleport/respawn protocol with destination validation, instance selection and explicit movement-baseline reset.
+
+Remove the need for an approximately one-second gap since the last accepted observation before a discontinuous position change can establish a new baseline. Preserve the existing swept-collision guards. Authorized teleports must not create swept collisions across the map or leave stale prediction and interpolation state.
+
+Strengthen headless physics and gameplay validation so supported competitions can derive outcomes independently of client-reported scores. Reuse existing terrain/skating logic where practical and preserve responsive client prediction.
+
+Define exactly which movement, tricks, contacts and scoring outcomes the server verifies. A server storing a submitted client score does not satisfy authoritative scoring. Required outcomes that remain unverifiable must remain open requirements.
+
+Acceptance:
+Immediate authorized teleports work consistently for all observers. Unauthorized requests and forged competition results are rejected. Legitimate gameplay reconciles without persistent divergence.
+
+3. Capacity and bounded data transfer
+
+Replace restrictive fixed limits with negotiated, configurable, bounded budgets.
+
+Cover:
+- Player count.
+- Resource count and asset/package sizes.
+- Event and state values.
+- State key counts and persistence.
+- Queue sizes, rates and execution budgets.
+
+Implement a separate bounded large-message mechanism with chunking, cancellation, backpressure and useful failure reporting. Preserve movement priority while resources, voice and large messages are active.
+
+Use at least 64 connected simulated players as the initial networking acceptance target. Exercise movement, shared objects and resource traffic together. Report measured bandwidth, memory, latency and packet loss on the available hardware; distinguish simulated-client results from graphical-client capacity.
+
+Demonstrate valid workloads exceeding the old 16-player limit, 384-byte resource payload limit, 64-KiB resource persistence-file limit and restrictive content ceilings without making allocations or queues unbounded.
+
+4. Browser interfaces
+
+Add an actual HTML/CSS/JavaScript resource UI host suitable for inventories, menus, scoreboards and other rich interfaces.
+
+Provide:
+- Packaged local web assets.
+- Bidirectional resource-to-UI messages.
+- Keyboard/mouse focus and input restoration.
+- Resource ownership, teardown and restart handling.
+- Explicit navigation, network access and host-binding permissions.
+- A supported Linux and Windows integration.
+
+Preserve the existing lightweight canvas/menu APIs.
+
+Acceptance:
+A downloaded resource runs a working browser interface, exchanges data with its script, handles input, and releases its pages, callbacks and focus on stop, failure and disconnect.
+
+5. Voice and radio
+
+Implement microphone capture, encoded voice transport, playback, proximity filtering and resource-controlled voice channels.
+
+Support mute/deafen, input/output device selection, push-to-talk, radio membership and instance isolation. Keep bandwidth and queues bounded, and integrate voice with the transport/identity model.
+
+Acceptance:
+Real audio passes between clients with correct proximity and channel membership. Mute, disconnect, instance changes and resource restart behave correctly. Device and channel cleanup is verified.
+
+Use deterministic audio fixtures for automated coverage, and distinguish those tests from actual microphone/device validation.
+
+6. Backend services and persistence
+
+Expose asynchronous, capability-controlled server APIs for:
+- HTTP(S) requests with timeouts, cancellation and bounded results.
+- Parameterized SQL queries and transactions.
+- Durable persistence, migrations and restart recovery.
+
+Provide a working local database backend so examples and tests need no external service. Design additional database/provider adapters around explicit interfaces.
+
+Keep credentials server-side. Database and network I/O must not block gameplay ticks. Define storage ownership, resource upgrades and failure semantics.
+
+Acceptance:
+A persistent progression/inventory example survives server restart, uses transactions correctly, handles concurrent updates and rolls back failed operations. HTTP integration works against a local test service and handles timeout, cancellation and oversized responses.
+
+7. Accounts, permissions and administration
+
+Implement stable authenticated player identities separate from connection IDs, with a locally usable account/authentication path and optional provider adapters.
+
+Add persistent roles and permission inheritance, bans/whitelisting, session revocation and auditable administrative actions. Bind authorization to verified identity.
+
+Protect credentials and authenticated sessions using established libraries and appropriate transport protection.
+
+Provide a working local administration interface for:
+- Player inspection and moderation.
+- Resource lifecycle controls.
+- Roles and permissions.
+- Logs and operational status.
+
+Acceptance:
+Reconnecting users retain the correct identity and roles. Spoofed identities cannot inherit permissions. Revocation takes effect. Administrative actions enforce permissions and modify real server state.
+
+8. Maps, streaming and custom skateparks
+
+Implement the complete resource-to-world path:
+- Supported map/scene manifests and asset dependencies.
+- Import/validation and runtime mounting.
+- Rendering, collision, materials and native grind metadata.
+- Spatial streaming and LOD where appropriate.
+- Server-selected map transitions and late joining.
+- Lifecycle cleanup of all world registrations.
+
+Asset download, map mounting, collision registration and gameplay admission are separate stages; implement each.
+
+Provide explicit APIs for creating and updating grind rails and other supported skating surfaces. A collidable rail mesh alone does not satisfy this requirement.
+
+Broaden the practical model/texture import pipeline with documented supported features and configurable budgets. Unsupported formats/extensions must produce useful diagnostics.
+
+Add a focused placement tool for props, colliders, rails and interaction markers, with save/load and export into resource data. Keep its scope to these authoring tasks.
+
+Acceptance:
+Two clients download and enter a redistributable test park containing a ramp, working grind rail and interaction markers. Admission waits for required collision/assets. A map transition and resource unload remove old visuals, collision, rail registrations and references coherently.
+
+9. Animation, characters and gameplay hooks
+
+Provide supported resource APIs for:
+- Importing and playing custom animation clips.
+- Blending, transitions and event hooks.
+- Validated skeleton/rig definitions and compatibility checks.
+- Character appearance, attachments and replicated presentation.
+- Versioned extensions to animation graphs, skating behavior and scoring where required.
+
+Define supported constraints explicitly. Use owned, validated engine interfaces rather than arbitrary process memory access.
+
+Expose enough functionality for a resource to implement a custom emote, a synchronized character presentation change and a custom competition rule without special-casing its resource ID in Rust.
+
+Acceptance:
+Imported animation plays on the intended rig and is visible remotely. Invalid rigs/clips fail cleanly. Stop/restart restores normal skating and presentation. Custom scoring integrates with the server verification contract from section 2.
+
+10. Lua portability, JavaScript and C#
+
+Implement real client/server JavaScript and C# resource runtimes through the shared host interfaces.
+
+Provide consistent lifecycle, capabilities, events, state, persistence and cross-language exports. Define serialization and asynchronous behavior explicitly.
+
+Add a documented Cfx-style Lua compatibility subset, including practical equivalents for cooperative threads/waits, vectors, timers, events and exports. Preserve execution budgets across coroutine and error-handling paths.
+
+Maintain containment across all runtimes:
+- Resource failures and runaway execution remain isolated.
+- Filesystem/network/native access follows grants.
+- Managed C# support does not authorize arbitrary downloaded native DLL/SO execution.
+- Use process isolation where an in-process runtime cannot enforce the required boundary.
+
+Acceptance:
+Lua, JavaScript and C# each run real client and server resources. A cross-language dependency/export example works. Restart, failure, runaway execution and revoked permissions are tested. Empty adapters or manifest-only language declarations do not qualify.
+
+11. Reusable gameplay resources and developer experience
+
+Ship reusable resources and redistributable examples demonstrating:
+- Teleport markers and interaction zones.
+- Checkpoints, pickups and a server-controlled competition.
+- Shared moving props.
+- A private competition instance.
+- Persistent progression or inventory.
+- Browser UI and proximity/radio controls.
+- A custom park with native grind rails.
+- Animation/appearance customization.
+- Cross-language resource cooperation.
+
+Keep game-mode policies in resources and general mechanisms in the engine.
+
+Document authoring, API versions, permissions, supported compatibility, migrations, configuration, limits, diagnostics and deployment prerequisites.
+
+Provide actionable per-resource errors and useful timing/memory/network diagnostics so authors can investigate failures and expensive scripts.
+
+EXECUTION
+
+Order the work by dependency. Establish shared contracts first, then implement vertical slices with real integration.
+
+Use subagents for independent work with explicit ownership. Coordinate Cargo runs so concurrent builds do not share target directories. Verify delegated changes yourself.
+
+Choose necessary dependencies deliberately, recording platform support, licensing and maintenance tradeoffs. Preserve existing local mods, peer sessions and dedicated behavior.
+
+Use synthetic or redistributable fixtures. Keep retail assets, credentials and private maps out of patches and external services.
+
+Maintain the progress ledger throughout implementation. When a platform or external prerequisite blocks one check, continue independent work and record exactly what remains unverified.
+
+VERIFICATION
+
+Run focused tests during implementation and broader affected checks at integration milestones.
+
+Retain and freshly verify the existing resource guarantees:
+- Cold download and activation.
+- Warm reconnect and full-process cache reuse.
+- Cross-server reuse of identical immutable content.
+- Changed/corrupt/interrupted download handling.
+- Confidential server files excluded from client packages.
+- Dependency and generation correctness.
+- Capability and persistence isolation.
+- Stop/restart/disconnect cleanup.
+- Direct UDP without Steam.
+- Existing local Lua mods and peer behavior.
+- Portable Windows/Linux content identities.
+
+Add real process/socket/filesystem integration tests for the new platform features, graphical checks for rendering/UI/maps/animation, audio checks for voice, and workload tests for scale.
+
+Update Linux/Windows CI and packaging. Report unavailable native Windows, graphical, audio or mixed-platform checks as unverified; cross-compilation alone does not prove runtime behavior.
+
+Run graphify update . after code changes. Keep its generated output local and ignored, and report update failures.
+
+COMPLETION
+
+Complete every required capability and its applicable acceptance criteria. A demonstration, interface declaration, mocked integration or documented future plan is not completion of the corresponding feature.
+
+If work is interrupted, leave a precise continuation record with:
+- Current branch and baseline.
+- Completed changes.
+- Pending requirements.
+- Commands and execution evidence.
+- Concrete blockers and unavailable validation.
+- The next dependency-ordered implementation steps.
+
+Finish with:
+- Implemented capabilities and how to run them.
+- A requirement-to-evidence matrix.
+- Actual test, integration and performance results.
+- Remaining incomplete work and unavailable validation.
+- Supported compatibility and deliberate GTA-specific exclusions.
+- Confirmation that existing work was preserved and no new commits, pushes, publication or deployment occurred during this task.
+
+Do not claim full completion while required functionality remains stubbed, deferred or unverified.

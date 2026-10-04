@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+skate-voice = { path = "../skate-voice", default-features = false }
+skate-browser = { path = "../skate-browser" }
+rquickjs = { version = "=0.14.0", default-features = false, features = ["parallel"] }
 blake3 = "1.8.2"
 mlua = { version = "=0.12.1", features = ["lua54", "vendored", "serde", "send"] }
 serde.workspace = true
@@ -18,3 +21,9 @@ zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 [[example]]
 name = "check_mod"
 path = "examples/check_mod.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Isolation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.189"

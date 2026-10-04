@@ -76,6 +76,17 @@ fn advance_inner(
     super::solid_contacts::append(&mut contacts, &skeleton_volumes,
         &physics.network_proxies.solids, physics, skater);
     physics.network_contacts = contacts.len() - before_remote;
+    physics.network_contact_ids.clear();
+    for contact in &contacts[before_remote..] {
+        let skate_core::physics::board_step::CollisionBody::Attached(index) = contact.body_b else { continue };
+        let Some((_, solid)) = physics.network_proxies.solids.iter().find(|(reaction, _)| *reaction == index) else { continue };
+        if solid.id & 0xc000_0000 == 0x4000_0000 {
+            let id = solid.id & 0x3fff_ffff;
+            if physics.network_contact_ids.len() < skate_net::entities::MAX_ENTITIES && !physics.network_contact_ids.contains(&id) {
+                physics.network_contact_ids.push(id);
+            }
+        }
+    }
     physics.contact_count = contacts.len();
     let dt = physics.settings.step.simulation.time_step;
     let mut joints = crate::modding::player_physics::joints(skater)

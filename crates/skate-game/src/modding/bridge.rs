@@ -58,13 +58,15 @@ impl ExternalQueries for MovingQueries {
 pub(crate) fn push_dynamics_into_boardworld(
     mods: &Mods, physics: &mut crate::physics::GamePhysics,
     skater: &crate::physics::SkaterRuntime,
+    shared: Vec<SolidBody>,
 ) {
     let skip: BTreeSet<u64> = mods.skater_proxies.values().copied().collect();
     let attached = mods.attach.as_ref().and_then(|a| mods.bodies.get(&(a.owner.clone(),a.body.clone()))).copied();
     let local: BTreeSet<_> = mods.bodies.iter().filter(|((o,_),_)| !o.starts_with('@')).map(|(_,id)| *id).collect();
     let solids: Vec<_> = mods.world.solid_bodies().into_iter()
         .filter(|b| !skip.contains(&b.id) && Some(b.id) != attached).collect();
-    physics.set_external_queries(Some(Arc::new(MovingQueries(solids.clone()))));
+    let mut queries=solids.clone(); queries.extend(shared);
+    physics.set_external_queries(Some(Arc::new(MovingQueries(queries))));
     let mut proxies = std::mem::take(&mut physics.network_proxies);
     for solid in solids {
         let owned = local.contains(&solid.id);
@@ -118,9 +120,13 @@ pub(crate) fn push_skater_into_rapier(
 pub(crate) fn dynamics_to_board(
     mods: Option<Res<Mods>>, mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>, replay: Res<crate::replay::Replay>,
+    shared: Res<crate::multiplayer::entities::SharedObjects>,
 ) {
     if replay.active { return; }
-    if let Some(mods) = mods { push_dynamics_into_boardworld(&mods,&mut physics,&skater); }
+    // Both islands contribute walking/board ray queries; native shared-object
+    // solids were already appended by the multiplayer fixed-update adapter.
+    if let Some(mods)=mods {push_dynamics_into_boardworld(&mods,&mut physics,&skater,shared.solids());}
+    else {physics.set_external_queries(Some(Arc::new(MovingQueries(shared.solids()))));}
 }
 
 pub(crate) fn sync_network(world: &mut World) { super::replication::sync(world); }

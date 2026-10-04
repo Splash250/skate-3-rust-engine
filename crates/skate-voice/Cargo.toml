@@ -1,0 +1,17 @@
+[package]
+name = "skate-voice"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["codec"]
+codec = ["dep:opus"]
+devices = ["codec", "dep:cpal"]
+
+[dependencies]
+skate-net = { path = "../skate-net" }
+serde.workspace = true
+serde_json.workspace = true
+opus = { version = "=0.4.0", optional = true }
+cpal = { version = "=0.15.3", optional = true }

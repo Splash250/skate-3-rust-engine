@@ -77,6 +77,7 @@ pub(super) struct Services<'a, C> {
     pub toolkit: &'a mut Option<BoardToolkit>,
     pub pending_teleport: &'a mut Option<AnimationPartTransform>,
     pub pending_velocity: &'a mut Option<[f32; 3]>,
+    pub pending_actor_reset: &'a mut bool,
 }
 impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
     type Error = String;
@@ -117,8 +118,8 @@ impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
     ) -> Result<(), String> {
         // Native handles its state request before its explicit reset bit.
         // Host requests remain owned until the entire reset succeeds.
-        if physical.state.flag_61 != 0 {
-            let target = self.host.published_board_transform;
+        let actor_target = (physical.state.flag_61 != 0).then_some(self.host.published_board_transform);
+        if let Some(target) = actor_target {
             self.callbacks
                 .teleport(self.board, self.ground, target, player, physical, output)?;
         }
@@ -135,11 +136,21 @@ impl<C: PlayerInputCallbacks> InputPhaseServices for Services<'_, C> {
             player.flags_1296 &= !(1 << 19);
         }
         if let Some(target) = *self.pending_teleport {
-            self.callbacks
-                .teleport(self.board, self.ground, target, player, physical, output)?;
-            *self.pending_teleport = None;
-            if let Some(v) = self.pending_velocity.take() {
-                apply_board_linvel(self.board, v);
+            let complete = if *self.pending_actor_reset {
+                // A preceding recovery may also publish State61: only this
+                // approved target commits the retained request and velocity.
+                actor_target == Some(target)
+            } else {
+                self.callbacks
+                    .teleport(self.board, self.ground, target, player, physical, output)?;
+                true
+            };
+            if complete {
+                *self.pending_teleport = None;
+                *self.pending_actor_reset = false;
+                if let Some(v) = self.pending_velocity.take() {
+                    apply_board_linvel(self.board, v);
+                }
             }
         }
         Ok(())

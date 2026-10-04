@@ -85,3 +85,51 @@ fn duplicate_dependency_keys_are_not_silently_replaced() {
     );
     assert!(parsed.is_err());
 }
+
+#[test]
+fn javascript_manifests_require_matching_source_extensions() {
+    let mut m=manifest("javascript-example");
+    m.language="javascript".into();
+    assert!(m.validate().is_err());
+    m.client_scripts=vec!["client.js".into()];
+    m.server_scripts=vec!["server.js".into()];
+    m.validate().unwrap();
+    assert_eq!(m.client_projection().server_scripts,Vec::<String>::new());
+    m.language="csharp".into();
+    assert!(m.validate().is_err());
+    m.shared_scripts=vec!["main.cs".into()];
+    m.client_scripts.clear();
+    m.server_scripts.clear();
+    assert!(m.validate().is_ok());
+}
+
+#[test]
+fn required_world_manifest_names_one_public_skate_package() {
+    let value=serde_json::json!({"format":1,"api":1,"id":"park","version":"1","language":"lua",
+        "files":["park.skate"],"world":{"map":"park.skate","required":true}});
+    let map:Manifest=serde_json::from_value(value.clone()).expect("world manifest must be supported");
+    map.validate().unwrap();
+    for field in [serde_json::json!({"map":"../park.skate","required":true}),
+        serde_json::json!({"map":"missing.skate","required":true}),
+        serde_json::json!({"map":"park.glb","required":true}),
+        serde_json::json!({"map":"park.skate","required":false})] {
+        let mut invalid=value.clone(); invalid["world"]=field;
+        let parsed:Manifest=serde_json::from_value(invalid).unwrap();
+        assert!(parsed.validate().is_err());
+    }
+}
+
+#[test]
+fn authored_world_lods_are_public_ordered_bounded_and_independent() {
+    let value=serde_json::json!({"format":1,"api":1,"id":"park","version":"1","language":"lua",
+        "files":["park.skate","far.skate"],"world":{"map":"park.skate","required":true,"lods":[{"map":"far.skate","distance":200}]}});
+    let manifest:Manifest=serde_json::from_value(value.clone()).expect("authored LOD contract");
+    manifest.validate().unwrap();
+    for lods in [serde_json::json!([{"map":"park.skate","distance":200}]),
+        serde_json::json!([{"map":"hidden.skate","distance":200}]),
+        serde_json::json!([{"map":"far.skate","distance":0}]),
+        serde_json::json!([{"map":"far.skate","distance":200},{"map":"far.skate","distance":100}])] {
+        let mut invalid=value.clone();invalid["world"]["lods"]=lods;
+        assert!(serde_json::from_value::<Manifest>(invalid).unwrap().validate().is_err());
+    }
+}

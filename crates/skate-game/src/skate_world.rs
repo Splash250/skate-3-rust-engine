@@ -128,6 +128,8 @@ pub(crate) fn spawn(
                 // Precomputed so Bevy's CalculateBounds never walks this mesh
                 // (RFC 1 D4). The extents were already computed while merging.
                 aabb,
+                crate::map_render::streaming::Cell {min:(aabb.center-aabb.half_extents).to_array(),
+                    max:(aabb.center+aabb.half_extents).to_array(),near:commands.render_range[0],far:commands.render_range[1]},
             ));
             stats.draws += 1;
         }

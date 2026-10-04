@@ -195,3 +195,33 @@ fn dedicated_walking_collision_has_one_owner_and_accepted_attack_plays_stock_sho
         f.tick(0, None);
     }
 }
+
+#[test]
+#[ignore = "requires locally owned stock animation banks and collections via SKATE3_ASSET_ROOT"]
+fn server_travel_has_one_native_relocation_and_keeps_requested_velocity() {
+    let mut f = Fixture::load();
+    for _ in 0..30 {f.tick(0,None);}
+    let generation=f.skater.travel_generation;
+    let mut target=skate_core::physics::skeleton_animation_record::IDENTITY;
+    // A nonzero heading crosses the actor packet as exact float bits too.
+    let (s,c)=1.1f32.sin_cos();
+    target[0]=[c,0.,-s,0.];target[2]=[s,0.,c,0.];
+    target[3]=[5.,2.,0.,0.];
+    f.skater.travel(target,Some([2.,0.,0.])).unwrap();
+    f.tick(0,None);
+    assert_eq!(f.skater.travel_generation,generation,"actor-mediated travel must wait for State61, not also relocate directly");
+    assert!(f.skater.player_input.pending_teleport().is_some());
+    f.tick(0,None);
+    assert_eq!(f.skater.travel_generation,generation+1);
+    assert!(f.skater.player_input.pending_teleport().is_none());
+    let deck=f.physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()];
+    assert!(deck.rates.linear_velocity.x>1.9,"native relocation must preserve supplied launch velocity: {:?}",deck.rates.linear_velocity);
+    for _ in 0..8 {f.tick(0,None);}
+    assert_eq!(f.skater.travel_generation,generation+1,"one server approval must not trigger a second native recovery");
+    // Low-level input requests retain their immediate reset path.
+    target[3]=[8.,2.,0.,0.];
+    f.skater.player_input.request_teleport(target).unwrap();
+    f.tick(0,None);
+    assert_eq!(f.skater.travel_generation,generation+2);
+    assert!(f.skater.player_input.pending_teleport().is_none());
+}

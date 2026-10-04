@@ -11,6 +11,41 @@ fn a_pending_request_cannot_be_replaced_by_another_menu_action() {
 }
 
 #[test]
+fn superseded_resource_unmount_releases_loading_menu_and_pause() {
+    for previously_paused in [false, true] {
+    let mut world = World::new();
+    let mut time = Time::<Virtual>::default();
+    time.pause();
+    world.insert_resource(time);
+    world.insert_resource(crate::graphics_menu::Menu::transition_test_menu());
+    let entry = Entry { label: "Retained required world".into(), path: None };
+    // A hot reload can remount the active world while an obsolete fallback
+    // worker is completing. Its result, including an error, no longer owns UI.
+    let job = std::thread::spawn(|| Err::<PreparedWorld, String>("obsolete fallback result".into()));
+    while !job.is_finished() { std::thread::yield_now(); }
+    world.insert_resource(MapTransition {
+        active: Some("retained-world".into()),
+        desired: Some(ResourceTarget { key: "retained-world".into(), entry: entry.clone(),
+            decoded_budget: 1024, lods: Vec::new(), streaming: Default::default() }),
+        operation: Some((None, None)),
+        resource_pause: Some((previously_paused, previously_paused)),
+        phase: Phase::Loading { entry, progress: Arc::new(AtomicU8::new(0)), job },
+        ..Default::default()
+    });
+    poll(&mut world);
+    poll(&mut world);
+    assert_eq!(world.resource::<crate::graphics_menu::Menu>().open, previously_paused,
+        "a cancelled fallback must restore the menu state before loading");
+    assert_eq!(world.resource::<Time<Virtual>>().is_paused(), previously_paused);
+    let transition = world.resource::<MapTransition>();
+    assert!(!transition.busy());
+    assert!(transition.operation.is_none());
+    assert!(transition.resource_error.is_none(), "obsolete worker failures must not poison the retained world");
+    assert_eq!(transition.active.as_deref(), Some("retained-world"));
+    }
+}
+
+#[test]
 #[ignore = "requires private installed assets; CPU lifecycle only, no gameplay"]
 fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     let root = PathBuf::from(std::env::var("SKATE_TRANSITION_TEST_ASSETS").unwrap()).canonicalize().unwrap();
@@ -39,6 +74,7 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     world.init_resource::<Assets<Image>>();
     world.init_resource::<Assets<StandardMaterial>>();
     world.init_resource::<Assets<crate::retail_render::WorldMaterial>>();
+    world.init_resource::<Assets<crate::retail_sky::SkyMaterial>>();
     world.init_resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>();
     let character = world.spawn((crate::world::PlayerRoot, Transform::default())).id();
     let mut initial = PreparedScene::new(&world);

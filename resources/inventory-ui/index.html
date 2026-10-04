@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your inventory</title><link rel="stylesheet" href="inventory.css"><script defer src="inventory.js"></script>
+</head>
+<body>
+<header><h1>Your inventory</h1><button id="close" class="quiet" type="button">Back to park <kbd>Esc</kbd></button></header>
+<main>
+<section class="bag" aria-labelledby="bag-heading">
+<h2 id="bag-heading">In your bag</h2>
+<p id="empty">Your bag is empty. Pick up something for your next session.</p>
+<ul id="owned"></ul>
+<div class="balance"><span>Available coins</span><strong id="coins">—</strong></div>
+<p class="note">Coins belong to this server. Your inventory is saved to your account.</p>
+</section>
+<section class="shop" aria-labelledby="shop-heading">
+<div class="section-title"><h2 id="shop-heading">Park shop</h2><button id="refresh" class="quiet" type="button">Refresh</button></div>
+<p class="intro">A few essentials for your kit.</p>
+<ul id="catalog" aria-busy="true"><li class="loading">Loading inventory…</li></ul>
+</section>
+</main>
+<footer><p id="status" role="status" aria-live="polite">Connecting to the inventory…</p><span>Press I in the park to reopen</span></footer>
+</body>
+</html>

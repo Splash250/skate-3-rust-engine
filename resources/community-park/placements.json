@@ -1,0 +1,109 @@
+{
+  "format": 1,
+  "name": "Community Practice Park",
+  "spawn": [
+    -8,
+    1,
+    0
+  ],
+  "heading": 0,
+  "objects": [
+    {
+      "id": "floor",
+      "kind": "box",
+      "position": [
+        0,
+        -0.25,
+        0
+      ],
+      "size": [
+        50,
+        0.5,
+        50
+      ],
+      "color": [
+        0.3,
+        0.34,
+        0.4
+      ]
+    },
+    {
+      "id": "ramp",
+      "kind": "ramp",
+      "position": [
+        0,
+        1,
+        4
+      ],
+      "size": [
+        4,
+        2,
+        6
+      ],
+      "color": [
+        0.64,
+        0.44,
+        0.27
+      ]
+    },
+    {
+      "id": "rail",
+      "kind": "rail",
+      "position": [
+        5,
+        0.75,
+        0
+      ],
+      "points": [
+        [
+          0,
+          0,
+          -4
+        ],
+        [
+          0,
+          0,
+          4
+        ]
+      ],
+      "color": [
+        0.68,
+        0.74,
+        0.8
+      ]
+    },
+    {
+      "id": "entry",
+      "kind": "marker",
+      "position": [
+        -8,
+        1,
+        0
+      ],
+      "color": [
+        0.2,
+        0.8,
+        0.45
+      ]
+    },
+    {
+      "id": "finish",
+      "kind": "marker",
+      "position": [
+        8,
+        1,
+        0
+      ],
+      "size": [
+        1.5,
+        1,
+        1
+      ],
+      "color": [
+        0.9,
+        0.65,
+        0.15
+      ]
+    }
+  ]
+}

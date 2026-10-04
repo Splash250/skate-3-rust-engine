@@ -1,0 +1,1 @@
+{"format":1,"api":1,"id":"lua-rule-adapter","version":"1.0.0","language":"lua","shared_scripts":["shared.lua"],"dependencies":{"js-rules":"1.0.0"},"exports":["preview"],"capabilities":["resource.exports"]}

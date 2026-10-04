@@ -36,6 +36,7 @@ fn installed(
     std::fs::write(root.join("main.lua"), code).unwrap();
     InstalledResource {
         manifest: Manifest {
+            world: None,
             format: 1,
             api: 1,
             id: id.into(),
@@ -59,6 +60,31 @@ fn installed(
 }
 fn host(temp: &Temp, side: Side, scope: &str) -> Host {
     Host::new(side, temp.0.join("store"), scope).unwrap()
+}
+#[test]
+fn resources_repeated_large_export_failures_retain_bounded_utf8_diagnostics() {
+    let temp=Temp::new();
+    let mut h=host(&temp,Side::Server,"bounded-errors");
+    let dep=installed(&temp,"large_error",r#"
+        local message=string.rep('🙂',262144)
+        resource.export('value',function()error(message)end)
+        return {}
+    "#,&[],&["resource.exports"]);
+    let caller=installed(&temp,"caller",r#"
+        return {on_update=function()
+            for i=1,8 do pcall(resource.call,'large_error','value',nil) end
+        end}
+    "#,&["large_error"],&["resource.exports"]);
+    h.install(vec![dep,caller]).unwrap();h.start_all().unwrap();
+    h.tick(0.01,json!({}));
+    assert!(!h.running("large_error"));assert!(!h.running("caller"));
+    let sizes:Vec<_>=h.diagnostics.iter().map(String::len).collect();
+    assert_eq!(sizes.len(),1,"one pending export failure per owner");
+    assert!(sizes.iter().all(|&size|size<=2048),"retained diagnostic byte counts: {sizes:?}");
+    assert!(h.diagnostics.iter().any(|error|error.contains("large_error")));
+    let metrics=h.runtime_metrics();
+    assert!(metrics["large_error"].errors>=8);
+    assert!(metrics["large_error"].last_error.as_ref().is_some_and(|error|error.len()<=2048));
 }
 #[test]
 fn resources_dependency_exports_events_and_lifecycle() {
@@ -373,6 +399,7 @@ fn resources_bundled_challenge_runs_and_persists_with_client_ui() {
                 generation,
                 key,
                 value,
+                ..
             } => client
                 .apply_state(&resource, generation, &key, value)
                 .unwrap(),
@@ -382,6 +409,7 @@ fn resources_bundled_challenge_runs_and_persists_with_client_ui() {
                 recipient,
                 name,
                 payload,
+                ..
             } if recipient == Some(7) || recipient.is_none() => client
                 .receive(0, &resource, generation, &name, payload)
                 .unwrap(),
@@ -731,4 +759,634 @@ fn resources_asset_object_listing_never_imports_external_images_or_buffers() {
     h.install(vec![app]).unwrap();
     h.start_all().unwrap();
     assert!(h.running("app"));
+}
+
+#[test]
+fn resources_cfx_threads_vectors_and_protected_calls() {
+    let temp = Temp::new();
+    let mut h = host(&temp, Side::Server, "cfx");
+    h.install(vec![installed(&temp, "app", r#"
+        local ok, text = pcall(function() error('ordinary failure') end)
+        assert(not ok and string.find(text, 'ordinary failure'))
+        local v = vector3(3, 4, 0)
+        assert(#v == 5 and (v + vector3(1, 2, 3)).x == 4)
+        assert((2 * v).y == 8 and (v / 2).x == 1.5)
+        CreateThread(function()
+            resource.state.set('phase', 1)
+            Wait(0)
+            resource.state.set('phase', 2)
+            assert(pcall(function() Citizen.Wait(50) end))
+            resource.state.set('phase', 3)
+        end)
+    "#, &[], &["resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    h.tick(0.01, json!({}));
+    assert_eq!(h.state("app", "phase"), Some(json!(1)));
+    h.tick(0.01, json!({}));
+    assert_eq!(h.state("app", "phase"), Some(json!(2)));
+    h.tick(0.02, json!({}));
+    assert_eq!(h.state("app", "phase"), Some(json!(2)));
+    h.tick(0.04, json!({}));
+    assert_eq!(h.state("app", "phase"), Some(json!(3)));
+    h.restart("app").unwrap();
+    assert_eq!(h.state("app", "phase"), None);
+}
+
+#[test]
+fn resources_cfx_runaways_cannot_escape_through_error_handlers_or_coroutines() {
+    if std::env::var_os("SKATE_CFX_RUNAWAY_CHILD").is_none() {
+        use std::{process::Command, time::{Duration, Instant}};
+        let mut child=Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","resources_cfx_runaways_cannot_escape_through_error_handlers_or_coroutines"])
+            .env("SKATE_CFX_RUNAWAY_CHILD","1").spawn().unwrap();
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop {
+            if let Some(status)=child.try_wait().unwrap() { assert!(status.success(),"runaway child failed"); return; }
+            if Instant::now()>=deadline { child.kill().unwrap();child.wait().unwrap();panic!("resource runaway escaped its budget"); }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let temp = Temp::new();
+    for (index, runaway) in [
+        "while true do pcall(function() while true do end end) end",
+        "while true do xpcall(function() while true do end end, function() return 'caught' end) end",
+        "local t=coroutine.create(function() while true do end end); coroutine.resume(t)",
+        "local f=coroutine.wrap(function() while true do end end); pcall(f)",
+        "xpcall(function()error('start')end,function()while true do pcall(function()while true do end end)end end)",
+        "pcall(function() local t=coroutine.create(function() local inner=coroutine.create(function()while true do end end);coroutine.resume(inner)end);coroutine.resume(t) end)",
+        "pcall(function()string.find(string.rep('a',20000),'.*.*.*.*b')end)",
+        "pcall(function()string.match(string.rep('a',20000),'.*.*.*.*b')end)",
+        "pcall(function()string.gsub(string.rep('a',20000),'.*.*.*.*b','x')end)",
+        "pcall(function()for part in string.gmatch(string.rep('a',20000),'.*.*.*.*b')do end end)",
+    ].iter().enumerate() {
+        let mut h = host(&temp, Side::Server, &format!("runaway-{index}"));
+        h.install(vec![installed(&temp, "app", &format!("CreateThread(function() {runaway} end)"), &[], &[])]).unwrap();
+        h.start_all().unwrap();
+        h.tick(0.01, json!({}));
+        assert!(!h.running("app"), "runaway {index} survived");
+        assert!(h.diagnostics.iter().any(|line| line.contains("budget")), "{:?}", h.diagnostics);
+    }
+}
+
+#[test]
+fn resources_native_patterns_preserve_token_scans_captures_and_substitution() {
+    let temp=Temp::new();
+    let mut h=host(&temp,Side::Server,"patterns");
+    h.install(vec![installed(&temp,"app",r#"
+        assert(string.find(string.rep('a',32000)..'end','end',1,true)==32001)
+        assert(string.match('example_42','^([%w_]+)$')=='example_42')
+        assert(string.match('(one(two))','%b()')=='(one(two))')
+        assert(string.match('abcabc','(%a+)%1')=='abc')
+        assert(string.gsub('one 2 three 4','%d+',function(s)return tonumber(s)*2 end)=='one 4 three 8')
+        assert(string.gsub('abc','(.)','[%1]')=='[a][b][c]')
+        assert(string.match(string.rep('a',12000),'%a+')==string.rep('a',12000))
+        local count=0
+        for word in string.gmatch(string.rep('word ',80),'%a+') do assert(word=='word');count=count+1 end
+        assert(count==80)
+        resource.state.set('ok',true)
+    "#,&[],&["resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    assert_eq!(h.state("app","ok"),Some(json!(true)));
+}
+
+#[test]
+fn resources_runtime_metrics_measure_live_vms_and_retain_generation_failure() {
+    let temp=Temp::new();
+    let mut h=host(&temp,Side::Server,"metrics");
+    h.install(vec![installed(&temp,"app",r#"
+        resource.state.set('queued',string.rep('x',1024))
+        resource.on('fail',function()error('measured failure')end)
+        return {on_update=function() local n=0;for i=1,10000 do n=n+i end end}
+    "#,&[],&["resource.state","resource.events"])]).unwrap();
+    h.start_all().unwrap();
+    h.tick(0.01,json!({}));
+    let metrics=h.runtime_metrics();
+    let live=&metrics["app"];
+    assert!(live.running && live.invocations>=3 && live.lua_heap_bytes.unwrap()>0);
+    assert!(live.total_wall_time_us>=live.max_wall_time_us && live.max_wall_time_us>0);
+    assert!(live.max_budget_units>0 && live.queued_outputs==1 && live.queued_output_accounted_bytes>=1024);
+    #[cfg(any(target_os="linux",target_os="windows"))]
+    assert!(live.total_host_cpu_time_us.is_some());
+    let generation=live.generation;
+    assert!(h.host_event("app",generation,"fail",json!(null)).is_err());
+    let metrics=h.runtime_metrics();
+    let failed=&metrics["app"];
+    assert!(!failed.running && failed.errors>0 && failed.lua_heap_bytes.is_none());
+    assert!(failed.last_error.as_ref().unwrap().contains("measured failure"));
+    assert_eq!(failed.generation,generation);
+    h.ensure("app").unwrap();
+    let metrics=h.runtime_metrics();
+    assert!(metrics["app"].running && metrics["app"].generation>generation);
+    assert_eq!(metrics["app"].errors,0);
+    assert_eq!(metrics.len(),1);
+}
+
+#[test]
+fn resources_values_and_persistence_exceed_legacy_caps_and_survive_restart() {
+    let temp = Temp::new();
+    let mut h = host(&temp, Side::Server, "larger-store");
+    h.install(vec![installed(&temp, "app", r#"
+        local blob = string.rep('x', 8192)
+        for i=1,12 do resource.storage.set('entry'..i, blob) end
+        resource.state.set('large', resource.storage.get('entry12'))
+    "#, &[], &["resource.storage", "resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    assert_eq!(h.state("app", "large"), Some(json!("x".repeat(8192))));
+    h.restart("app").unwrap();
+    assert_eq!(h.state("app", "large"), Some(json!("x".repeat(8192))));
+    let scope = std::fs::read_dir(temp.0.join("store")).unwrap().next().unwrap().unwrap().path();
+    assert!(std::fs::metadata(scope.join("app.json")).unwrap().len() > 64 * 1024);
+}
+
+#[test]
+fn resources_configured_limits_reject_overflows_without_persisting_partial_writes() {
+    use skate_mods::resources::RuntimeLimits;
+    let temp = Temp::new();
+    let limits=RuntimeLimits { max_payload_bytes: 1024, max_storage_bytes: 128 * 1024,
+        max_storage_value_bytes: 96 * 1024, max_storage_keys: 2, max_threads: 1, ..RuntimeLimits::default() };
+    let mut h=Host::new_with_limits(Side::Server,temp.0.join("store"),"custom",limits).unwrap();
+    h.install(vec![installed(&temp,"app",r#"
+        resource.storage.set('big',string.rep('v',80*1024))
+        assert(not pcall(function()resource.storage.set('other',string.rep('x',80*1024))end))
+        assert(resource.storage.get('other')==nil)
+        assert(not pcall(function()resource.state.set('large',string.rep('x',1025))end))
+        CreateThread(function()Wait(100)end)
+        assert(not pcall(function()CreateThread(function()end)end))
+        resource.state.set('valid',true)
+    "#,&[],&["resource.storage","resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    assert_eq!(h.state("app","valid"),Some(json!(true)));
+    assert_eq!(h.state("app","large"),None);
+    h.restart("app").unwrap();
+    let invalid=RuntimeLimits{max_payload_bytes:256*1024+1,..RuntimeLimits::default()};
+    assert!(Host::new_with_limits(Side::Server,temp.0.join("store"),"bad",invalid).is_err());
+}
+
+#[test]
+fn resources_teleport_is_server_granted_and_generation_scoped() {
+    let temp=Temp::new();
+    let app=installed(&temp,"app",r#"resource.teleport('42',{position={1,2,3},instance=7})"#,&[],&["resource.teleport"]);
+    let mut h=host(&temp,Side::Server,"teleport");
+    h.install(vec![app.clone()]).unwrap();
+    h.start_all().unwrap();
+    assert!(matches!(h.drain_outputs().as_slice(),[Output::Teleport{resource,generation:1,player:42,position:[1.0,2.0,3.0],instance:Some(7),..}] if resource=="app"));
+    let mut h=host(&temp,Side::Client,"teleport");
+    h.install(vec![app.clone()]).unwrap();
+    assert!(h.start_all().unwrap_err().contains("server-only"));
+    let mut denied=app;denied.grants.clear();
+    let mut h=host(&temp,Side::Server,"teleport");
+    h.install(vec![denied]).unwrap();
+    assert!(h.start_all().unwrap_err().contains("lacks capability"));
+}
+
+#[test]
+fn resources_async_service_requests_are_server_only_and_capability_scoped() {
+    let temp=Temp::new();
+    let app=installed(&temp,"app",r#"
+        resource.services.submit('inventory',{kind='query',statement={sql='SELECT 1',params={}}},1000)
+        resource.services.cancel('inventory')
+        assert(not pcall(function()resource.services.submit('web',{kind='http',request={url='http://127.0.0.1/'}},1000)end))
+    "#,&[],&["resource.database"]);
+    let mut h=host(&temp,Side::Server,"services");
+    h.install(vec![app.clone()]).unwrap();
+    h.start_all().unwrap();
+    assert_eq!(h.drain_outputs().len(),2);
+    let mut h=host(&temp,Side::Client,"services");
+    h.install(vec![app]).unwrap();
+    assert!(h.start_all().unwrap_err().contains("server-only"));
+}
+
+#[test]
+fn resources_service_results_reject_stale_generation_and_deliver_bounded_local_payload() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"results");
+    h.install(vec![installed(&temp,"app",r#"resource.on('service_result',function(payload,sender) assert(sender=='0');resource.state.set('result',payload)end)"#,&[],&["resource.events","resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    h.service_result("app",1,"request",json!({"ok":true})).unwrap();
+    assert_eq!(h.state("app","result"),Some(json!({"key":"request","result":{"ok":true}})));
+    h.restart("app").unwrap();
+    assert!(h.service_result("app",1,"request",json!({"ok":false})).is_err());
+    assert_eq!(h.state("app","result"),None);
+    assert!(h.service_result("app",2,"huge",json!("x".repeat(256*1024))).is_err());
+}
+
+fn installed_javascript(temp:&Temp,id:&str,code:&str,deps:&[&str],caps:&[&str])->InstalledResource {
+    let mut app=installed(temp,id,"",deps,caps);
+    std::fs::write(app.root.join("main.js"),code).unwrap();
+    app.manifest.language="javascript".into();
+    app.manifest.shared_scripts=vec!["main.js".into()];
+    app
+}
+
+#[test]
+fn resources_javascript_cross_language_lifecycle_events_and_persistence() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"javascript");
+    let javascript=installed_javascript(&temp,"js-base",r#"
+        resource.export('value', x=>({count:x.count+3}));
+        resource.on('persist', value=>resource.storage.set('count',value));
+        resource.lifecycle({on_load(){resource.emit('persist',7)}});
+    "#,&[],&["resource.exports","resource.events","resource.storage"]);
+    let lua=installed(&temp,"lua-middle",r#"resource.export('value',function(x) local v=resource.call('js-base','value',x);return {count=v.count+5} end)"#,&["js-base"],&["resource.exports"]);
+    let consumer=installed_javascript(&temp,"js-app",r#"
+        resource.lifecycle({on_load(){resource.state.set('answer',resource.call('lua-middle','value',{count:4}).count)}});
+        resource.onNet('echo',(payload,sender)=>resource.state.set('sender',sender));
+        setTimeout(()=>resource.state.set('timer',true),20);
+    "#,&["lua-middle"],&["resource.exports","resource.state","resource.network"]);
+    h.install(vec![javascript,lua,consumer]).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("js-app","answer"),Some(json!(12)));
+    h.receive(u64::MAX,"js-app",1,"echo",json!({})).unwrap();
+    assert_eq!(h.state("js-app","sender"),Some(json!(u64::MAX.to_string())));
+    h.tick(0.03,json!({}));assert_eq!(h.state("js-app","timer"),Some(json!(true)));
+    h.stop("js-base").unwrap();assert!(!h.running("js-app"));
+    h.start_all().unwrap();assert_eq!(h.state("js-app","answer"),Some(json!(12)));
+}
+
+#[test]
+fn resources_javascript_client_grants_engine_commands_and_isolation() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Client,"javascript-client");
+    h.install(vec![installed_javascript(&temp,"js-client",r#"
+        if(typeof require!=='undefined'||typeof process!=='undefined'||typeof fetch!=='undefined')throw Error('ambient I/O exposed');
+        sdk.ui.text('hello','JavaScript');
+        resource.send('ready',{language:'javascript'});
+    "#,&[],&["engine.ui","resource.network"])]).unwrap();h.start_all().unwrap();
+    assert_eq!(h.drain_commands().len(),1);
+    assert!(matches!(h.drain_outputs().as_slice(),[Output::Event{name,..}] if name=="ready"));
+    h.disconnect();assert!(!h.running("js-client"));
+    let mut app=installed_javascript(&temp,"denied", "sdk.ui.text('hello','denied')",&[],&["engine.ui"]);
+    app.grants.clear();h.install(vec![app]).unwrap();assert!(h.start_all().unwrap_err().contains("capability"));
+}
+
+#[test]
+fn resources_javascript_runaways_promises_and_memory_are_contained() {
+    if std::env::var_os("SKATE_JS_RUNAWAY_CHILD").is_none() {
+        use std::{process::Command,time::{Duration,Instant}};
+        let mut child=Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","resources_javascript_runaways_promises_and_memory_are_contained"])
+            .env("SKATE_JS_RUNAWAY_CHILD","1").spawn().unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        loop {
+            if let Some(status)=child.try_wait().unwrap(){assert!(status.success(),"JavaScript runaway child failed");return;}
+            if Instant::now()>=deadline {child.kill().unwrap();child.wait().unwrap();panic!("JavaScript runaway escaped containment");}
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let temp=Temp::new();
+    for (index,body) in [
+        "while(true){try{while(true){}}catch(e){}}",
+        "const recur=()=>Promise.resolve().then(recur);recur();",
+        "const values=[];while(true)values.push('x'.repeat(1024*1024));",
+        "Promise.reject(Error('unhandled failure'));",
+    ].into_iter().enumerate() {
+        let mut h=host(&temp,Side::Server,&format!("js-runaway-{index}"));
+        h.install(vec![installed_javascript(&temp,"app",&format!("resource.lifecycle({{on_update(){{{body}}}}});"),&[],&[])]).unwrap();
+        h.start_all().unwrap();h.tick(0.01,json!({}));
+        assert!(!h.running("app"),"JavaScript failure case {index} survived");
+        assert!(!h.diagnostics.is_empty());
+    }
+    let mut h=host(&temp,Side::Server,"handled-promises");
+    h.install(vec![installed_javascript(&temp,"healthy",r#"
+        resource.lifecycle({on_update(){Promise.reject(Error('handled')).catch(()=>resource.state.set('handled',true));}});
+    "#,&[],&["resource.state"])]).unwrap();h.start_all().unwrap();h.tick(0.01,json!({}));
+    assert!(h.running("healthy"));assert_eq!(h.state("healthy","handled"),Some(json!(true)));
+}
+
+#[test]
+fn resources_bundled_javascript_lua_example_runs_both_sides_and_restarts() {
+    let temp=Temp::new();
+    let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources");
+    let resources=["js-rules","lua-rule-adapter","cross-language-demo"].map(|id| {
+        let resource_root=root.join(id);let manifest=Manifest::read(&resource_root).unwrap();
+        InstalledResource{grants:manifest.capabilities.iter().cloned().collect(),manifest,root:resource_root,generation:1}
+    });
+    let mut server=host(&temp,Side::Server,"bundled-js");server.install(resources.to_vec()).unwrap();server.start_all().unwrap();
+    assert_eq!(server.state("cross-language-demo","preview"),Some(json!({"label":"Checkpoint rule preview","points":75})));
+    assert_eq!(server.state("cross-language-demo","starts"),Some(json!(1)));
+    let mut client=host(&temp,Side::Client,"bundled-js");client.install(resources.to_vec()).unwrap();client.start_all().unwrap();
+    for out in client.drain_outputs() { if let Output::Event{resource,generation,name,payload,..}=out {server.receive(42,&resource,generation,&name,payload).unwrap();} }
+    for out in server.drain_outputs() {if let Output::Event{resource,generation,name,payload,recipient:Some(42),..}=out {client.receive(0,&resource,generation,&name,payload).unwrap();} }
+    assert_eq!(client.drain_commands().len(),1);
+    server.disconnect();
+    let mut recovered=host(&temp,Side::Server,"bundled-js");recovered.install(resources.to_vec()).unwrap();recovered.start_all().unwrap();
+    assert_eq!(recovered.state("cross-language-demo","starts"),Some(json!(2)));
+    client.disconnect();assert!(client.drain_retired().contains(&"cross-language-demo".to_string()));
+}
+
+#[test]
+fn resources_javascript_export_rejects_promises_and_custom_object_serialization() {
+    let temp=Temp::new();
+    for (index,result) in ["Promise.resolve(7)","new Date(0)"].into_iter().enumerate() {
+        let mut h=host(&temp,Side::Server,&format!("js-async-export-{index}"));
+        let js=installed_javascript(&temp,"js-dep",&format!("resource.export('value',()=>{result});"),&[],&["resource.exports"]);
+        let lua=installed(&temp,"app","return {on_update=function() resource.call('js-dep','value',{}) end}",&["js-dep"],&["resource.exports"]);
+        h.install(vec![js,lua]).unwrap();h.start_all().unwrap();h.tick(0.01,json!({}));
+        assert!(!h.running("js-dep"),"non-JSON export survived: {result}");
+        assert!(!h.running("app"));
+    }
+}
+
+#[test]
+fn resources_coroutine_close_cannot_swallow_budget_exhaustion() {
+    let temp=Temp::new();
+    let exhaust=r#"
+        local co=coroutine.create(function()
+            local closer <close> = setmetatable({}, {__close=function() while true do end end})
+            coroutine.yield()
+        end)
+        coroutine.resume(co)
+        coroutine.close(co)
+    "#;
+    let mut h=host(&temp,Side::Server,"close-callback");
+    h.install(vec![installed(&temp,"app",&format!("return {{on_update=function() {exhaust} end}}"),&[],&[])]).unwrap();
+    h.start_all().unwrap();h.tick(0.01,json!({}));
+    assert!(!h.running("app"),"native close swallowed the exhausted callback budget");
+    assert!(h.diagnostics.iter().any(|e|e.contains("budget")));
+    let mut h=host(&temp,Side::Server,"close-startup");
+    h.install(vec![installed(&temp,"app",exhaust,&[],&[])]).unwrap();
+    assert!(h.start_all().unwrap_err().contains("budget"));
+}
+
+#[test]
+fn resources_javascript_off_and_export_replacement_release_callback_slots() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"js-callback-reuse");
+    let app=installed_javascript(&temp,"app",r#"
+        let ticks=0;
+        resource.lifecycle({on_update(){
+            ticks++;
+            resource.on('temporary',()=>{});
+            resource.off('temporary');
+            resource.export('value',()=>ticks);
+        }});
+    "#,&[],&["resource.events","resource.exports"]);
+    let consumer=installed(&temp,"consumer",r#"return {on_update=function()resource.state.set('ticks',resource.call('app','value',{}))end}"#,&["app"],&["resource.exports","resource.state"]);
+    h.install(vec![app,consumer]).unwrap();h.start_all().unwrap();
+    for _ in 0..200 {h.tick(0.01,json!({}));assert!(h.running("app"),"{:?}",h.diagnostics);}
+    assert_eq!(h.state("consumer","ticks"),Some(json!(200)));
+}
+
+#[test]
+fn resources_javascript_callback_cap_survives_mutated_map_intrinsics() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"js-intrinsics");
+    h.install(vec![installed_javascript(&temp,"app",r#"
+        Object.defineProperty(Map.prototype,'size',{get(){return 0}});
+        for(let i=0;i<2000;i++)resource.lifecycle({on_event(){}});
+    "#,&[],&[])]).unwrap();
+    assert!(h.start_all().unwrap_err().contains("callback limit"));
+}
+
+#[test]
+fn resources_install_obeys_configured_resource_count() {
+    let temp=Temp::new();
+    let limits=skate_mods::resources::RuntimeLimits {max_resources:1,..Default::default()};
+    let mut h=Host::new_with_limits(Side::Server,temp.0.join("store"),"count-limit",limits).unwrap();
+    let a=installed(&temp,"one","return {}",&[],&[]);
+    let b=installed(&temp,"two","return {}",&[],&[]);
+    assert!(h.install(vec![a,b]).unwrap_err().contains("resource count"));
+}
+
+#[test]
+fn resources_scoped_state_keeps_equal_keys_separate() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"scopes");
+    let app=installed(&temp,"scoped",r#"
+local a={kind='instance',id='1'}; local b={kind='instance',id='2'}
+resource.state.set('same','one',a);resource.state.set('same','two',b)
+assert(resource.state.get('same',a)=='one','instance state leaked')
+assert(resource.state.get('same',b)=='two')
+assert(resource.state.get('same')==nil)
+resource.state.set('verified',true)
+resource.send('private',{hello=true},nil,a)
+"#,&[],&["resource.state","resource.network"]);
+    h.install(vec![app]).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("scoped","verified"),Some(json!(true)));
+}
+
+#[test]
+fn resources_client_cannot_select_private_event_scope() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Client,"scopes");
+    let app=installed(&temp,"scoped",r#"
+local ok=pcall(function()resource.send('private',{},nil,{kind='instance',id='2'})end)
+assert(not ok,'client selected private scope')
+"#,&[],&["resource.network"]);
+    h.install(vec![app]).unwrap();h.start_all().unwrap();
+}
+
+#[test]
+fn resources_voice_uses_side_grants_and_generation_owned_results() {
+    let temp=Temp::new();let mut server=host(&temp,Side::Server,"voice");
+    server.install(vec![installed(&temp,"radio",r#"
+resource.on('voice_result',function(result,sender) assert(sender=='0');resource.state.set('voice',result.ok) end)
+resource.voice.submit({kind='channel',name='team',members={'18446744073709551615'}})
+assert(not pcall(function()resource.voice.submit({kind='configure',muted=false,deafened=false})end))
+assert(not pcall(function()resource.voice.submit({kind='proximity',meters=101})end))
+assert(not pcall(function()resource.voice.submit({kind='mute',player='01',muted=true})end))
+"#,&[],&["resource.voice","resource.events","resource.state"])]).unwrap();
+    server.start_all().unwrap();assert_eq!(server.drain_outputs().len(),1);
+    let generation=server.generation("radio").unwrap();
+    server.host_event("radio",generation,"voice_result",json!({"ok":true})).unwrap();
+    assert_eq!(server.state("radio","voice"),Some(json!(true)));
+    server.ensure("radio").unwrap();
+    assert!(server.host_event("radio",generation,"voice_result",json!({"ok":false})).is_err());
+    let mut client=host(&temp,Side::Client,"voice");
+    client.install(vec![installed(&temp,"listener",r#"
+resource.voice.submit({kind='devices'})
+resource.voice.submit({kind='configure',muted=true,deafened=false})
+assert(not pcall(function()resource.voice.submit({kind='channel',name='team',members={}})end))
+"#,&[],&["engine.voice"])]).unwrap();client.start_all().unwrap();
+    assert_eq!(client.drain_commands().len(),2);assert!(client.drain_outputs().is_empty());
+    let mut denied=host(&temp,Side::Client,"denied");
+    denied.install(vec![installed(&temp,"denied","resource.voice.submit({kind='devices'})",&[],&[])]).unwrap();
+    assert!(denied.start_all().is_err());
+}
+
+#[test]
+fn resources_javascript_voice_reuses_shared_command_validation() {
+    let temp=Temp::new();let mut client=host(&temp,Side::Client,"js-voice");
+    client.install(vec![installed_javascript(&temp,"radio",r#"
+resource.voice.submit({kind:'transmit',pressed:true,channel:'team/radio'});
+sdk.submit({kind:'voice',operation:{kind:'devices'}});
+let rejected=false;try {resource.voice.submit({kind:'transmit',pressed:true,channel:'too/many/parts'});} catch(e) {rejected=true;}
+if(!rejected) throw Error('invalid voice channel accepted');
+"#,&[],&["engine.voice"])]).unwrap();
+    client.start_all().unwrap();assert_eq!(client.drain_commands().len(),2);
+}
+
+#[test]
+fn resources_world_and_bulk_transfer_preserve_owner_and_validate_destinations() {
+    let temp=Temp::new();let limits=skate_mods::resources::RuntimeLimits{max_payload_bytes:64*1024,max_queued_outputs:1024,..Default::default()};
+    let mut server=Host::new_with_limits(Side::Server,temp.0.join("store"),"world-transfer",limits.clone()).unwrap();
+    server.install(vec![installed(&temp,"world",r#"
+resource.world.command({op='rail_upsert',key='rail',instance='0',points={{0,0,0},{1,0,0}},closed=false})
+resource.transfer.start('large','data',string.rep('x',50000),{recipient='18446744073709551615',timeout_ms=10000})
+resource.transfer.cancel('large')
+assert(not pcall(function()resource.transfer.start('bad','data',{}, {})end))
+assert(not pcall(function()resource.transfer.start('bad','data',{}, {recipient='01'})end))
+"#,&[],&["resource.world","resource.events"])]).unwrap();
+    server.start_all().unwrap();assert_eq!(server.drain_outputs().len(),3);
+    let mut client=Host::new_with_limits(Side::Client,temp.0.join("store"),"world-transfer",limits).unwrap();
+    client.install(vec![installed_javascript(&temp,"bulk",r#"
+resource.transfer.start('large','data','x'.repeat(50000),{});
+resource.transfer.cancel('large');
+let denied=false;try{resource.transfer.start('bad','data',{}, {recipient:'9'});}catch(e){denied=true;}if(!denied)throw Error('client selected recipient');
+"#,&[],&["resource.events"])]).unwrap();client.start_all().unwrap();assert_eq!(client.drain_outputs().len(),2);
+}
+
+#[test]
+fn resources_animation_commands_are_versioned_client_cosmetics() {
+    let temp=Temp::new();let mut client=host(&temp,Side::Client,"animation");
+    client.install(vec![installed_javascript(&temp,"actor",r#"
+sdk.animation.submit({op:'load',key:'moves',path:'clips.json'});
+sdk.animation.submit({op:'play',key:'dance',bank:'moves',clip:'nod',target:'18446744073709551615'});
+let denied=false;try{sdk.submit({kind:'animation',version:2,operation:{op:'stop',key:'dance'}});}catch(e){denied=true;}if(!denied)throw Error('unsupported version');
+"#,&[],&["engine.animation"])]).unwrap();client.start_all().unwrap();assert_eq!(client.drain_commands().len(),2);
+    let mut server=host(&temp,Side::Server,"animation");server.install(vec![installed(&temp,"actor","sdk.animation.submit({op='stop',key='dance'})",&[],&["engine.animation"])]).unwrap();assert!(server.start_all().is_err());
+}
+
+#[test]
+fn resources_competition_is_server_only_and_has_no_score_submission() {
+    let temp=Temp::new();let mut server=host(&temp,Side::Server,"competition");
+    server.install(vec![installed(&temp,"race",r#"
+resource.competition.submit({kind='start',name='race',player='9'})
+assert(not pcall(function()resource.competition.submit({kind='score',points=1000})end))
+"#,&[],&["resource.competition"])]).unwrap();server.start_all().unwrap();assert_eq!(server.drain_outputs().len(),1);
+    let mut client=host(&temp,Side::Client,"competition");client.install(vec![installed(&temp,"race","resource.competition.submit({kind='start',name='race',player='9'})",&[],&["resource.competition"])]).unwrap();assert!(client.start_all().is_err());
+}
+
+#[test]
+fn resources_bundled_presentation_replication_replays_authorized_selection_and_retires() {
+    let temp=Temp::new();let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/presentation-demo");
+    let manifest:Manifest=serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();
+    manifest.validate().unwrap();
+    let package=InstalledResource{grants:manifest.capabilities.iter().cloned().collect(),manifest,root,generation:1};
+    let mut server=host(&temp,Side::Server,"presentation");server.install(vec![package.clone()]).unwrap();server.start_all().unwrap();
+    let players=json!({"players":[{"id":"1","instance":"0"},{"id":"2","instance":"0"}]});
+    server.tick(0.01,players.clone());server.drain_outputs();
+    let mut client=host(&temp,Side::Client,"presentation");client.install(vec![package]).unwrap();client.start_all().unwrap();client.drain_commands();
+    for output in client.drain_outputs() {if let Output::Event{resource,generation,name,payload,..}=output {server.receive(1,&resource,generation,&name,payload).unwrap();}}
+    server.receive(2,"presentation-demo",1,"choose",json!({"mode":"nod","skin":true,"hat":true})).unwrap();
+    // A payload target cannot change the authenticated sender's ownership.
+    server.receive(1,"presentation-demo",1,"choose",json!({"mode":"off","target":"2","skin":false,"hat":false})).unwrap();
+    server.tick(0.01,players);
+    let scope=json!({"kind":"instance","id":"0"});
+    let state=server.scoped_state("presentation-demo","actors",&scope).unwrap().unwrap();
+    assert_eq!(state["1"]["mode"],"off");assert_eq!(state["2"]["mode"],"nod");
+    client.apply_scoped_state("presentation-demo",1,"actors",state,scope.clone()).unwrap();
+    client.receive(0,"presentation-demo",1,"room",json!({"id":"0"})).unwrap();client.tick(0.01,json!({}));
+    let commands=client.drain_commands();
+    assert!(commands.iter().any(|(_,c)|matches!(c,skate_mods::Command::Animation{operation:skate_mods::animation::Operation::Appearance{target,..},..} if target=="2")));
+    assert!(!commands.iter().any(|(_,c)|matches!(c,skate_mods::Command::Animation{operation:skate_mods::animation::Operation::Appearance{target,..},..} if target=="1")));
+    server.tick(0.01,json!({"players":[{"id":"1","instance":"0"}]}));
+    let state=server.scoped_state("presentation-demo","actors",&scope).unwrap().unwrap();
+    client.apply_scoped_state("presentation-demo",1,"actors",state,scope).unwrap();client.tick(0.01,json!({}));
+    assert!(client.drain_commands().iter().any(|(_,c)|matches!(c,skate_mods::Command::Animation{operation:skate_mods::animation::Operation::Remove{key},..} if key=="2_skin")));
+}
+
+#[test]
+fn resources_bundled_park_assigns_64_distinct_trusted_pads_once_and_reuses_departures() {
+    let temp=Temp::new();
+    let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/community-park");
+    let manifest:Manifest=serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();
+    manifest.validate().unwrap();
+    let package=InstalledResource{grants:manifest.capabilities.iter().cloned().collect(),manifest,root,generation:1};
+    let mut server=host(&temp,Side::Server,"park-pads");
+    server.install(vec![package]).unwrap();server.start_all().unwrap();
+    let mut players:Vec<_>=(1..=64).map(|id|json!({"id":id.to_string(),"instance":"0","position":[1000,1,1000]})).collect();
+    server.tick(0.01,json!({"players":players}));
+    server.call("community-park","on_fixed_update",json!({"dt":0.01}));
+    assert!(server.running("community-park"),"{:?}",server.diagnostics);
+    let pads:std::collections::BTreeMap<_,_>=server.drain_outputs().into_iter().filter_map(|output|match output {
+        Output::Teleport{resource,generation,player,position,instance,velocity,..}=>{
+            assert_eq!(resource,"community-park");assert_eq!(generation,1);
+            assert_eq!(instance,Some(0));assert_eq!(velocity,Some([0.;3]));Some((player,position))
+        },_=>None,
+    }).collect();
+    assert_eq!(pads.len(),64);
+    let distinct:BTreeSet<_>=pads.values().map(|p|p.map(f32::to_bits)).collect();assert_eq!(distinct.len(),64);
+    for _ in 0..3 {server.call("community-park","on_fixed_update",json!({"dt":0.01}));}
+    assert!(!server.drain_outputs().iter().any(|out|matches!(out,Output::Teleport{..})));
+    players.remove(0);
+    server.tick(0.01,json!({"players":players}));server.call("community-park","on_fixed_update",json!({"dt":0.01}));server.drain_outputs();
+    players.push(json!({"id":"65","instance":"0","position":[1000,1,1000]}));
+    server.tick(0.01,json!({"players":players}));server.call("community-park","on_fixed_update",json!({"dt":0.01}));
+    let outputs=server.drain_outputs();
+    assert_eq!(outputs.iter().filter(|out|matches!(out,Output::Teleport{..})).count(),1);
+    assert!(outputs.iter().any(|out|matches!(out,Output::Teleport{player:65,position,..} if position==&pads[&1])));
+    assert!(server.running("community-park"),"{:?}",server.diagnostics);
+
+    // Dedicated travel briefly removes players from admitted observations.
+    // Neither returning nor first-observed private actors belong on park pads.
+    server.tick(0.01,json!({"players":[]}));
+    server.call("community-park","on_fixed_update",json!({"dt":0.01}));
+    server.drain_outputs();
+    let mut private_teleports=Vec::new();
+    players=vec![json!({"id":"1","instance":"7","position":[1000,1,1000]})];
+    for new_private in [None,Some("66")] {
+        if let Some(id)=new_private {players.push(json!({"id":id,"instance":"7","position":[1000,1,1000]}));}
+        server.tick(0.01,json!({"players":players}));
+        server.call("community-park","on_fixed_update",json!({"dt":0.01}));
+        private_teleports.extend(server.drain_outputs().into_iter().filter_map(|output|match output {
+            Output::Teleport{player,..}=>Some(player),_=>None,
+        }));
+    }
+    assert!(server.running("community-park"),"{:?}",server.diagnostics);
+    assert!(private_teleports.is_empty(),"private-instance actors were moved into the park: {private_teleports:?}");
+    players[1]["instance"]=json!("0");
+    server.tick(0.01,json!({"players":players}));
+    server.call("community-park","on_fixed_update",json!({"dt":0.01}));
+    let public_teleports:Vec<_>=server.drain_outputs().into_iter().filter_map(|output|match output {
+        Output::Teleport{player,position,..}=>Some((player,position)),_=>None,
+    }).collect();
+    assert_eq!(public_teleports,vec![(66,pads[&1])],"public admission should claim the first free pad");
+}
+
+#[test]
+fn resources_scoped_state_is_bounded_and_pruned_on_visibility_change() {
+    let temp=Temp::new();
+    let limits=skate_mods::resources::RuntimeLimits {max_state_keys:2,..Default::default()};
+    let mut h=Host::new_with_limits(Side::Client,temp.0.join("store"),"scopes",limits).unwrap();
+    h.install(vec![installed(&temp,"scope","return {}",&[],&[])]).unwrap();h.start_all().unwrap();
+    let generation=h.generation("scope").unwrap();
+    let a=json!({"kind":"instance","id":"0"});let b=json!({"kind":"player","id":"9"});
+    h.apply_scoped_state("scope",generation,"same",json!(1),a.clone()).unwrap();
+    h.apply_scoped_state("scope",generation,"same",json!(2),b.clone()).unwrap();
+    assert!(h.apply_state("scope",generation,"third",json!(3)).is_err());
+    assert_eq!(h.scoped_state("scope","same",&a).unwrap(),Some(json!(1)));
+    assert!(h.apply_scoped_state("scope",generation,"same",json!(0),json!({"kind":"player","id":"0"})).is_err());
+    assert!(h.apply_scoped_state("scope",generation,"same",json!(0),json!({"kind":"resource","id":"1"})).is_err());
+    h.retain_scoped_state(&[b.clone()]);assert_eq!(h.scoped_state("scope","same",&a).unwrap(),None);
+    assert_eq!(h.scoped_state("scope","same",&b).unwrap(),Some(json!(2)));
+    h.apply_state("scope",generation,"global",json!(3)).unwrap();h.retain_scoped_state(&[]);
+    assert_eq!(h.state("scope","global"),Some(json!(3)));assert_eq!(h.scoped_states().len(),1);
+    h.stop("scope").unwrap();assert!(h.scoped_states().is_empty());
+}
+
+#[test]
+fn resources_javascript_scopes_preserve_metadata_and_entity_observations() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"js-scopes");
+    h.set_snapshot(std::sync::Arc::new(json!({"entities":[{"id":"18446744073709551615"}]})),Default::default());
+    let app=installed_javascript(&temp,"scoped",r#"
+const scope={kind:'entity',id:'18446744073709551615'};
+resource.state.set('secret',{value:7},scope);
+if(resource.state.get('secret')!==null||resource.state.get('secret',scope).value!==7)throw Error('scope mixed');
+if(resource.entities.all()[0].id!==scope.id)throw Error('entity identity lost');
+resource.send('private',{hello:true},null,scope);
+"#,&[],&["resource.state","resource.network","resource.entities"]);
+    h.install(vec![app]).unwrap();h.start_all().unwrap();
+    let scope=json!({"kind":"entity","id":"18446744073709551615"});
+    assert!(h.drain_outputs().iter().any(|o|matches!(o,Output::Event{scope:s,..} if s==&scope)));
+}
+
+#[test]
+fn resources_host_completion_and_private_target_retirement_are_generation_safe() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"targets");
+    let app=installed(&temp,"scope",r#"
+resource.on('voice_result',function(value,sender)assert(sender=='0');resource.state.set('completed',value)end)
+resource.state.set('a',1,{kind='player',id='9'})
+resource.state.set('b',2,{kind='entity',id='4'})
+resource.state.set('c',3,{kind='instance',id='0'})
+"#,&[],&["resource.events","resource.state"]);
+    h.install(vec![app]).unwrap();h.start_all().unwrap();let generation=h.generation("scope").unwrap();
+    assert!(h.host_event("scope",generation+1,"voice_result",json!(true)).is_err());
+    h.host_event("scope",generation,"voice_result",json!(true)).unwrap();assert_eq!(h.state("scope","completed"),Some(json!(true)));
+    h.prune_scoped_targets(&[9],&[("scope".into(),4,generation)]);assert_eq!(h.scoped_states().len(),4);
+    h.prune_scoped_targets(&[],&[("scope".into(),4,generation+1)]);assert_eq!(h.scoped_states().len(),2);
+    assert!(!h.drain_outputs().iter().any(|o|matches!(o,Output::State{scope,..} if scope["kind"]=="player"||scope["kind"]=="entity")));
+    h.prune_resource_scope("scope",&json!({"kind":"instance","id":"0"})).unwrap();assert_eq!(h.scoped_states().len(),1);
 }

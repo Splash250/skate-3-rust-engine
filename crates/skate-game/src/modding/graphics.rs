@@ -4,6 +4,8 @@ use super::Mods;
 use bevy::{prelude::*, scene::{SceneInstance,SceneSpawner}};
 use skate_mods::scene::{GraphicsDefinition, NodeState, TransformOptions, TransformState};
 use std::{collections::{BTreeMap,BTreeSet},time::Instant};
+#[path="asset_limits.rs"]
+pub(super) mod asset_limits;
 
 #[derive(Clone)]
 pub(super) struct TimedNode { pub state:NodeState, pub received:Instant }
@@ -55,8 +57,9 @@ pub(super) fn asset_path(mods:&Mods, package_id:&str, path:&str) -> Result<Strin
     if mods.server_selected {
         // Downloaded GLBs cannot smuggle AssetServer reads into another resource,
         // the cache's private state/policy files, or an external URL via glTF URIs.
-        let bytes=skate_mods::read_bounded(&root,path,16*1024*1024)?;
-        validate_resource_glb(&bytes)?;
+        let limits=asset_limits::Limits::read(&mods.resource_asset_root)?;
+        let bytes=skate_mods::read_bounded(&root,path,limits.model_file_bytes)?;
+        validate_resource_glb_with_limits(&bytes,limits)?;
     }
     let (source, reader) = if mods.server_selected {
         ("resources", mods.resource_asset_root.clone())
@@ -68,7 +71,11 @@ pub(super) fn asset_path(mods:&Mods, package_id:&str, path:&str) -> Result<Strin
 
 /// Read image headers before any pixel allocation. The same limits already
 /// applied to procedural PNG textures, but must be checked before decoding.
+#[cfg(test)]
 pub(super) fn bounded_image_dimensions(bytes: &[u8]) -> Result<u64, String> {
+    image_dimensions_with_limits(bytes,asset_limits::Limits::default())
+}
+fn image_dimensions_with_limits(bytes:&[u8],budget:asset_limits::Limits)->Result<u64,String> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format().map_err(|e| format!("image header: {e}"))?;
     let bytes_per_pixel=match reader.format() {
@@ -104,22 +111,28 @@ pub(super) fn bounded_image_dimensions(bytes: &[u8]) -> Result<u64, String> {
         Some(image::ImageFormat::Jpeg) => 4,
         _ => return Err("resource images must use PNG or JPEG".into()),
     };
-    let mut limits=image::Limits::default();limits.max_alloc=Some(32*1024*1024);
+    let mut limits=image::Limits::default();limits.max_alloc=Some(budget.texture_bytes.saturating_mul(2));
     reader.limits(limits);
     let (width, height) = reader.into_dimensions().map_err(|e| format!("image header: {e}"))?;
     let pixels = u64::from(width) * u64::from(height);
     let decoded=pixels*bytes_per_pixel;
-    if width == 0 || height == 0 || width > 2048 || height > 2048 || decoded > 16 * 1024 * 1024 {
-        return Err("image dimensions exceed 2048 pixels or 16 MiB decoded data".into());
+    if width == 0 || height == 0 || width > budget.image_dimension || height > budget.image_dimension || decoded > budget.texture_bytes {
+        return Err(format!("image dimensions exceed {} pixels or {} decoded bytes",budget.image_dimension,budget.texture_bytes));
     }
     Ok(decoded)
 }
 
+#[cfg(test)]
 pub(super) fn validate_resource_glb(bytes: &[u8]) -> Result<(), String> {
-    const GEOMETRY_BYTES: usize = 16 * 1024 * 1024;
+    validate_resource_glb_with_limits(bytes,asset_limits::Limits::default()).map(|_|())
+}
+pub(super) fn validate_resource_glb_with_limits(bytes:&[u8],budget:asset_limits::Limits)->Result<u64,String> {
+    budget.validate()?;
+    if bytes.len() as u64>budget.model_file_bytes {return Err("resource GLB exceeds configured encoded file budget".into());}
+    let geometry_bytes=budget.geometry_bytes as usize;
     let invalid = || "resource GLB exceeds geometry or scene limits".to_owned();
     let binary = gltf::binary::Glb::from_slice(bytes).map_err(|e| format!("resource GLB: {e}"))?;
-    if binary.json.len()>256*1024 {return Err("resource GLB JSON exceeds 256 KiB".into());}
+    if binary.json.len() as u64>budget.model_json_bytes {return Err("resource GLB JSON exceeds configured budget".into());}
     let json: serde_json::Value = serde_json::from_slice(&binary.json).map_err(|e| e.to_string())?;
     // Check collection sizes before constructing the glTF object graph. Extensions
     // may describe compressed geometry or instancing with a different expansion
@@ -172,13 +185,13 @@ pub(super) fn validate_resource_glb(bytes: &[u8]) -> Result<(), String> {
     for image in glb.document.images() {
         let gltf::image::Source::View { view, mime_type } = image.source() else { return Err(invalid()); };
         if !matches!(mime_type,"image/png" | "image/jpeg") { return Err(invalid()); }
-        image_bytes[image.index()] = bounded_image_dimensions(&blob[view.offset()..view.offset()+view.length()])?;
+        image_bytes[image.index()] = image_dimensions_with_limits(&blob[view.offset()..view.offset()+view.length()],budget)?;
         decoded_images += image_bytes[image.index()];
-        if decoded_images > 16 * 1024 * 1024 { return Err("resource GLB images exceed 16 MiB RGBA".into()); }
+        if decoded_images > budget.texture_bytes { return Err("resource GLB images exceed configured decoded texture budget".into()); }
     }
     // Bevy decodes once per texture, even if several textures share one image.
     let texture_bytes: u64 = glb.document.textures().map(|t| image_bytes[t.source().index()]).sum();
-    if texture_bytes > 16 * 1024 * 1024 { return Err("resource GLB textures exceed 16 MiB RGBA".into()); }
+    if texture_bytes > budget.texture_bytes { return Err("resource GLB textures exceed configured decoded texture budget".into()); }
     let mut accessor_bytes = 0usize;
     for accessor in glb.document.accessors() {
         // Sparse accessors can allocate output without a correspondingly sized
@@ -200,14 +213,14 @@ pub(super) fn validate_resource_glb(bytes: &[u8]) -> Result<(), String> {
             }
         }
         accessor_bytes = accessor_bytes.checked_add(accessor.count() * accessor.size()).ok_or_else(invalid)?;
-        if accessor_bytes > GEOMETRY_BYTES { return Err(invalid()); }
+        if accessor_bytes > geometry_bytes { return Err(invalid()); }
     }
     // Charge every reader use too: repeated references to one large accessor
     // must not multiply the loader's allocation beyond the resource budget.
     let mut reads = 0usize;
     let mut charge = |a: gltf::Accessor<'_>| -> Result<(),String> {
         reads = reads.checked_add(a.count()*a.size()).ok_or_else(invalid)?;
-        if reads > GEOMETRY_BYTES { Err(invalid()) } else { Ok(()) }
+        if reads > geometry_bytes { Err(invalid()) } else { Ok(()) }
     };
     let mut mesh_vertices = vec![0usize; glb.document.meshes().len()];
     let mut primitives = 0;
@@ -252,7 +265,7 @@ pub(super) fn validate_resource_glb(bytes: &[u8]) -> Result<(), String> {
                 }
                 decoded_geometry += count*48; // Morph texture channels/padding.
             }
-            if decoded_geometry>GEOMETRY_BYTES {return Err("resource GLB expanded geometry exceeds 16 MiB".into());}
+            if decoded_geometry>geometry_bytes {return Err("resource GLB expanded geometry exceeds configured budget".into());}
         }
     }
     for skin in glb.document.skins() {
@@ -296,7 +309,10 @@ pub(super) fn validate_resource_glb(bytes: &[u8]) -> Result<(), String> {
         let mut seen = vec![false; nodes.len()];
         for node in scene.nodes() { visit(node,0,&mut seen,&mut vertices,&mesh_vertices)?; }
     }
-    Ok(())
+    // Charge the actual bounded parser/loader expansions, including separate
+    // accessor reads and promoted vertex buffers. This is conservative when
+    // temporary and retained allocations do not overlap.
+    Ok(bytes.len() as u64+binary.json.len() as u64+accessor_bytes as u64+reads as u64+decoded_geometry as u64+decoded_images+texture_bytes)
 }
 
 pub(super) fn spawn(
@@ -493,6 +509,22 @@ mod tests {
         assert!(validate_resource_glb(&resource_glb(external)).unwrap_err().contains("embed"));
         let mut image=embedded;image["images"]=serde_json::json!([{"uri":"../other/texture.png"}]);
         assert!(validate_resource_glb(&resource_glb(image)).unwrap_err().contains("embed"));
+    }
+    #[test]
+    fn configured_import_accepts_larger_embedded_texture_and_charges_the_set() {
+        use image::ImageEncoder;
+        let mut png=Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png).write_image(&vec![255;4096*4],4096,1,image::ExtendedColorType::Rgba8).unwrap();
+        let document=serde_json::json!({"asset":{"version":"2.0"},"buffers":[{"byteLength":png.len()}],
+            "bufferViews":[{"buffer":0,"byteLength":png.len()}],"images":[{"bufferView":0,"mimeType":"image/png"}],"textures":[{"source":0}]});
+        let glb=resource_glb_with_bin(document,png);
+        assert!(validate_resource_glb(&glb).unwrap_err().contains("dimensions"));
+        let mut policy=asset_limits::Limits::default();policy.image_dimension=4096;
+        let decoded=validate_resource_glb_with_limits(&glb,policy).unwrap();
+        assert!(decoded>=4096*4);
+        policy.set_decoded_bytes=decoded*2-1;
+        let mut used=0;policy.charge(&mut used,decoded).unwrap();
+        assert!(policy.charge(&mut used,decoded).is_err());
     }
     pub(super) fn oversized_png() -> Vec<u8> {
         let mut bytes=include_bytes!("../tests/fixtures/texture-codec.png").to_vec();

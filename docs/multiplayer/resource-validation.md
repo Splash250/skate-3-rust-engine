@@ -1,4 +1,10 @@
-# Resource platform validation
+# Resource platform validation — baseline record
+
+This report records baseline `69ed377`, before the platform extension. Its test
+counts and product boundaries are historical. Current capabilities, fresh
+checks, graphical evidence and unavailable validation are in the
+[extension evidence ledger](platform-extension-evidence.md) and
+[current platform contract](platform-extension.md).
 
 Validation recorded on 2026-10-04 in the existing Linux checkout. The checks
 below use synthetic/redistributable fixtures unless explicitly described as a
@@ -90,7 +96,7 @@ Reproduced defects were fixed with regression coverage; the protocol/cache
 re-review reported no remaining finding in its scoped source inspection. This
 is bounded engineering validation, not a claim of exhaustive security proof.
 
-## Product boundaries
+## Baseline product boundaries (superseded)
 
 Lua is the implemented resource language. JavaScript/C#, GTA natives, browser
 NUI, native DLL/SO plugins and a dedicated Steam adapter are not implemented.

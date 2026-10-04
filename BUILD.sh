@@ -4,11 +4,13 @@ set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 release=
 steam=
-usage() { echo "Usage: $0 [--release] [--steam]" >&2; exit 2; }
+browser=
+usage() { echo "Usage: $0 [--release] [--steam] [--browser]" >&2; exit 2; }
 for argument in "$@"; do
     case "$argument" in
         --release) [ -z "$release" ] || usage; release=1 ;;
         --steam) [ -z "$steam" ] || usage; steam=1 ;;
+        --browser) [ -z "$browser" ] || usage; browser=1 ;;
         *) usage ;;
     esac
 done
@@ -33,6 +35,14 @@ if [ -n "$release" ]; then
 else
     cargo build --locked -p skate-game --bin skate3rust
     cargo build --locked -p skate-xiso
+fi
+
+if [ -n "$browser" ]; then
+    if [ -n "$release" ]; then
+        cargo build --locked -p skate-browser --features host --release
+    else
+        cargo build --locked -p skate-browser --features host
+    fi
 fi
 
 if [ -n "$steam" ]; then

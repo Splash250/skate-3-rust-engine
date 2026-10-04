@@ -32,6 +32,8 @@ pub(crate) struct SkaterRuntime {
     /// Completed physical pose in native animation space, read by rendering.
     pub render_pose: Vec<skate_core::animation::output::NativeMatrix>,
     pub pose_generation: u64,
+    /// Host-observed native physical relocations, used to request dedicated recovery.
+    pub travel_generation: u64,
     pub centre_of_mass_filter: skate_core::physics::centre_of_mass_filter::CentreOfMassFilter,
     pub centre_of_mass_output: skate_core::physics::centre_of_mass_filter::CentreOfMassOutput,
     pub animation: SkaterAnimation,
@@ -138,7 +140,7 @@ impl SkaterRuntime {
         transform: [[f32; 4]; 4],
         velocity: Option<[f32; 3]>,
     ) -> Result<(), String> {
-        self.player_input.request_teleport_ex(transform, velocity)?;
+        self.player_input.request_actor_teleport_ex(transform, velocity)?;
         self.teleport_state.request_manual(transform, true);
         Ok(())
     }
@@ -266,6 +268,7 @@ impl SkaterRuntime {
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,
             render_pose: initial_hierarchy,
             pose_generation: 0,
+            travel_generation: 0,
             centre_of_mass_filter: Default::default(),
             // PhysOut reset82DE53F0 clears these observations before first output.
             centre_of_mass_output: skate_core::physics::centre_of_mass_filter::CentreOfMassOutput {

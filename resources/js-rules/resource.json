@@ -1,0 +1,1 @@
+{"format":1,"api":1,"id":"js-rules","version":"1.0.0","language":"javascript","shared_scripts":["shared.js"],"exports":["checkpoint_points"],"capabilities":["resource.exports"]}

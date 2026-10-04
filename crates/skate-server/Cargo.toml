@@ -5,6 +5,11 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+skate-voice = { path = "../skate-voice", default-features = false }
+skate-accounts = { path = "../skate-accounts" }
+skate-dynamics = { path = "../skate-dynamics" }
+skate-data = { path = "../skate-data" }
+skate-services = { path = "../skate-services" }
 skate-net = { path = "../skate-net" }
 skate-mods = { path = "../skate-mods" }
 skate-resources = { path = "../skate-resources" }
@@ -13,3 +18,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+skate-voice = { path = "../skate-voice", features = ["codec"] }

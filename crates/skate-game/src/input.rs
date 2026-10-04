@@ -140,7 +140,7 @@ pub(crate) fn publish_actions(
     camera: Res<crate::camera::CameraRuntime>,
     mods: Option<Res<crate::modding::Mods>>,
 ) {
-    let blocked = !crate::graphics_menu::gameplay_active(menu) || debug.suppress_gameplay(&camera);
+    let blocked = !crate::graphics_menu::gameplay_active(menu) || debug.suppress_gameplay(&camera) || crate::modding::browser_focused(mods.as_deref());
     if blocked {
         input.discard_gameplay();
     }

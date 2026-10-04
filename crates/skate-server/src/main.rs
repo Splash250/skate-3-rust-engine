@@ -20,6 +20,9 @@ fn run() -> Result<(), String> {
     println!(
         "Client-predicted skating; server-authorized collisions, shoves and resource state. Type quit for clean shutdown."
     );
+    if let Some(address) = host.account_address() {
+        println!("Account login and administration HTTPS listening on {address}");
+    }
     if let Some(address) = host.resource_address() {
         println!(
             "Resource HTTP listening on {address}; console: resources, start/stop/restart/ensure ID, command NAME, quit"

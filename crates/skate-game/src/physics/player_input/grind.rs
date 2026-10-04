@@ -167,7 +167,6 @@ impl GrindInputState {
     }
 
     ///82D8A638 resets the manager, not the separately constructed child objects.
-    #[cfg(test)]
     pub fn reset(&mut self) {
         self.previous_state = 0;
         self.engagement_counter = 0;

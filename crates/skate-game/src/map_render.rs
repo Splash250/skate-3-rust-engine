@@ -16,6 +16,7 @@ use bevy::{
 };
 use skate_data::skate_map::SkateMap;
 use std::path::Path;
+pub(crate) mod streaming;
 
 /// Marks everything the current map owns. Retirement despawns exactly this set,
 /// which is why the character and other persistent entities survive a map change.
@@ -91,6 +92,7 @@ impl<A: Asset> OwnedAssets for StagedAssets<A> {
 #[derive(Default)]
 pub(crate) struct SceneCommands {
     queue: CommandQueue,
+    pub(crate) render_range:[f32;2],
 }
 
 impl SceneCommands {
@@ -111,6 +113,7 @@ impl MapAssets {
     /// Despawn the current map and release its assets. Safe to call with no map
     /// loaded, which is the case on the very first transition.
     pub(crate) fn retire(world: &mut World) {
+        streaming::clear(world);
         let entities: Vec<Entity> = world
             .query_filtered::<Entity, With<MapEntity>>()
             .iter(world)
@@ -192,6 +195,19 @@ impl PreparedScene {
                 &mut self.sky,
             );
         }
+    }
+
+    pub(crate) fn prepare_resource(&mut self,map:&SkateMap,lods:&[(SkateMap,u32)],asset_root:&Path) {
+        self.commands.render_range=[0.,lods.first().map_or(0.,|(_,distance)|*distance as f32)];
+        self.prepare(Some(map),asset_root);
+        let retail=self.retail;let mut stats=self.stats;
+        for (index,(map,distance)) in lods.iter().enumerate() {
+            self.commands.render_range=[*distance as f32,lods.get(index+1).map_or(0.,|(_,distance)|*distance as f32)];
+            self.prepare(Some(map),asset_root);
+            stats.draws+=self.stats.draws;stats.leaves+=self.stats.leaves;
+            stats.triangles+=self.stats.triangles;stats.slabs+=self.stats.slabs;
+        }
+        self.commands.render_range=[0.;2];self.retail=retail;self.stats=stats;
     }
 
     /// Main-thread commit. Assets first, then entities: a spawned entity must

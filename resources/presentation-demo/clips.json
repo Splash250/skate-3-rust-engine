@@ -1,0 +1,1 @@
+{"version":1,"bones":[{"name":"HEAD","parent":"NECK1"}],"clips":[{"name":"nod","duration":1.2,"tracks":[{"bone":"HEAD","keys":[{"time":0},{"time":0.3,"rotation":[0,0,-0.17364818,0.98480775]},{"time":0.6},{"time":0.9,"rotation":[0,0,0.17364818,0.98480775]},{"time":1.2}]}],"markers":[{"time":0.3,"name":"down"},{"time":0.9,"name":"up"}]}]}

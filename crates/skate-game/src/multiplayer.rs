@@ -7,6 +7,8 @@ mod nametags;
 mod hud;
 mod dedicated;
 mod dedicated_input;
+pub(crate) mod entities;
+pub(crate) mod voice;
 use crate::{
     app::SimulationSet,
     physics::{GamePhysics, SkaterRuntime, network},
@@ -40,6 +42,8 @@ pub(crate) struct Options {
     pub direct: Option<(SocketAddr, SocketAddr)>,
     pub host: Option<SocketAddr>,
     pub connect: Option<SocketAddr>,
+    pub account_config: Option<std::path::PathBuf>,
+    pub voice_enabled: bool,
     pub session: u64,
     pub spawn_offset: f32,
     pub appearance: Option<String>,
@@ -57,6 +61,7 @@ struct VisualPose {
     bones: Vec<skate_net::Bone>,
 }
 struct Remote {
+    movement_epoch: u64,
     roots: VecDeque<VisualRoot>,
     poses: VecDeque<VisualPose>,
     epoch: u64,
@@ -128,8 +133,16 @@ impl Multiplayer {
     pub(crate) fn host_actor(&self) -> u64 {
         self.lobby.as_ref().and_then(|l| l.host_actor()).unwrap_or(0)
     }
-    pub(crate) fn connection_generation(&self) -> u64 {
-        self.lobby.as_ref().map_or(0, Session::connection_generation)
+    pub(crate) fn resource_scope_epoch(&self) -> u64 {
+        self.lobby.as_ref().map_or(0, Session::resource_scope_epoch)
+    }
+    pub(crate) fn visible_resource_scopes(&self) -> Vec<skate_net::resources::Scope> {
+        self.lobby.as_ref().map_or_else(Vec::new, Session::visible_resource_scopes)
+    }
+    pub(crate) fn resource_entity_states(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.lobby.as_ref().map_or_else(Vec::new, |lobby| {
+            lobby.entities.entities().values().map(skate_net::entities::Entity::observation).collect()
+        }))
     }
     pub(crate) fn connected(&self) -> bool {
         self.lobby.as_ref().is_some_and(Session::connected)
@@ -141,7 +154,8 @@ impl Multiplayer {
         let host = lobby.host_actor()?;
         let bytes = &lobby.actors.get(&host)?.application
             .get(&skate_net::resources::server_key(lobby.local))?.value;
-        serde_json::from_slice(bytes).ok()
+        let record: skate_net::resources::ServerRecord = serde_json::from_slice(bytes).ok()?;
+        (record.offer.epoch >= lobby.resource_epoch_floor()).then_some(record)
     }
     pub(crate) fn resource_skater_states(&self) -> Vec<(u64, BodyState, skate_net::dedicated::Gameplay)> {
         if !self.is_dedicated() { return Vec::new(); }
@@ -216,7 +230,7 @@ impl Multiplayer {
     }
     fn start(&mut self, transport: Box<dyn transport::Transport>, session: u64, host: Option<u64>) {
         self.leave();
-        self.info.id = unique();
+        self.info.id = transport.actor_id().unwrap_or_else(unique);
         self.loopback = transport.loopback();
         let mut lobby = Session::new(session, self.info, host);
         lobby.set_loopback(self.loopback);
@@ -362,6 +376,7 @@ pub(crate) struct MultiplayerPlugin;
 impl Plugin for MultiplayerPlugin {
     fn build(&self, app: &mut App) {
         let config = app.world().resource::<crate::config::Config>();
+        let voice_enabled = config.multiplayer.voice_enabled;
         let skater = app.world().resource::<SkaterRuntime>();
         let physics = app.world().resource::<GamePhysics>();
         let rig = skate_net::hash(
@@ -429,9 +444,14 @@ impl Plugin for MultiplayerPlugin {
             dedicated_launch: config.multiplayer.connect.is_some(),
         };
         if let Some(server) = config.multiplayer.connect {
-            match transport::Direct::new("0.0.0.0:0".parse().unwrap()) {
+            let connection: Result<Box<dyn transport::Transport>,String> = if let Some(path)=&config.multiplayer.account_config {
+                transport::SecureDirect::login(path,server).map(|transport|Box::new(transport) as Box<dyn transport::Transport>)
+            } else {
+                transport::Direct::new("0.0.0.0:0".parse().unwrap()).map(|transport|Box::new(transport) as Box<dyn transport::Transport>).map_err(|e|e.to_string())
+            };
+            match connection {
                 Ok(t) => {
-                    net.start(Box::new(t), config.multiplayer.session, Some(transport::endpoint(server).expect("validated IPv4 server")));
+                    net.start(t, config.multiplayer.session, Some(transport::endpoint(server).expect("validated IPv4 server")));
                     net.lobby = Some(Session::dedicated_client(config.multiplayer.session, net.info, transport::endpoint(server).unwrap()));
                     net.loopback = server.ip().is_loopback();
                     net.lobby.as_mut().unwrap().set_loopback(net.loopback);
@@ -454,6 +474,9 @@ impl Plugin for MultiplayerPlugin {
             }
         }
         app.insert_resource(net)
+            .init_resource::<entities::SharedObjects>()
+            .add_systems(PreUpdate, entities::sync.after(receive))
+            .add_systems(Update, entities::render)
             .add_systems(PreUpdate, (world_changed, receive, sync_names).chain().after(crate::map_transition::MapTransitionSet))
             .add_systems(Startup, hud::setup)
             .add_systems(Update, hud::draw)
@@ -466,7 +489,7 @@ impl Plugin for MultiplayerPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (dedicated::fixed, prepare).chain()
+                (dedicated::fixed, prepare, entities::prepare).chain()
                     .run_if(crate::graphics_menu::gameplay_active)
                     .before(SimulationSet::Physics)
                     .after(SimulationSet::Controls),
@@ -476,6 +499,7 @@ impl Plugin for MultiplayerPlugin {
             .add_systems(Last, appearance::cleanup)
             .add_systems(Update, appearance::sync.before(render::spawn))
             .add_plugins(render::RemoteRenderPlugin);
+        voice::install(app, voice_enabled);
     }
 }
 // A world swap replaces the local physics assembly. Never retain lobby identity
@@ -487,7 +511,15 @@ fn world_changed(
     skater: Res<SkaterRuntime>,
     mut net: ResMut<Multiplayer>,
 ) {
-    if changed.read().count() == 0 { return; }
+    let changes=changed.read().collect::<Vec<_>>();
+    if changes.is_empty() {return;}
+    if changes.iter().all(|event|event.preserve_connection) {
+        // Required resource worlds are gated by content activation while the
+        // original dedicated admission identity remains stable.
+        if let Ok(schema)=network::Schema::new(&physics,&skater) {net.schema=schema;}
+        net.anchors=network::anchors(&skater);
+        return;
+    }
     net.leave();
     net.info.map = config.map_fingerprint;
     net.map_name = config.map_path.as_ref().and_then(|p| p.file_stem())
@@ -503,7 +535,7 @@ fn world_changed(
     net.browser_total = 0;
     net.browser_status.clear();
 }
-pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
+pub(crate) fn receive(mut net: ResMut<Multiplayer>, mut voice: ResMut<voice::VoiceState>) {
     let now = net.started.elapsed().as_millis() as u64;
     let net = &mut *net;
     let Some(t) = &mut net.transport else {
@@ -591,6 +623,10 @@ pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
     lobby.set_congested(t.congested());
     net.provider_metrics = t.metrics();
     for (peer, p) in packets {
+        if skate_voice::wire::is_voice(&p) {
+            voice::enqueue(&mut voice,peer,p);
+            continue;
+        }
         lobby.receive(peer, &p, now);
     }
     for p in lobby.service(now) {
@@ -616,6 +652,7 @@ pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
             let fallback = actor.info.rig != net.info.rig;
             info!("MULTIPLAYER_CONNECTED peer={id} fallback={fallback}");
             entry.insert(Remote {
+                movement_epoch: actor.movement_epoch,
                 roots: VecDeque::new(),
                 poses: VecDeque::new(),
                 epoch: 0,
@@ -627,6 +664,15 @@ pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
             });
         }
         let remote = net.remotes.get_mut(&id).unwrap();
+        if remote.movement_epoch != actor.movement_epoch {
+            remote.movement_epoch = actor.movement_epoch;
+            remote.roots.clear(); remote.poses.clear();
+            remote.epoch = remote.epoch.saturating_add(1);
+            remote.visual_since = body.state.captured;
+            remote.body_seq = 0; remote.pose_seq = 0;
+            if let Some(state) = body.state.unpack_body() { remote.body = state; }
+            remote.body_at = Instant::now();
+        }
         // Consume every newly decoded source sample, including several delivered in one frame.
         for revision in &actor.body.history {
             if revision.seq <= remote.body_seq {
@@ -727,6 +773,7 @@ pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
 pub(crate) fn prepare(net: Res<Multiplayer>, mut physics: ResMut<GamePhysics>, skater: Res<SkaterRuntime>, mods: Option<Res<crate::modding::Mods>>) {
     physics.network_active = net.active();
     physics.network_contacts = 0;
+    physics.network_contact_ids.clear();
     let mut proxies = std::mem::take(&mut physics.network_proxies);
     proxies.bodies.clear();
     proxies.volumes.clear();
@@ -756,7 +803,7 @@ fn send(mut net: ResMut<Multiplayer>, physics: Res<GamePhysics>, skater: Res<Ska
     if !net.active() || skater.pose_generation == 0 {
         return;
     }
-    dedicated::publish(&mut net, &skater);
+    if !dedicated::publish(&mut net, &skater) { return; }
     let now = net.started.elapsed().as_millis() as u64;
     if net.last_body.elapsed() >= Duration::from_millis(49) {
         let mut state=network::capture_body(&physics,&skater);
@@ -772,6 +819,7 @@ fn send(mut net: ResMut<Multiplayer>, physics: Res<GamePhysics>, skater: Res<Ska
     }
 }
 pub(crate) fn send_pose(mut net: ResMut<Multiplayer>, skater: Res<SkaterRuntime>, mods:Option<Res<crate::modding::Mods>>) {
+    if net.is_dedicated() && net.dedicated.waiting_for_respawn() { return; }
     if !net.active() || skater.pose_generation == 0 {
         return;
     }
@@ -867,4 +915,9 @@ impl Multiplayer {
                 if self.provider_metrics.is_empty() { "No provider metrics" } else { &self.provider_metrics }),
             format!("INTERPOLATION\n{}", if self.visual_status.is_empty() { "No remote playback samples" } else { &self.visual_status })]
     }
+}
+
+/// Validated presentation bindings for resource-owned cosmetic animation.
+pub(crate) fn resource_render_targets(world:&World) -> Vec<(u64,Entity,Vec<(Entity,usize,Option<usize>)>)> {
+    render::resource_targets(world)
 }

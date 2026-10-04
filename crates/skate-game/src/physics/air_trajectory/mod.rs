@@ -55,6 +55,8 @@ impl AirTrajectoryRuntime {
     }
     pub fn bind_grind_world(&mut self, provider: Arc<StaticProvider>) {
         self.grind_world = Some(provider);
+        self.pending_results=None;
+        self.selector.reset();
         self.nearby_grinds.clear();
     }
     pub fn update(

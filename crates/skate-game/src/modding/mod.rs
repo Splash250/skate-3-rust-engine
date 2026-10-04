@@ -1,5 +1,7 @@
 //! Main-thread SDK adapter. Lua never receives World, entity IDs, or asset handles.
 mod audio;
+pub(crate) mod animation;
+mod browser;
 mod canvas;
 mod graphics_dynamic;
 mod vehicle_camera;
@@ -15,6 +17,9 @@ mod engine_access;
 mod participation;
 mod camera_stream;
 mod resources;
+mod resource_world;
+#[cfg(test)]
+mod retirement_tests;
 pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
@@ -51,6 +56,7 @@ pub(crate) struct Mods {
     graphics: BTreeMap<(String, String), GraphicsOwned>,
     overlays: BTreeMap<(String, String), Entity>,
     canvases: BTreeMap<(String, String), canvas::Canvas>,
+    browsers: browser::Pages,
     attach: Option<AttachState>,
     detach_error: Option<String>,
     detach_pending: Option<(Transform,std::time::Instant)>,
@@ -147,6 +153,7 @@ pub(crate) struct ModdingPlugin;
 
 impl Plugin for ModdingPlugin {
     fn build(&self, app: &mut App) {
+        animation::install(app);
         let config = app.world().resource::<crate::config::Config>();
         let server_selected = config.multiplayer.connect.is_some();
         let resource_asset_root = resources::cache_root(&config.asset_root);
@@ -175,6 +182,11 @@ impl Plugin for ModdingPlugin {
         if server_selected {
             info!("Dedicated client: server-selected resources; local mod discovery disabled");
         }
+        .init_resource::<ModMenu>()
+        .insert_resource(resource_client);
+        if server_selected {
+            info!("Dedicated client: server-selected resources; local mod discovery disabled");
+        }
         menu::install(app);
         audio::install(app);
         world_audio::install(app);
@@ -192,6 +204,7 @@ impl Plugin for ModdingPlugin {
             (replication::sample_fixed.run_if(peer_mod_networking), bridge::dynamics_to_board).chain()
                 .after(crate::app::SimulationSet::Controls)
                 .after(crate::multiplayer::prepare)
+                .after(crate::multiplayer::entities::prepare)
                 .before(crate::app::SimulationSet::Physics)
                 .run_if(crate::graphics_menu::gameplay_active),
         )
@@ -264,6 +277,7 @@ impl Mods {
             || !self.overlays.is_empty()
             || !self.joints.is_empty()
             || self.attach.is_some()
+            || !self.browsers.is_empty()
             || !self.canvases.is_empty()
             || !self.skater_proxies.is_empty()
             || !self.volumes.is_empty()
@@ -549,6 +563,8 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         // Resource discovery reuses the frame-current local/remote observation
         // objects, including canonical string IDs, rather than a second roster.
         "players": skaters.as_object().map(|rows|rows.values().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "entities": world.resource::<crate::multiplayer::Multiplayer>().resource_entity_states(),
+        "voice": crate::multiplayer::voice::snapshot(world),
         "skaters": skaters,
         "command_results": mods.command_results.iter().fold(serde_json::Map::<String,Value>::new(), |mut out,((owner,key),value)| {
             out.entry(owner.clone()).or_insert_with(||json!({}))[key]=value.clone();out
@@ -741,12 +757,22 @@ fn fixed(world: &mut World) {
     });
 }
 
+pub(crate) fn browser_focused(mods: Option<&Mods>) -> bool {mods.is_some_and(browser::focused)}
+
 fn update(world: &mut World) {
     let _span = bevy::log::tracing::info_span!("mods.update").entered();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         if !mods.runtime_busy() {
             return;
         }
+        browser::poll(world, &mut mods);
+        animation::poll(world, &mut mods);
+        if let Some(host) = mods.manager.resources.as_mut() {
+            for (owner,generation,event) in crate::multiplayer::voice::take_events(world) {
+                let _=host.host_event(&owner,generation,"voice_result",event);
+            }
+        }
+        mods.manager.sync_resources();
         let camera = camera_position(world);
         let snap = snapshot_ro(world, &mut mods, camera);
         let paused =
@@ -781,6 +807,9 @@ fn camera_angle_snapshot(world: &World) -> Value {
 }
 
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
+    animation::clear(world,None);
+    browser::clear(world,mods,None);
+    for owner in mods.manager.packages.keys() {crate::multiplayer::voice::retire(world,owner);}
     replication::reset(world,mods);
     audio::clear(world);
     world_audio::clear(world);
@@ -848,6 +877,9 @@ fn apply(world: &mut World, mods: &mut Mods) {
     let _span = bevy::log::tracing::info_span!("mods.apply").entered();
     let retired = std::mem::take(&mut mods.manager.retired);
     for id in &retired {
+        animation::clear(world,Some(id));
+        browser::clear(world,mods,Some(id));
+        crate::multiplayer::voice::retire(world,id);
         mods.suspended_by.remove(id);
         engine_access::restore_gates(world,mods,Some(id));
         mods.command_results.retain(|(owner,_),_|owner!=id);
@@ -920,7 +952,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         batches.entry(id).or_default().push(command);
     }
     for (id, mut commands) in batches {
-        if !mods.manager.packages.get(&id).is_some_and(|p| p.running()) {
+        if !command_owner_running(mods, &id) {
             continue;
         }
         if let Err(e) = ensure_ground(world, mods) {
@@ -948,6 +980,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         });
         let result = (|| {
             for command in commands {
+                if !command_owner_running(mods, &id) { break; }
                 apply_one(world, mods, &id, command)?;
             }
             Ok::<(), String>(())
@@ -980,6 +1013,13 @@ fn apply(world: &mut World, mods: &mut Mods) {
     }
 }
 
+fn command_owner_running(mods: &Mods, id: &str) -> bool {
+    mods.manager.packages.get(id).is_some_and(|package| {
+        package.running() && mods.manager.resources.as_ref().is_none_or(|host|
+            !host.installed().contains_key(id) || host.running(id))
+    })
+}
+
 fn apply_one(
     world: &mut World,
     mods: &mut Mods,
@@ -998,6 +1038,9 @@ fn apply_one(
             let (result,value)=if let Command::EngineInspect {system}=*command {
                 (Ok(()),engine_access::inspect(world,&system))
             } else {(apply_one(world,mods,id,*command),Value::Null)};
+            if !command_owner_running(mods,id) {
+                return Err("resource retired during command request".into());
+            }
             let tick=world.resource::<crate::physics::GamePhysics>().ticks;
             mods.command_results.insert(slot,json!({"token":token,"ok":result.is_ok(),"error":result.err(),"value":value,"tick":tick}));
         }
@@ -1009,6 +1052,22 @@ fn apply_one(
             if mods.attach.is_some() || !mods.suspended_by.is_empty() {return Err("native player is attached or suspended".into());}
             player_physics::impulse(world,&body,impulse,point,angular)?;
         }
+        Command::UiBrowserOpen {key,options} => browser::open(mods,id,key,options)?,
+        Command::Animation {version,operation} => animation::apply(world,mods,id,version,operation)?,
+        Command::Voice {operation} => {
+            let generation=mods.manager.resources.as_ref().filter(|host|host.running(id)).and_then(|host|host.generation(id))
+                .ok_or("Voice controls require a running resource owner")?;
+            let result=crate::multiplayer::voice::apply(world,id,generation,operation);
+            if let Some(host)=mods.manager.resources.as_mut() {
+                let payload=match result {Ok(value)=>value,Err(error)=>json!({"ok":false,"error":error})};
+                let completion=host.host_event(id,generation,"voice_result",payload);
+                mods.manager.sync_resources();
+                completion?;
+            }
+        }
+        Command::UiBrowserMessage {key,value} => browser::send(mods,id,&key,value)?,
+        Command::UiBrowserFocus {key,focused} => browser::focus(world,mods,id,&key,focused)?,
+        Command::UiBrowserClose {key} => browser::close(world,mods,id,&key),
         Command::UiCanvas { key, options } => canvas::set(world, &mut mods.canvases, id, key, options)?,
         Command::UiRemove { key } => {
             let slot = (id.to_owned(), key);
@@ -1800,6 +1859,7 @@ impl Mods {
             graphics: BTreeMap::new(),
             overlays: BTreeMap::new(),
             canvases: BTreeMap::new(),
+            browsers: BTreeMap::new(),
             attach: None,
             detach_error: None,
             detach_pending: None,

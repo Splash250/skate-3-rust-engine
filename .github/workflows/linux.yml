@@ -13,7 +13,7 @@ jobs:
       - name: Install native build dependencies
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          pkg-config clang libclang-dev libudev-dev libasound2-dev libx11-dev
+          cmake pkg-config clang libclang-dev libudev-dev libasound2-dev libx11-dev
           libxcursor-dev libxi-dev libxrandr-dev libwayland-dev
           libxkbcommon-dev libvulkan-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -43,5 +43,12 @@ jobs:
         run: cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic multiplayer::transport::tests
       - name: Resource grants, asset validation and engine ownership cleanup
         run: cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic dedicated_resource
+      - name: Resource animation, shared objects, streaming and shader regressions
+        run: |
+          cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic modding::animation
+          cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic modding::retirement_tests
+          cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic multiplayer::entities
+          cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic map_render::streaming
+          cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic retail_render::shader_tests
       - name: POSIX shell syntax
         run: sh -n BUILD.sh PLAY.sh

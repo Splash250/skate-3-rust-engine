@@ -1,0 +1,6 @@
+{
+  "format": 1, "api": 1, "id": "inventory-ui", "version": "1.0.0", "language": "lua",
+  "client_scripts": ["client.lua"], "server_scripts": ["server.lua"],
+  "files": ["index.html", "inventory.css", "inventory.js"],
+  "capabilities": ["resource.network", "resource.events", "resource.database", "engine.ui"]
+}

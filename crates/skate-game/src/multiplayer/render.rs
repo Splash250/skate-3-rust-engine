@@ -45,6 +45,13 @@ struct RemoteSkin {
     contact_enabled: u64,
 }
 pub(super) struct RemoteRenderPlugin;
+pub(super) fn resource_targets(world:&World)->Vec<(u64,Entity,Vec<(Entity,usize,Option<usize>)>)> {
+    world.get_resource::<RemoteSkins>().map_or_else(Vec::new,|skins|skins.actors.iter().filter_map(|(&id,skin)| {
+        let root=skin.root?;
+        if skin.visible.is_none()||skin.bindings.is_empty()||world.get_entity(root).is_err() {return None;}
+        Some((id,root,skin.bindings.clone()))
+    }).collect())
+}
 impl Plugin for RemoteRenderPlugin {
     fn build(&self, app: &mut App) {
         let idle = app

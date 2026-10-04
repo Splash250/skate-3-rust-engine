@@ -1,6 +1,8 @@
 //! Transport-independent, capability-granted Lua resources. The host supplies
 //! connection identities; scripts can neither select their owner nor generation.
 use crate::{Command, SnapshotFields, vm::Vm};
+pub use crate::runtime_metrics::RuntimeMetrics;
+use crate::runtime_metrics::{Counters, Timer, bounded_error};
 use mlua::{Function, Lua, LuaSerdeExt, Table};
 use serde_json::Value;
 use skate_resources::Manifest;
@@ -13,11 +15,95 @@ use std::{
     },
 };
 
-pub const MAX_PAYLOAD: usize = 384;
-const MAX_ACTIONS: usize = 128;
-const MAX_CALLBACKS: usize = 64;
-const MAX_STATE_KEYS: usize = 64;
-const MAX_STORAGE: usize = 64 * 1024;
+pub const MAX_PAYLOAD: usize = 16 * 1024;
+fn default_transfer_timeout()->u64 {10_000}
+
+/// Host-selected limits. Peers never choose the limits of a local VM.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RuntimeLimits {
+    pub max_resources: usize,
+    pub max_payload_bytes: usize,
+    pub max_state_keys: usize,
+    pub max_storage_bytes: usize,
+    pub max_storage_value_bytes: usize,
+    pub max_storage_keys: usize,
+    pub max_actions: usize,
+    pub max_callbacks: usize,
+    pub max_queued_events: usize,
+    pub max_queued_outputs: usize,
+    pub max_queued_output_bytes: usize,
+    pub max_threads: usize,
+    pub lua_memory_bytes: usize,
+    pub instruction_budget_units: usize,
+    pub managed_memory_bytes: usize,
+    pub managed_callback_timeout_ms: usize,
+    pub managed_startup_timeout_ms: usize,
+}
+impl Default for RuntimeLimits {
+    fn default() -> Self {
+        Self { max_resources: 128, max_payload_bytes: MAX_PAYLOAD, max_state_keys: 1024,
+            max_storage_bytes: 4 * 1024 * 1024, max_storage_value_bytes: 256 * 1024,
+            max_storage_keys: 1024, max_actions: 128, max_callbacks: 64,
+            max_queued_events: 256, max_queued_outputs: 4096, max_queued_output_bytes: 16 * 1024 * 1024, max_threads: 64,
+            lua_memory_bytes: 16 * 1024 * 1024, instruction_budget_units: crate::vm::LUA_BUDGET_UNITS, managed_memory_bytes: 256 * 1024 * 1024,
+            managed_callback_timeout_ms: 100, managed_startup_timeout_ms: 10_000 }
+    }
+}
+impl RuntimeLimits {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value, maximum) in [
+            ("resources", self.max_resources, 1024),
+            ("payload bytes", self.max_payload_bytes, 256 * 1024),
+            ("state keys", self.max_state_keys, 4096),
+            ("storage bytes", self.max_storage_bytes, 64 * 1024 * 1024),
+            ("storage value bytes", self.max_storage_value_bytes, 4 * 1024 * 1024),
+            ("storage keys", self.max_storage_keys, 16384),
+            ("actions", self.max_actions, 4096),
+            ("callbacks", self.max_callbacks, 1024),
+            ("queued events", self.max_queued_events, 8192),
+            ("queued outputs", self.max_queued_outputs, 8192),
+            ("queued output bytes", self.max_queued_output_bytes, 64 * 1024 * 1024),
+            ("threads", self.max_threads, 1024),
+            ("Lua memory bytes", self.lua_memory_bytes, 128 * 1024 * 1024),
+            ("instruction budget units", self.instruction_budget_units, 10000),
+            ("managed memory bytes", self.managed_memory_bytes, 1024 * 1024 * 1024),
+            ("managed callback timeout milliseconds", self.managed_callback_timeout_ms, 1000),
+            ("managed startup timeout milliseconds", self.managed_startup_timeout_ms, 30_000),
+        ] {
+            if value == 0 || value > maximum { return Err(format!("{name} must be in 1..={maximum}")); }
+        }
+        if self.managed_memory_bytes < 64 * 1024 * 1024 { return Err("managed memory limit must be at least 64 MiB".into()); }
+        if self.lua_memory_bytes < 1024 * 1024 || self.instruction_budget_units < 64 {
+            return Err("Lua memory must be at least 1 MiB and instruction budget at least 64 units".into());
+        }
+        if self.max_storage_value_bytes > self.max_storage_bytes {
+            return Err("storage value limit exceeds storage limit".into());
+        }
+        for count in [self.max_state_keys, self.max_queued_events, self.max_queued_outputs] {
+            if count.saturating_mul(self.max_payload_bytes) > 64 * 1024 * 1024 {
+                return Err("state/event/output allocation ceiling exceeds 64 MiB; reduce count or payload size".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn resource_scope()->Value {serde_json::json!({"kind":"resource"})}
+fn normalize_scope(value:Value)->Result<(String,Value),String> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag="kind",rename_all="lowercase",deny_unknown_fields)]
+    enum Scope {Resource,Instance{id:String},Player{id:String},Entity{id:String}}
+    let scope:Scope=serde_json::from_value(if value.is_null(){resource_scope()}else{value}).map_err(|_|"invalid resource visibility scope".to_string())?;
+    let (kind,id,zero)=match scope {Scope::Resource=>return Ok(("resource".into(),resource_scope())),
+        Scope::Instance{id}=>("instance",id,true),Scope::Player{id}=>("player",id,false),Scope::Entity{id}=>("entity",id,false)};
+    let number=id.parse::<u64>().map_err(|_|"scope ID must be a canonical decimal string")?;
+    if id!=number.to_string()||(!zero&&number==0) {return Err("scope ID must be a canonical decimal string".into());}
+    Ok((format!("{kind}:{id}"),serde_json::json!({"kind":kind,"id":id})))
+}
+fn scope_from_key(key:&str)->Value {
+    if let Some((kind,id))=key.split_once(':') {serde_json::json!({"kind":kind,"id":id})} else {resource_scope()}
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Side {
@@ -40,12 +126,33 @@ pub enum Output {
         recipient: Option<u64>,
         name: String,
         payload: Value,
+        scope: Value,
     },
     State {
         resource: String,
         generation: u64,
         key: String,
         value: Value,
+        scope: Value,
+    },
+    Service {
+        resource: String, generation: u64, key: String, operation: Value, timeout_ms: u64,
+    },
+    CancelService { resource: String, generation: u64, key: String },
+    Entity { resource: String, generation: u64, command: Value },
+    Voice { resource: String, generation: u64, operation: Value },
+    World { resource: String, generation: u64, operation: Value },
+    Competition { resource: String, generation: u64, operation: Value },
+    Transfer { resource: String, generation: u64, key: String, name: String, payload: Value, recipient: Option<u64>, timeout_ms: u64 },
+    CancelTransfer { resource: String, generation: u64, key: String },
+    Teleport {
+        resource: String,
+        generation: u64,
+        player: u64,
+        position: [f32; 3],
+        heading: Option<f32>,
+        velocity: Option<[f32; 3]>,
+        instance: Option<u32>,
     },
     Log {
         resource: String,
@@ -62,6 +169,8 @@ struct Export {
     lua: Lua,
     function: Function,
     budget: Arc<AtomicUsize>,
+    budget_units: usize,
+    metrics: Counters,
 }
 #[derive(Clone)]
 struct RegisteredCommand {
@@ -74,12 +183,44 @@ struct RegisteredCommand {
 struct Shared {
     active: BTreeSet<String>,
     outputs: Vec<Output>,
+    output_bytes: usize,
     events: VecDeque<(String, u64, String, Value)>,
-    states: BTreeMap<String, BTreeMap<String, Value>>,
+    states: BTreeMap<(String, String), BTreeMap<String, Value>>,
     exports: BTreeMap<(String, String), Export>,
     commands: BTreeMap<String, RegisteredCommand>,
     export_depth: usize,
     faults: Vec<(String, String)>,
+}
+impl Shared {
+    fn output_size(output: &Output) -> usize {
+        256 + match output {
+            Output::Event {payload,scope,..} => serde_json::to_vec(payload).map_or(usize::MAX-512,|b|b.len()) + serde_json::to_vec(scope).map_or(256,|b|b.len()),
+            Output::State {value,scope,..} => serde_json::to_vec(value).map_or(usize::MAX-512,|b|b.len()) + serde_json::to_vec(scope).map_or(256,|b|b.len()),
+            Output::Entity {command:operation,..} | Output::Service {operation,..} | Output::Voice {operation,..} | Output::World {operation,..} | Output::Competition {operation,..} | Output::Transfer {payload:operation,..} => serde_json::to_vec(operation).map_or(usize::MAX-256,|b|b.len()),
+            Output::Log {text,..} => text.len(),
+            Output::Teleport {..} | Output::CancelService {..} | Output::CancelTransfer {..} => 0,
+        }
+    }
+    fn set_state(&mut self, resource:&str, scope:&str, key:&str, value:Value, limit:usize)->Result<(),String> {
+        let address=(resource.to_owned(),scope.to_owned());
+        if value.is_null() {
+            if let Some(state)=self.states.get_mut(&address) {state.remove(key);if state.is_empty(){self.states.remove(&address);}}
+            return Ok(());
+        }
+        let exists=self.states.get(&address).is_some_and(|state|state.contains_key(key));
+        let count=self.states.iter().filter(|((owner,_),_)|owner==resource).map(|(_,state)|state.len()).sum::<usize>();
+        if !exists&&count>=limit {return Err("state key limit reached".into());}
+        self.states.entry(address).or_default().insert(key.to_owned(),value);Ok(())
+    }
+    fn push_output(&mut self, output: Output, limits: &RuntimeLimits) -> mlua::Result<()> {
+        let bytes = Self::output_size(&output);
+        if self.outputs.len() >= limits.max_queued_outputs || self.output_bytes.saturating_add(bytes) > limits.max_queued_output_bytes {
+            return Err(lua_error("resource output queue full"));
+        }
+        self.output_bytes += bytes;
+        self.outputs.push(output);
+        Ok(())
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Bootstrap {
@@ -89,6 +230,8 @@ pub(crate) struct Bootstrap {
     shared: Arc<Mutex<Shared>>,
     handlers: Arc<Mutex<BTreeMap<String, Vec<Handler>>>>,
     actions: Arc<AtomicUsize>,
+    pub(crate) limits: RuntimeLimits,
+    pub(crate) metrics: Counters,
 }
 impl Bootstrap {
     pub(crate) fn permits(&self, command: &Command) -> Result<(), String> {
@@ -114,6 +257,8 @@ impl Bootstrap {
             "engine.camera"
         } else if kind.starts_with("audio_") {
             "engine.audio"
+        } else if kind == "voice" {
+            "engine.voice"
         } else if kind.starts_with("ui_") || matches!(kind, "overlay" | "multiplayer_debug") {
             "engine.ui"
         } else if kind.starts_with("player_") || matches!(kind, "rig_part" | "native_impulse") {
@@ -122,7 +267,7 @@ impl Bootstrap {
             "engine.world"
         } else if kind == "input_override" {
             "engine.input"
-        } else if kind == "graph_gate" {
+        } else if matches!(kind,"graph_gate"|"animation") {
             "engine.animation"
         } else if kind == "engine_inspect" {
             "engine.inspect"
@@ -149,8 +294,8 @@ impl Bootstrap {
         }
     }
     fn action(&self) -> mlua::Result<()> {
-        if self.actions.fetch_add(1, Ordering::Relaxed) >= MAX_ACTIONS {
-            Err(lua_error("128 resource operations per callback maximum"))
+        if self.actions.fetch_add(1, Ordering::Relaxed) >= self.limits.max_actions {
+            Err(lua_error(format!("{} resource operations per callback maximum", self.limits.max_actions)))
         } else {
             Ok(())
         }
@@ -167,6 +312,7 @@ impl Bootstrap {
     pub(crate) fn reset_budget(&self) {
         self.actions.store(0, Ordering::Relaxed);
     }
+    pub(crate) fn language(&self) -> &str { &self.installed.manifest.language }
     pub(crate) fn scripts(&self) -> Vec<String> {
         self.installed
             .manifest
@@ -220,8 +366,8 @@ impl Bootstrap {
                     valid_name(&name).map_err(lua_error)?;
                     ctx.action()?;
                     let mut handlers = ctx.handlers.lock().unwrap();
-                    if handlers.values().map(Vec::len).sum::<usize>() >= MAX_CALLBACKS {
-                        return Err(lua_error("64 event handlers maximum"));
+                    if handlers.values().map(Vec::len).sum::<usize>() >= ctx.limits.max_callbacks {
+                        return Err(lua_error(format!("{} event handlers maximum",ctx.limits.max_callbacks)));
                     }
                     handlers
                         .entry(name)
@@ -247,9 +393,9 @@ impl Bootstrap {
                 ctx.require("resource.events")?;
                 ctx.action()?;
                 valid_name(&name).map_err(lua_error)?;
-                let payload = bounded_value(lua, payload, MAX_PAYLOAD)?;
+                let payload = bounded_value(lua, payload, ctx.limits.max_payload_bytes)?;
                 let mut shared = ctx.shared.lock().unwrap();
-                if shared.events.len() >= MAX_ACTIONS {
+                if shared.events.len() >= ctx.limits.max_queued_events {
                     return Err(lua_error("local event queue full"));
                 }
                 shared.events.push_back((
@@ -265,7 +411,7 @@ impl Bootstrap {
         api.set(
             "send",
             lua.create_function(
-                move |lua, (name, payload, recipient): (String, mlua::Value, mlua::Value)| {
+                move |lua, (name, payload, recipient, scope): (String, mlua::Value, mlua::Value, mlua::Value)| {
                     ctx.require("resource.network")?;
                     ctx.action()?;
                     valid_name(&name).map_err(lua_error)?;
@@ -282,78 +428,48 @@ impl Bootstrap {
                     if ctx.side == Side::Client && recipient.is_some() {
                         return Err(lua_error("clients can send only to the server"));
                     }
-                    let payload = bounded_value(lua, payload, MAX_PAYLOAD)?;
+                    let (_,scope)=normalize_scope(bounded_value(lua,scope,128)?).map_err(lua_error)?;
+                    if ctx.side==Side::Client&&scope!=resource_scope() {return Err(lua_error("clients cannot select a private event scope"));}
+                    let payload = bounded_value(lua, payload, ctx.limits.max_payload_bytes)?;
                     let mut shared = ctx.shared.lock().unwrap();
-                    if shared.outputs.len() >= 4096 {
+                    if shared.outputs.len() >= ctx.limits.max_queued_outputs {
                         return Err(lua_error("resource output queue full"));
                     }
-                    shared.outputs.push(Output::Event {
+                    shared.push_output(Output::Event {
                         resource: ctx.installed.manifest.id.clone(),
                         generation: ctx.installed.generation,
                         recipient,
                         name,
                         payload,
-                    });
+                        scope,
+                    }, &ctx.limits)?;
                     Ok(())
                 },
             )?,
         )?;
         let state = lua.create_table()?;
         let ctx = self.clone();
-        state.set(
-            "get",
-            lua.create_function(move |lua, key: String| {
-                ctx.require("resource.state")?;
-                valid_name(&key).map_err(lua_error)?;
-                let value = ctx
-                    .shared
-                    .lock()
-                    .unwrap()
-                    .states
-                    .get(&ctx.installed.manifest.id)
-                    .and_then(|s| s.get(&key))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                json_value(lua, &value)
-            })?,
-        )?;
-        let ctx = self.clone();
-        state.set(
-            "set",
-            lua.create_function(move |lua, (key, value): (String, mlua::Value)| {
-                if ctx.side != Side::Server {
-                    return Err(lua_error("replicated state is owned by the server"));
-                }
-                ctx.require("resource.state")?;
-                ctx.action()?;
-                valid_name(&key).map_err(lua_error)?;
-                let value = bounded_value(lua, value, MAX_PAYLOAD)?;
-                let mut shared = ctx.shared.lock().unwrap();
-                if shared.outputs.len() >= 4096 {
-                    return Err(lua_error("resource output queue full"));
-                }
-                let values = shared
-                    .states
-                    .entry(ctx.installed.manifest.id.clone())
-                    .or_default();
-                if !value.is_null() && !values.contains_key(&key) && values.len() >= MAX_STATE_KEYS
-                {
-                    return Err(lua_error("64 state keys maximum"));
-                }
-                if value.is_null() {
-                    values.remove(&key);
-                } else {
-                    values.insert(key.clone(), value.clone());
-                }
-                shared.outputs.push(Output::State {
-                    resource: ctx.installed.manifest.id.clone(),
-                    generation: ctx.installed.generation,
-                    key,
-                    value,
-                });
-                Ok(())
-            })?,
-        )?;
+        state.set("get",lua.create_function(move |lua,(key,scope):(String,mlua::Value)| {
+            ctx.require("resource.state")?;valid_name(&key).map_err(lua_error)?;
+            let (scope,_)=normalize_scope(bounded_value(lua,scope,128)?).map_err(lua_error)?;
+            let value=ctx.shared.lock().unwrap().states.get(&(ctx.installed.manifest.id.clone(),scope))
+                .and_then(|state|state.get(&key)).cloned().unwrap_or(Value::Null);
+            json_value(lua,&value)
+        })?)?;
+        let ctx=self.clone();
+        state.set("set",lua.create_function(move |lua,(key,value,scope):(String,mlua::Value,mlua::Value)| {
+            if ctx.side!=Side::Server {return Err(lua_error("replicated state is owned by the server"));}
+            ctx.require("resource.state")?;ctx.action()?;valid_name(&key).map_err(lua_error)?;
+            let (scope_key,scope)=normalize_scope(bounded_value(lua,scope,128)?).map_err(lua_error)?;
+            let value=bounded_value(lua,value,ctx.limits.max_payload_bytes)?;
+            let output=Output::State{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,key:key.clone(),value:value.clone(),scope};
+            let mut shared=ctx.shared.lock().unwrap();
+            if shared.outputs.len()>=ctx.limits.max_queued_outputs||shared.output_bytes.saturating_add(Shared::output_size(&output))>ctx.limits.max_queued_output_bytes {
+                return Err(lua_error("resource output queue full"));
+            }
+            shared.set_state(&ctx.installed.manifest.id,&scope_key,&key,value,ctx.limits.max_state_keys).map_err(lua_error)?;
+            shared.push_output(output,&ctx.limits)
+        })?)?;
         api.set("state", state)?;
         self.install_storage(lua, &api)?;
         let ctx = self.clone();
@@ -371,6 +487,8 @@ impl Bootstrap {
                         lua: lua.clone(),
                         function,
                         budget: budget.clone(),
+                        budget_units: ctx.limits.instruction_budget_units,
+                        metrics: ctx.metrics.clone(),
                     },
                 );
                 Ok(())
@@ -388,7 +506,7 @@ impl Bootstrap {
                             "export target {target} is not a declared dependency"
                         )));
                     }
-                    let value = bounded_value(lua, value, 16 * 1024)?;
+                    let value = bounded_value(lua, value, ctx.limits.max_storage_value_bytes)?;
                     let export = {
                         let mut shared = ctx.shared.lock().unwrap();
                         if shared.export_depth >= 16 {
@@ -410,20 +528,27 @@ impl Bootstrap {
                     // Every cross-VM call has its own bounded budget, and nesting is capped.
                     export
                         .budget
-                        .store(crate::vm::LUA_BUDGET_UNITS, Ordering::Relaxed);
+                        .store(export.budget_units, Ordering::Relaxed);
                     // The engine bridge is scoped to the *calling* resource.
                     // A callee may enqueue its own owned commands, but must not
                     // look up or mutate the caller's bodies through that bridge.
+                    let timer = Timer::start();
                     let result = crate::query::without_host(|| {
                         let argument = json_value(&export.lua, &value)?;
                         let result = export.function.call::<mlua::Value>(argument)?;
+                        crate::vm::check_instruction_budget(&export.budget)?;
                         bounded_value(&export.lua, result, 16 * 1024)
-                    });
+                    }).map_err(|error|lua_error(bounded_error(error)));
+                    timer.record(&export.metrics, "export", export.budget_units.saturating_sub(export.budget.load(Ordering::Relaxed)), result.as_ref().err().map(ToString::to_string).as_deref());
                     {
                         let mut shared = ctx.shared.lock().unwrap();
                         shared.export_depth -= 1;
                         if let Err(error) = &result {
-                            shared.faults.push((target, error.to_string()));
+                            // One pending failure is sufficient to retire an
+                            // owner; repeated caught errors must not accumulate.
+                            if !shared.faults.iter().any(|(owner,_)|owner==&target) {
+                                shared.faults.push((target, bounded_error(error)));
+                            }
                         }
                     }
                     json_value(lua, &result?)
@@ -472,6 +597,128 @@ impl Bootstrap {
                 }
             })?,
         )?;
+        let ctx = self.clone();
+        api.set("teleport", lua.create_function(move |lua, (player, value): (String, mlua::Value)| {
+            if ctx.side != Side::Server { return Err(lua_error("teleport approval is server-only")); }
+            ctx.require("resource.teleport")?;
+            ctx.action()?;
+            let id = player.parse::<u64>().map_err(|_|lua_error("player must be a canonical nonzero decimal ID string"))?;
+            if id == 0 || id.to_string() != player { return Err(lua_error("player must be a canonical nonzero decimal ID string")); }
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Destination {
+                position: [f32; 3], heading: Option<f32>, velocity: Option<[f32; 3]>, instance: Option<u32>,
+            }
+            let dest: Destination = lua.from_value(value)?;
+            let validation = crate::vm::TeleportOptions { position: dest.position, heading: dest.heading, velocity: dest.velocity };
+            if !validation.validate() { return Err(lua_error("invalid teleport destination")); }
+            let mut shared = ctx.shared.lock().unwrap();
+            if shared.outputs.len() >= ctx.limits.max_queued_outputs { return Err(lua_error("resource output queue full")); }
+            shared.push_output(Output::Teleport { resource: ctx.installed.manifest.id.clone(), generation: ctx.installed.generation,
+                player: id, position: dest.position, heading: dest.heading, velocity: dest.velocity, instance: dest.instance }, &ctx.limits)?;
+            Ok(())
+        })?)?;
+        let ctx = self.clone();
+        let entity = lua.create_function(move |lua, value: mlua::Value| {
+            if ctx.side != Side::Server { return Err(lua_error("shared entities are server-only")); }
+            ctx.require("resource.entities")?;
+            ctx.action()?;
+            let command = bounded_value(lua, value, 4096)?;
+            if !command.is_object() || !matches!(command.get("op").and_then(Value::as_str), Some("spawn"|"remove"|"impulse"|"velocity"|"pose"|"transfer")) {
+                return Err(lua_error("invalid shared entity operation"));
+            }
+            let mut shared = ctx.shared.lock().unwrap();
+            shared.push_output(Output::Entity { resource: ctx.installed.manifest.id.clone(), generation: ctx.installed.generation, command }, &ctx.limits)
+        })?;
+        let entities = lua.create_table()?;
+        entities.set("command", entity.clone())?;
+        let ctx=self.clone();
+        entities.set("all",lua.create_function(move |lua,()| {
+            ctx.require("resource.entities")?;
+            let snapshot:Table=lua.globals().get::<Table>("sdk")?.get("snapshot")?;
+            match snapshot.get::<mlua::Value>("entities")? {mlua::Value::Nil=>lua.to_value(&Vec::<Value>::new()),value=>Ok(value)}
+        })?)?;
+        api.set("entities", entities)?;
+        api.set("entity", entity)?;
+        let voice=lua.create_table()?;
+        let ctx=self.clone();
+        let submit:Function=sdk.get("submit")?;
+        voice.set("submit",lua.create_function(move |lua,value:mlua::Value| {
+            ctx.require(if ctx.side==Side::Server {"resource.voice"} else {"engine.voice"})?;
+            ctx.action()?;
+            let operation=bounded_value(lua,value,4096)?;
+            if ctx.side==Side::Server {
+                let command:skate_voice::ServerCommand=serde_json::from_value(operation.clone()).map_err(mlua::Error::external)?;
+                command.validate().map_err(lua_error)?;
+                ctx.shared.lock().unwrap().push_output(Output::Voice{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,operation},&ctx.limits)
+            } else {
+                submit.call::<()>(lua.to_value(&serde_json::json!({"kind":"voice","operation":operation}))?)
+            }
+        })?)?;
+        api.set("voice",voice)?;
+        for (name,cap,limit,field,operations) in [
+            ("world","resource.world",64*1024,"op",&["rail_upsert","rail_remove"][..]),
+            ("competition","resource.competition",16*1024,"kind",&["define","start","cancel","remove"][..]),
+        ] {
+            let table=lua.create_table()?;let ctx=self.clone();
+            table.set(if name=="world" {"command"} else {"submit"},lua.create_function(move |lua,value:mlua::Value| {
+                if ctx.side!=Side::Server {return Err(lua_error("world/competition authority is server-only"));}
+                ctx.require(cap)?;ctx.action()?;
+                let operation=bounded_value(lua,value,limit)?;
+                if !operation.get(field).and_then(Value::as_str).is_some_and(|op|operations.contains(&op)) {return Err(lua_error("invalid authoritative operation"));}
+                let resource=ctx.installed.manifest.id.clone();let generation=ctx.installed.generation;
+                let output=if name=="world" {Output::World{resource,generation,operation}}else{Output::Competition{resource,generation,operation}};
+                ctx.shared.lock().unwrap().push_output(output,&ctx.limits)
+            })?)?;api.set(name,table)?;
+        }
+        let transfer=lua.create_table()?;let ctx=self.clone();
+        transfer.set("start",lua.create_function(move |lua,(key,name,payload,options):(String,String,mlua::Value,Option<Table>)| {
+            ctx.require("resource.events")?;ctx.action()?;valid_name(&key).map_err(lua_error)?;valid_name(&name).map_err(lua_error)?;
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Options {#[serde(default)]recipient:Option<String>,#[serde(default="default_transfer_timeout")]timeout_ms:u64}
+            let options:Options=match options {Some(table)=>lua.from_value(mlua::Value::Table(table))?,None=>Options{recipient:None,timeout_ms:10_000}};
+            let recipient=options.recipient.map(|text|text.parse::<u64>().ok().filter(|id|*id>0&&id.to_string()==text).ok_or_else(||lua_error("recipient must be a canonical nonzero player ID string"))).transpose()?;
+            if (ctx.side==Side::Server)!=recipient.is_some() {return Err(lua_error("server transfers require an explicit recipient; client transfers go only to the server"));}
+            if !(1..=120_000).contains(&options.timeout_ms) {return Err(lua_error("transfer timeout must be 1..120000 milliseconds"));}
+            let payload=bounded_value(lua,payload,ctx.limits.max_payload_bytes)?;
+            ctx.shared.lock().unwrap().push_output(Output::Transfer{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,key,name,payload,recipient,timeout_ms:options.timeout_ms},&ctx.limits)
+        })?)?;
+        let ctx=self.clone();transfer.set("cancel",lua.create_function(move |_,key:String| {
+            ctx.require("resource.events")?;ctx.action()?;valid_name(&key).map_err(lua_error)?;
+            ctx.shared.lock().unwrap().push_output(Output::CancelTransfer{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,key},&ctx.limits)
+        })?)?;api.set("transfer",transfer)?;
+        let services = lua.create_table()?;
+        let ctx = self.clone();
+        services.set("submit", lua.create_function(move |lua, (key, operation, timeout_ms): (String, mlua::Value, u64)| {
+            if ctx.side != Side::Server { return Err(lua_error("backend services are server-only")); }
+            ctx.action()?;
+            valid_name(&key).map_err(lua_error)?;
+            if !(1..=120_000).contains(&timeout_ms) { return Err(lua_error("service timeout must be 1..120000 milliseconds")); }
+            let operation = bounded_value(lua, operation, ctx.limits.max_storage_value_bytes)?;
+            match operation.get("kind").and_then(Value::as_str) {
+                Some("http") => ctx.require("resource.http")?,
+                Some("query" | "transaction" | "migrate") => ctx.require("resource.database")?,
+                _ => return Err(lua_error("unknown backend service operation kind")),
+            }
+            let mut shared = ctx.shared.lock().unwrap();
+            if shared.outputs.len() >= ctx.limits.max_queued_outputs { return Err(lua_error("resource output queue full")); }
+            shared.push_output(Output::Service { resource: ctx.installed.manifest.id.clone(), generation: ctx.installed.generation,
+                key, operation, timeout_ms }, &ctx.limits)?;
+            Ok(())
+        })?)?;
+        let ctx = self.clone();
+        services.set("cancel", lua.create_function(move |_, key: String| {
+            if ctx.side != Side::Server { return Err(lua_error("backend services are server-only")); }
+            if ctx.require("resource.http").is_err() { ctx.require("resource.database")?; }
+            ctx.action()?;
+            valid_name(&key).map_err(lua_error)?;
+            let mut shared = ctx.shared.lock().unwrap();
+            if shared.outputs.len() >= ctx.limits.max_queued_outputs { return Err(lua_error("resource output queue full")); }
+            shared.push_output(Output::CancelService { resource: ctx.installed.manifest.id.clone(), generation: ctx.installed.generation, key }, &ctx.limits)?;
+            Ok(())
+        })?)?;
+        api.set("services",services)?;
         // Restrict resource reads to declared content; no server configuration or
         // arbitrary neighboring files become accessible through the SDK.
         let ctx = self.clone();
@@ -524,15 +771,24 @@ impl Bootstrap {
     fn install_storage(&self, lua: &Lua, api: &Table) -> mlua::Result<()> {
         let values = if self.storage.exists() {
             let metadata = std::fs::metadata(&self.storage).map_err(mlua::Error::external)?;
-            if metadata.len() > MAX_STORAGE as u64 {
-                return Err(lua_error("resource persistence exceeds 64 KiB"));
+            if metadata.len() > self.limits.max_storage_bytes as u64 {
+                return Err(lua_error("resource persistence exceeds configured byte limit"));
             }
-            let bytes = std::fs::read(&self.storage).map_err(mlua::Error::external)?;
+            let mut bytes = Vec::new();
+            use std::io::Read;
+            std::fs::File::open(&self.storage).map_err(mlua::Error::external)?
+                .take(self.limits.max_storage_bytes as u64 + 1).read_to_end(&mut bytes).map_err(mlua::Error::external)?;
+            if bytes.len() > self.limits.max_storage_bytes { return Err(lua_error("resource persistence exceeds configured byte limit")); }
             serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
                 .map_err(mlua::Error::external)?
         } else {
             BTreeMap::new()
         };
+        if values.len() > self.limits.max_storage_keys { return Err(lua_error("persistence key limit reached")); }
+        for (key, value) in &values {
+            valid_name(key).map_err(lua_error)?;
+            validate_value(value, self.limits.max_storage_value_bytes).map_err(lua_error)?;
+        }
         let values = Arc::new(Mutex::new(values));
         let storage = lua.create_table()?;
         let ctx = self.clone();
@@ -552,7 +808,7 @@ impl Bootstrap {
                 ctx.require("resource.storage")?;
                 ctx.action()?;
                 valid_name(&key).map_err(lua_error)?;
-                let value = bounded_value(lua, value, 16 * 1024)?;
+                let value = bounded_value(lua, value, ctx.limits.max_storage_value_bytes)?;
                 let mut original = values.lock().unwrap();
                 let mut next = original.clone();
                 if value.is_null() {
@@ -560,12 +816,12 @@ impl Bootstrap {
                 } else {
                     next.insert(key, value);
                 }
-                if next.len() > 128 {
-                    return Err(lua_error("128 persistence keys maximum"));
+                if next.len() > ctx.limits.max_storage_keys {
+                    return Err(lua_error("persistence key limit reached"));
                 }
                 let bytes = serde_json::to_vec(&next).map_err(mlua::Error::external)?;
-                if bytes.len() > MAX_STORAGE {
-                    return Err(lua_error("resource persistence exceeds 64 KiB"));
+                if bytes.len() > ctx.limits.max_storage_bytes {
+                    return Err(lua_error("resource persistence exceeds configured byte limit"));
                 }
                 std::fs::create_dir_all(ctx.storage.parent().unwrap())
                     .map_err(mlua::Error::external)?;
@@ -594,7 +850,7 @@ fn valid_name(value: &str) -> Result<(), String> {
         Ok(())
     }
 }
-fn bounded_value(lua: &Lua, value: mlua::Value, limit: usize) -> mlua::Result<Value> {
+pub(crate) fn bounded_value(lua: &Lua, value: mlua::Value, limit: usize) -> mlua::Result<Value> {
     fn visit(
         value: &mlua::Value,
         depth: usize,
@@ -673,7 +929,7 @@ fn validate_value(value: &Value, limit: usize) -> Result<(), String> {
         Ok(())
     }
 }
-fn json_value(lua: &Lua, value: &Value) -> mlua::Result<mlua::Value> {
+pub(crate) fn json_value(lua: &Lua, value: &Value) -> mlua::Result<mlua::Value> {
     lua.to_value_with(
         value,
         mlua::serde::SerializeOptions::new()
@@ -689,10 +945,12 @@ struct Instance {
 /// A host is intentionally independent of any UDP/HTTP/Steam implementation.
 pub struct Host {
     side: Side,
+    limits: RuntimeLimits,
     storage: PathBuf,
     installed: BTreeMap<String, InstalledResource>,
     order: Vec<String>,
     instances: BTreeMap<String, Instance>,
+    metrics: BTreeMap<String, Counters>,
     started: BTreeSet<String>,
     shared: Arc<Mutex<Shared>>,
     commands: Vec<(String, Command)>,
@@ -703,6 +961,10 @@ pub struct Host {
 }
 impl Host {
     pub fn new(side: Side, storage_root: PathBuf, scope: &str) -> Result<Self, String> {
+        Self::new_with_limits(side, storage_root, scope, RuntimeLimits::default())
+    }
+    pub fn new_with_limits(side: Side, storage_root: PathBuf, scope: &str, limits: RuntimeLimits) -> Result<Self, String> {
+        limits.validate()?;
         if scope.is_empty() || scope.len() > 2048 {
             return Err("persistence scope must contain 1..2048 bytes".into());
         }
@@ -711,10 +973,12 @@ impl Host {
             .to_string();
         Ok(Self {
             side,
+            limits,
             storage: storage_root.join(scope),
             installed: BTreeMap::new(),
             order: vec![],
             instances: BTreeMap::new(),
+            metrics: BTreeMap::new(),
             started: BTreeSet::new(),
             shared: Arc::new(Mutex::new(Shared::default())),
             commands: vec![],
@@ -726,6 +990,23 @@ impl Host {
     }
     pub fn side(&self) -> Side {
         self.side
+    }
+    /// Current measurements and the last stopped/failed generation. Inclusive
+    /// durations cannot be summed across resources to infer process CPU load.
+    pub fn runtime_metrics(&self) -> BTreeMap<String, RuntimeMetrics> {
+        let mut metrics:BTreeMap<_,_>=self.metrics.iter().map(|(id,counter)| {
+            let mut value=counter.lock().unwrap().clone();
+            value.running=self.running(id);
+            if let Some(instance)=self.instances.get(id) { instance.vm.measure_memory(&mut value); }
+            (id.clone(),value)
+        }).collect();
+        for output in &self.shared.lock().unwrap().outputs {
+            let resource=match output {
+                Output::Event{resource,..}|Output::State{resource,..}|Output::Entity{resource,..}|Output::Service{resource,..}|Output::CancelService{resource,..}|Output::Voice{resource,..}|Output::World{resource,..}|Output::Competition{resource,..}|Output::Transfer{resource,..}|Output::CancelTransfer{resource,..}|Output::Teleport{resource,..}|Output::Log{resource,..}=>resource,
+            };
+            if let Some(value)=metrics.get_mut(resource) {value.queued_outputs+=1;value.queued_output_accounted_bytes=value.queued_output_accounted_bytes.saturating_add(Shared::output_size(output));}
+        }
+        metrics
     }
     pub fn installed(&self) -> &BTreeMap<String, InstalledResource> {
         &self.installed
@@ -743,24 +1024,25 @@ impl Host {
     pub fn generation(&self, id: &str) -> Option<u64> {
         self.installed.get(id).map(|i| i.generation)
     }
-    pub fn state(&self, id: &str, key: &str) -> Option<Value> {
-        self.shared
-            .lock()
-            .unwrap()
-            .states
-            .get(id)
-            .and_then(|s| s.get(key))
-            .cloned()
+    pub fn state(&self,id:&str,key:&str)->Option<Value> {
+        self.shared.lock().unwrap().states.get(&(id.into(),"resource".into())).and_then(|state|state.get(key)).cloned()
     }
-    pub fn states(&self) -> BTreeMap<String, BTreeMap<String, Value>> {
-        self.shared.lock().unwrap().states.clone()
+    pub fn scoped_state(&self,id:&str,key:&str,scope:&Value)->Result<Option<Value>,String> {
+        let (scope,_)=normalize_scope(scope.clone())?;
+        Ok(self.shared.lock().unwrap().states.get(&(id.into(),scope)).and_then(|state|state.get(key)).cloned())
+    }
+    pub fn states(&self)->BTreeMap<String,BTreeMap<String,Value>> {
+        self.shared.lock().unwrap().states.iter().filter(|((_,scope),_)|scope=="resource").map(|((owner,_),state)|(owner.clone(),state.clone())).collect()
+    }
+    pub fn scoped_states(&self)->Vec<(String,Value,String,Value)> {
+        self.shared.lock().unwrap().states.iter().flat_map(|((owner,scope),state)|state.iter().map(move |(key,value)|(owner.clone(),scope_from_key(scope),key.clone(),value.clone()))).collect()
     }
     pub fn install(&mut self, resources: Vec<InstalledResource>) -> Result<(), String> {
         if !self.instances.is_empty() {
             return Err("stop resources before replacing the installed set".into());
         }
-        if resources.len() > 128 {
-            return Err("128 resources maximum".into());
+        if resources.len() > self.limits.max_resources {
+            return Err("resource count limit reached".into());
         }
         let manifests: Vec<_> = resources.iter().map(|r| r.manifest.clone()).collect();
         let order = skate_resources::ordered_manifests(&manifests).map_err(|e| e.to_string())?;
@@ -783,6 +1065,7 @@ impl Host {
             .collect();
         self.order = order;
         self.started.clear();
+        self.metrics.clear();
         Ok(())
     }
     /// Add stopped/new packages without disturbing live VMs. Running definitions
@@ -816,8 +1099,8 @@ impl Host {
             }
             installed.insert(id.clone(), resource);
         }
-        if installed.len() > 128 {
-            return Err("128 resources maximum".into());
+        if installed.len() > self.limits.max_resources {
+            return Err("resource count limit reached".into());
         }
         let mut definitions = installed
             .values()
@@ -898,6 +1181,8 @@ impl Host {
                 .ok_or("resource generation exhausted")?;
         }
         self.started.insert(id.to_string());
+        let metrics=Arc::new(Mutex::new(RuntimeMetrics {generation:installed.generation,language:installed.manifest.language.clone(),..RuntimeMetrics::default()}));
+        self.metrics.insert(id.to_string(),metrics.clone());
         let bootstrap = Bootstrap {
             installed: installed.clone(),
             side: self.side,
@@ -905,18 +1190,24 @@ impl Host {
             shared: self.shared.clone(),
             handlers: Arc::new(Mutex::new(BTreeMap::new())),
             actions: Arc::new(AtomicUsize::new(0)),
+            limits: self.limits.clone(),
+            metrics: metrics.clone(),
         };
-        let vm = match Vm::new_resource(
+        let timer=Timer::start();
+        let result = Vm::new_resource(
             &bootstrap.installed.root,
             &bootstrap.installed.manifest.id,
             &self.snapshot,
             &bootstrap,
-        ) {
+        );
+        timer.record(&metrics,"startup",0,result.as_ref().err().map(String::as_str));
+        let vm = match result {
             Ok(vm) => vm,
             Err(error) => {
                 self.cleanup(id);
-                self.diagnostics.push(format!("{id} startup: {error}"));
-                return Err(format!("{id} startup: {error}"));
+                let error=bounded_error(format_args!("{id} startup: {error}"));
+                self.diagnostic(&error);
+                return Err(error);
             }
         };
         self.instances
@@ -1018,13 +1309,23 @@ impl Host {
             .into_iter()
             .filter_map(|key| shared.commands.remove(&key))
             .collect::<Vec<_>>();
-        shared.states.remove(id);
+        shared.states.retain(|(owner,_),_|owner!=id);
         shared.events.retain(|(owner, _, _, _)| owner != id);
         shared.outputs.retain(|output| match output {
             Output::Event { resource, .. }
             | Output::State { resource, .. }
-            | Output::Log { resource, .. } => resource != id,
+            | Output::Log { resource, .. }
+            | Output::Teleport { resource, .. }
+            | Output::Entity { resource, .. }
+            | Output::Voice { resource, .. }
+            | Output::World { resource, .. }
+            | Output::Competition { resource, .. }
+            | Output::Transfer { resource, .. }
+            | Output::CancelTransfer { resource, .. }
+            | Output::Service { resource, .. }
+            | Output::CancelService { resource, .. } => resource != id,
         });
+        shared.output_bytes = shared.outputs.iter().map(Shared::output_size).sum();
         drop(shared);
         crate::query::without_host(|| {
             drop(retired_exports);
@@ -1035,29 +1336,31 @@ impl Host {
             self.retired.push(id.to_string());
         }
     }
-    pub fn fail(&mut self, id: &str, error: String) {
-        self.diagnostics.push(format!("{id}: {error}"));
+    fn diagnostic(&mut self, message: impl std::fmt::Display) {
+        self.diagnostics.push(bounded_error(message));
         if self.diagnostics.len() > 128 {
-            self.diagnostics.remove(0);
+            self.diagnostics.drain(..self.diagnostics.len()-128);
         }
+    }
+    pub fn fail(&mut self, id: &str, error: String) {
+        self.diagnostic(format_args!("{id}: {error}"));
         let _ = self.stop(id);
         self.retire_export_failures();
     }
     fn retire_export_failures(&mut self) {
         let faults = std::mem::take(&mut self.shared.lock().unwrap().faults);
         for (id, error) in faults {
-            self.diagnostics.push(format!("{id} export: {error}"));
+            self.diagnostic(format_args!("{id} export: {error}"));
             let _ = self.stop(&id);
-        }
-        if self.diagnostics.len() > 128 {
-            self.diagnostics.drain(..self.diagnostics.len() - 128);
         }
     }
     pub fn disconnect(&mut self) {
         for id in self.order.clone().into_iter().rev() {
             self.stop_one(&id);
         }
-        self.shared.lock().unwrap().outputs.clear();
+        let mut shared=self.shared.lock().unwrap();
+        shared.outputs.clear();
+        shared.output_bytes=0;
     }
     pub fn set_snapshot(&mut self, snapshot: Arc<Value>, fields: SnapshotFields) {
         self.snapshot = snapshot;
@@ -1089,7 +1392,7 @@ impl Host {
             self.fail(id, error);
         }
         if let Err(error) = self.pump_events() {
-            self.diagnostics.push(error);
+            self.diagnostic(error);
         }
     }
     fn invoke(
@@ -1106,7 +1409,7 @@ impl Host {
         let commands =
             instance
                 .vm
-                .call_shared(callback, payload, &self.snapshot, physics, &self.fields)?;
+                .call_shared(callback, payload, &self.snapshot, physics, &self.fields).map_err(bounded_error)?;
         self.accept_commands(id, commands);
         Ok(())
     }
@@ -1114,11 +1417,11 @@ impl Host {
         for command in commands {
             if let Command::Log { text } = &command {
                 let mut shared = self.shared.lock().unwrap();
-                if shared.outputs.len() < 4096 {
-                    shared.outputs.push(Output::Log {
+                if shared.outputs.len() < self.limits.max_queued_outputs {
+                    let _ = shared.push_output(Output::Log {
                         resource: id.into(),
                         text: text.clone(),
-                    });
+                    }, &self.limits);
                 }
             }
             if self.side == Side::Client {
@@ -1128,7 +1431,7 @@ impl Host {
     }
     fn pump_events(&mut self) -> Result<(), String> {
         self.retire_export_failures();
-        for _ in 0..MAX_ACTIONS {
+        for _ in 0..self.limits.max_actions {
             let event = self.shared.lock().unwrap().events.pop_front();
             let Some((id, generation, name, payload)) = event else {
                 return Ok(());
@@ -1189,7 +1492,7 @@ impl Host {
             sender,
             &self.snapshot,
             &self.fields,
-        )?;
+        ).map_err(bounded_error)?;
         self.accept_commands(id, commands);
         Ok(())
     }
@@ -1203,7 +1506,7 @@ impl Host {
         payload: Value,
     ) -> Result<(), String> {
         valid_name(name)?;
-        validate_value(&payload, MAX_PAYLOAD)?;
+        validate_value(&payload, self.limits.max_payload_bytes)?;
         if self.side == Side::Server && sender == 0 {
             return Err("client sender identity must be nonzero".into());
         }
@@ -1230,33 +1533,74 @@ impl Host {
         }
         self.pump_events()
     }
-    /// The transport must authenticate this as server data before invoking it.
-    pub fn apply_state(
-        &mut self,
-        resource: &str,
-        generation: u64,
-        key: &str,
-        value: Value,
-    ) -> Result<(), String> {
-        if self.side != Side::Client {
-            return Err("only clients consume replicated server state".into());
-        }
+    /// Deliver a trusted asynchronous host completion to a live resource.
+    pub fn host_event(&mut self,resource:&str,generation:u64,name:&str,payload:Value)->Result<(),String> {
+        valid_name(name)?;validate_value(&payload,self.limits.max_payload_bytes)?;
+        if self.generation(resource)!=Some(generation)||!self.running(resource) {return Err("stale or stopped resource generation".into());}
+        if let Err(error)=self.event(resource,name,payload,0,false) {self.fail(resource,error.clone());return Err(error);}
+        self.pump_events()
+    }
+    /// Complete a server-owned asynchronous operation. A stopped/restarted VM
+    /// must never receive an earlier generation's result.
+    pub fn service_result(&mut self, resource: &str, generation: u64, key: &str, result: Value) -> Result<(), String> {
+        if self.side != Side::Server { return Err("backend service completions are server-only".into()); }
         valid_name(key)?;
-        validate_value(&value, MAX_PAYLOAD)?;
+        validate_value(&result, self.limits.max_storage_value_bytes)?;
         if self.generation(resource) != Some(generation) || !self.running(resource) {
             return Err("stale or stopped resource generation".into());
         }
-        let mut shared = self.shared.lock().unwrap();
-        let state = shared.states.entry(resource.into()).or_default();
-        if !value.is_null() && !state.contains_key(key) && state.len() >= MAX_STATE_KEYS {
-            return Err("64 state keys maximum".into());
+        let payload = serde_json::json!({"key":key,"result":result});
+        if let Err(error) = self.event(resource, "service_result", payload, 0, false) {
+            self.fail(resource,error.clone()); return Err(error);
         }
-        if value.is_null() {
-            state.remove(key);
-        } else {
-            state.insert(key.into(), value);
-        }
-        Ok(())
+        self.pump_events()
+    }
+    /// The transport must authenticate this as server data before invoking it.
+    pub fn apply_state(&mut self,resource:&str,generation:u64,key:&str,value:Value)->Result<(),String> {
+        self.apply_scoped_state(resource,generation,key,value,resource_scope())
+    }
+    pub fn apply_scoped_state(&mut self,resource:&str,generation:u64,key:&str,value:Value,scope:Value)->Result<(),String> {
+        if self.side!=Side::Client {return Err("only clients consume replicated server state".into());}
+        valid_name(key)?;validate_value(&value,self.limits.max_payload_bytes)?;
+        let (scope,_)=normalize_scope(scope)?;
+        if self.generation(resource)!=Some(generation)||!self.running(resource) {return Err("stale or stopped resource generation".into());}
+        self.shared.lock().unwrap().set_state(resource,&scope,key,value,self.limits.max_state_keys)
+    }
+    /// Drop private state that is no longer visible after an interest/instance update.
+    pub fn retain_scoped_state(&mut self,scopes:&[Value]) {
+        if self.side!=Side::Client {return;}
+        let allowed:BTreeSet<_>=scopes.iter().take(65536).filter_map(|scope|normalize_scope(scope.clone()).ok().map(|(key,_)|key)).collect();
+        self.shared.lock().unwrap().states.retain(|(_,scope),_|scope=="resource"||allowed.contains(scope));
+    }
+    pub fn prune_resource_scope(&mut self,resource:&str,scope:&Value)->Result<(),String> {
+        let (scope,_)=normalize_scope(scope.clone())?;
+        let mut shared=self.shared.lock().unwrap();
+        shared.states.remove(&(resource.to_owned(),scope.clone()));
+        shared.outputs.retain(|output|match output {
+            Output::Event{resource:owner,scope:value,..}|Output::State{resource:owner,scope:value,..}=>owner!=resource||normalize_scope(value.clone()).is_ok_and(|(key,_)|key!=scope),
+            _=>true,
+        });
+        shared.output_bytes=shared.outputs.iter().map(Shared::output_size).sum();Ok(())
+    }
+    /// Server target retirement never removes persistent instance-wide or global state.
+    pub fn prune_scoped_targets(&mut self,players:&[u64],entities:&[(String,u64,u64)]) {
+        if self.side!=Side::Server {return;}
+        let players:BTreeSet<_>=players.iter().copied().collect();
+        let entities:BTreeSet<_>=entities.iter().cloned().collect();
+        let visible=|owner:&str,scope:&str| {
+            match scope.split_once(':') {
+                Some(("player",id))=>id.parse::<u64>().is_ok_and(|id|players.contains(&id)),
+                Some(("entity",id))=>id.parse::<u64>().is_ok_and(|id|self.generation(owner).is_some_and(|generation|entities.contains(&(owner.to_owned(),id,generation)))),
+                _=>true,
+            }
+        };
+        let mut shared=self.shared.lock().unwrap();
+        shared.states.retain(|(owner,scope),_|visible(owner,scope));
+        shared.outputs.retain(|output|match output {
+            Output::Event{resource,scope,..}|Output::State{resource,scope,..}=>normalize_scope(scope.clone()).is_ok_and(|(scope,_)|visible(resource,&scope)),
+            _=>true,
+        });
+        shared.output_bytes=shared.outputs.iter().map(Shared::output_size).sum();
     }
     pub fn command(
         &mut self,
@@ -1297,7 +1641,7 @@ impl Host {
             actor,
             &self.snapshot,
             &self.fields,
-        ) {
+        ).map_err(bounded_error) {
             Ok(commands) => {
                 self.accept_commands(&command.owner, commands);
                 self.pump_events()
@@ -1309,7 +1653,9 @@ impl Host {
         }
     }
     pub fn drain_outputs(&mut self) -> Vec<Output> {
-        std::mem::take(&mut self.shared.lock().unwrap().outputs)
+        let mut shared=self.shared.lock().unwrap();
+        shared.output_bytes=0;
+        std::mem::take(&mut shared.outputs)
     }
     pub fn drain_commands(&mut self) -> Vec<(String, Command)> {
         std::mem::take(&mut self.commands)
@@ -1332,8 +1678,16 @@ fn supported_capability(cap: &str) -> bool {
             | "resource.storage"
             | "resource.commands"
             | "resource.exports"
+            | "resource.teleport"
+            | "resource.entities"
+            | "resource.voice"
+            | "resource.world"
+            | "resource.competition"
+            | "resource.database"
+            | "resource.http"
             | "engine.ui"
             | "engine.audio"
+            | "engine.voice"
             | "engine.graphics"
             | "engine.physics"
             | "engine.player"

@@ -19,15 +19,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Linux platform prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake bubblewrap util-linux libasound2-dev libwebkit2gtk-4.1-dev xvfb
+          # Dedicated ephemeral runner: permit the user namespace used by the
+          # managed worker's tested bubblewrap sandbox.
+          if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: networking-${{ runner.os }}
       - name: Shared protocol and dedicated UDP tests
-        run: cargo test --locked -p skate-net -p skate-server -p skate-resources
-      - name: Lua runtime, resource examples and redistributable physics fixtures
-        run: cargo test --locked -p skate-mods --lib --test resource_runtime --test physics_api --test validate_example
+        run: cargo test --locked -p skate-net -p skate-server -p skate-resources -p skate-services -p skate-accounts -p skate-voice -p skate-browser
+      - name: Lua and JavaScript runtimes, resource examples and redistributable physics fixtures
+        run: cargo test --locked -p skate-mods --lib --test resource_runtime --test animation --test physics_api --test validate_example
+      - name: Build trusted managed worker and verify native isolation
+        shell: pwsh
+        run: |
+          $dotnetExecutable = (Get-Command dotnet).Source
+          $resolvedDotnet = (Get-Item -LiteralPath $dotnetExecutable).ResolveLinkTarget($true)
+          if ($resolvedDotnet) { $dotnetExecutable = $resolvedDotnet.FullName }
+          $env:SKATE_DOTNET_ROOT = Split-Path -Parent $dotnetExecutable
+          $env:SKATE_MANAGED_HOST = Join-Path $env:RUNNER_TEMP 'skate-managed-host'
+          dotnet publish crates/skate-mods/managed-host/Skate.ResourceHost.csproj -c Release -p:UseAppHost=false -o $env:SKATE_MANAGED_HOST
+          if ($LASTEXITCODE -ne 0) { throw 'Managed worker compilation failed' }
+          cargo test --locked -p skate-mods --test managed_runtime -- --ignored --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native managed containment integration failed' }
+      - name: Compile native browser and audio device integrations
+        run: cargo build --locked -p skate-browser --features host -p skate-voice --features devices
+      - name: Windows browser process integration
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p skate-browser --features host --test host -- --ignored --test-threads=1
+      - name: Linux browser process integration with delegated limits
+        if: runner.os == 'Linux'
+        run: |
+          sudo systemd-run --wait --pipe --collect \
+            --property="User=$(id -un)" --property=Delegate=yes \
+            --property="WorkingDirectory=$PWD" --setenv="PATH=$PATH" \
+            xvfb-run -a cargo test --locked -p skate-browser --features host --test host -- --ignored --test-threads=1
+      - name: Linux synthetic audio device integration
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p skate-voice --features devices
       - name: Server packaging tests
-        run: python -m unittest tools.test_package_server -v
+        run: python -m unittest tools.test_package_server tools.test_resource_park tools.test_presentation_demo tools.test_verify_resource_park tools.test_verify_resource_presentation tools.test_verify_resource_course -v
       - name: Build and stage the native Linux Steam relay
         if: runner.os == 'Linux'
         run: |
@@ -60,7 +100,7 @@ jobs:
           # Exercise relative overrides when the process and PowerShell working
           # directories differ; outputs must still be rooted in the repository.
           [Environment]::CurrentDirectory = $env:RUNNER_TEMP
-          ./scripts/Build-ServerRelease.ps1 -TargetDirectory target -OutputDirectory target
+          ./scripts/Build-ServerRelease.ps1 -TargetDirectory target -OutputDirectory target -WithManaged
       - name: Verify extracted Windows server UDP and Lua resource downloads
         if: runner.os == 'Windows'
         shell: pwsh

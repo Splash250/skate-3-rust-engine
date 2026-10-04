@@ -1,6 +1,7 @@
 param(
     [string]$TargetDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target'),
-    [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target')
+    [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target'),
+    [switch]$WithManaged
 )
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -42,11 +43,27 @@ try {
     }
     & $executable --help
     if ($LASTEXITCODE -ne 0) { throw 'Dedicated server executable smoke check failed' }
+    $accountExecutable = Join-Path $stage 'skate-account.exe'
+    & cargo rustc --release --locked --target x86_64-pc-windows-msvc `
+        --target-dir $TargetDirectory -p skate-accounts --bin skate-account -- `
+        -C extra-filename= -C debuginfo=0 --emit "link=$accountExecutable"
+    if ($LASTEXITCODE -ne 0) { throw 'Account setup tool compilation failed' }
     $packageArguments = @(
         (Join-Path $ProjectRoot 'tools/package_server.py'),
         '--executable', $executable, '--output-directory', $OutputDirectory,
-        '--revision', $revision.Trim()
+        '--revision', $revision.Trim(), '--account-executable', $accountExecutable
     )
+    if ($WithManaged) {
+        $managed = Join-Path $stage 'managed-host'
+        & dotnet publish (Join-Path $ProjectRoot 'crates/skate-mods/managed-host/Skate.ResourceHost.csproj') `
+            -c Release -o $managed --nologo -p:UseAppHost=false
+        if ($LASTEXITCODE -ne 0) { throw 'Managed resource host publication failed' }
+        $dotnetRoot = Split-Path (Get-Command dotnet -ErrorAction Stop).Source -Parent
+        foreach ($notice in @('LICENSE.txt', 'ThirdPartyNotices.txt')) {
+            Copy-Item -LiteralPath (Join-Path $dotnetRoot $notice) -Destination $managed
+        }
+        $packageArguments += @('--managed-host', $managed)
+    }
     if ($sourceStatus.Count -gt 0) { $packageArguments += '--source-modified' }
     & python @packageArguments
     if ($LASTEXITCODE -ne 0) { throw 'Dedicated server packaging failed' }

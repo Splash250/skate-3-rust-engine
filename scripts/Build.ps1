@@ -1,6 +1,7 @@
 param(
     [switch]$StageOnly,
     [switch]$WithRelay,
+    [switch]$WithBrowser,
     [switch]$Dev,
     [string]$TargetDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target')
 )
@@ -30,6 +31,11 @@ try {
             New-Item -ItemType Directory -Path (Split-Path $refpack) -Force | Out-Null
             & rustc --edition 2024 --crate-type cdylib -C opt-level=3 -C panic=abort -C target-feature=+crt-static $refpackSource -o $refpack
             if ($LASTEXITCODE -ne 0) { throw 'Native RefPack compilation failed' }
+        if ($WithBrowser) {
+            $browserArguments = @('build', '--locked', '-p', 'skate-browser', '--features', 'host', '--target-dir', $TargetDirectory)
+            if (-not $Dev) { $browserArguments += '--release' }
+            & cargo @browserArguments
+            if ($LASTEXITCODE -ne 0) { throw 'Browser companion compilation failed.' }
         }
     }
     $profile = if ($Dev) { 'debug' } else { 'release' }
@@ -54,6 +60,7 @@ try {
     }
     $queue = [System.Collections.Generic.Queue[string]]::new()
     $queue.Enqueue($executable)
+    if ($WithBrowser) { $queue.Enqueue((Join-Path $debugDirectory 'skate-browser-host.exe')) }
     $seen = @{}
     $staged = @()
     while ($queue.Count -gt 0) {

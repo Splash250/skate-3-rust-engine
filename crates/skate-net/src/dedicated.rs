@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const SESSION: u64 = 48_031_030;
-pub const MAX_PLAYERS: usize = 16;
+pub const MAX_PLAYERS: usize = 64;
 pub const GAMEPLAY_KEY: &str = "builtin:gameplay";
 pub const SHOVE_KEY: &str = "builtin:shove";
+pub const RESPAWN_DESTINATION: &str = "builtin:respawn";
+pub const TELEPORT_KEY: &str = "builtin:teleport";
 pub const EFFECT_ACK_KEY: &str = "builtin:effect-ack";
 pub const SHOVE_REACH: f32 = 2.5;
 pub const SHOVE_FACING: f32 = 0.25;
@@ -29,6 +31,51 @@ pub fn effects_key(actor: u64) -> String {
 pub(crate) fn server_key(key: &str) -> bool {
     crate::resources::is_server_key(key) || key.strip_prefix(EFFECT_PREFIX)
         .is_some_and(|id| id.parse::<u64>().is_ok_and(|id| id != 0))
+}
+
+/// A trusted server destination. World collision/asset admission remains the host's
+/// responsibility; the protocol enforces finite coordinates and bounded velocity.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeleportDestination {
+    pub position: [f32; 3],
+    pub heading: f32,
+    pub velocity: [f32; 3],
+    pub instance: u64,
+}
+impl TeleportDestination {
+    pub(crate) fn relocate(&self, body: &mut BodyState) {
+        let [x,y,z,w] = body.root.q;
+        let next = [0., (self.heading * 0.5).sin(), 0., (self.heading * 0.5).cos()];
+        let rotation = multiply(next, [-x,-y,-z,w]);
+        for part in &mut body.bodies {
+            let offset = sub(part.pose.p, body.root.p);
+            let rotated = multiply(multiply(rotation,[offset[0],offset[1],offset[2],0.]),[-rotation[0],-rotation[1],-rotation[2],rotation[3]]);
+            part.pose.p = std::array::from_fn(|i| self.position[i] + rotated[i]);
+            part.pose.q = multiply(rotation,part.pose.q);
+            part.velocity = self.velocity; part.angular = [0.;3];
+        }
+        body.root = crate::Pose { p:self.position, q:next };
+    }
+    pub fn valid(&self) -> bool {
+        self.position.iter().all(|v| v.is_finite() && v.abs() < 100_000.)
+            && self.heading.is_finite() && self.heading.abs() <= std::f32::consts::TAU
+            && self.velocity.iter().all(|v| v.is_finite() && v.abs() <= 200.)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeleportRequest {
+    pub epoch: u64,
+    pub id: u64,
+    pub destination: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MovementReset {
+    pub actor: u64,
+    pub epoch: u64,
+    pub destination: TeleportDestination,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +218,8 @@ pub(crate) fn valid_client_application(key: &str, bytes: &[u8]) -> bool {
                 && (0..=i32::MAX as i64).contains(&state.sequence_score)
                 && (0..=i32::MAX as i64).contains(&state.line_score)
         }),
+        TELEPORT_KEY => serde_json::from_slice::<TeleportRequest>(bytes).is_ok_and(|request|
+            request.epoch != 0 && request.id != 0 && !request.destination.is_empty() && label(&request.destination, 96)),
         SHOVE_KEY => serde_json::from_slice::<ShoveRequest>(bytes)
             .is_ok_and(|request| request.epoch != 0 && request.id != 0 && request.target != 0),
         crate::resources::CLIENT_KEY => crate::resources::valid_client(bytes),
@@ -202,12 +251,6 @@ pub(crate) fn plausible_body(state: &Packed, previous: Option<&Revision>, now: u
     };
     // Arrival time prevents a forged source timestamp granting unlimited travel.
     // Published physical speed preserves the game's legitimate high-speed moves.
-    // A marker teleport/respawn must not strand an otherwise live player.
-    // During this one-second quarantine the old collider expires; a fresh
-    // source sample then establishes a new baseline without sweeping the gap.
-    if now.saturating_sub(previous.received) >= 1000 {
-        return true;
-    }
     let elapsed = now.saturating_sub(previous.received).min(2000) as f32 / 1000.;
     let speed = old
         .bodies
@@ -227,25 +270,42 @@ pub struct Config {
 }
 struct Player {
     epoch: u64,
+    effect_epoch: u64,
+    spawn: Option<TeleportDestination>,
+    world_spawn_pending: bool,
     next_effect: u64,
     sent_through: u64,
     acked: u64,
     effects: VecDeque<Effect>,
     last_request: u64,
+    last_teleport: u64,
+    last_teleport_at: Option<u64>,
     last_shove: Option<u64>,
 }
 impl Player {
     fn new(epoch: u64) -> Self {
         Self {
             epoch,
+            effect_epoch: epoch,
+            spawn: None,
+            world_spawn_pending: false,
             next_effect: 1,
             sent_through: 0,
             acked: 0,
             effects: VecDeque::new(),
             last_request: 0,
+            last_teleport: 0,
+            last_teleport_at: None,
             last_shove: None,
         }
     }
+}
+
+/// A fresh accepted owner sample for explicitly server-verified competitions.
+/// Sequence and receive clock distinguish new observations from repeated reads.
+#[derive(Clone,Copy,Debug)]
+pub struct CompetitionPlayer {
+    pub actor:u64,pub instance:u64,pub epoch:u64,pub position:[f32;3],pub seq:u32,pub received:u64,
 }
 
 pub struct Server {
@@ -256,15 +316,159 @@ pub struct Server {
     blocked: BTreeMap<u64, u64>,
     epoch: u64,
     resources: crate::resources::Authority,
+    destinations: BTreeMap<String, TeleportDestination>,
+    base_world_spawn: Option<TeleportDestination>,
+    world_spawn: Option<TeleportDestination>,
 }
 impl Server {
+    /// Explicitly permit player requests to this destination. No destinations
+    /// are enabled by default; ordinary players cannot choose arbitrary points.
+    pub fn allow_teleport_destination(&mut self, id: String, destination: TeleportDestination) -> Result<(), String> {
+        if id.is_empty() || id == RESPAWN_DESTINATION || !label(&id, 96) || !destination.valid() || (self.destinations.len() >= 256 && !self.destinations.contains_key(&id)) {
+            return Err("Invalid or excessive teleport destination".into());
+        }
+        self.destinations.insert(id, destination);
+        Ok(())
+    }
+    pub fn revoke_teleport_destination(&mut self, id: &str) { self.destinations.remove(id); }
+    pub fn instance_of(&self, actor: u64) -> Option<u64> { self.session.actors.get(&actor).map(|a| a.instance) }
+    /// Trusted authority even while resource admission hides movement samples.
+    pub fn movement_epoch_of(&self, actor: u64) -> Option<u64> { self.session.actors.get(&actor).map(|a| a.movement_epoch) }
+    /// Trusted host moderation. Revoke any account/session credential alongside
+    /// this removal; the core backs off the current endpoint for five seconds.
+    pub fn kick(&mut self, actor:u64, now:u64)->bool {
+        if !self.players.contains_key(&actor) {return false;}
+        self.disconnect_abusive(actor,now); self.sync_players(); true
+    }
+    pub fn peer_for_actor(&self, actor:u64)->Option<u64> {self.session.peer_for_actor(actor)}
+    /// Trusted host snapshots; clients have no corresponding update operation.
+    pub fn publish_entities(&mut self, objects: Vec<crate::entities::Entity>) -> Result<(),String> {
+        self.session.publish_entities(objects.clone())?;self.resources.entities(&objects);Ok(())
+    }
+    pub fn entity_players(&self) -> Vec<crate::entities::Player> {
+        self.players.keys().filter_map(|&actor| {
+            let body=self.body(actor,self.session.service_clock())?;
+            let state=&self.session.actors[&actor];
+            Some(crate::entities::Player {actor,instance:state.instance,epoch:state.movement_epoch,
+                position:body.root.p,rotation:body.root.q,velocity:body.bodies.first().map_or([0.;3],|b|b.velocity)})
+        }).collect()
+    }
+    pub fn now_ms(&self)->u64 {self.session.service_clock()}
+    pub fn competition_players(&self)->Vec<CompetitionPlayer> {
+        self.players.keys().filter_map(|&id| {
+            let body=self.body(id,self.now_ms())?;
+            let actor=&self.session.actors[&id];let sample=actor.body.latest()?;
+            Some(CompetitionPlayer {actor:id,instance:actor.instance,epoch:actor.movement_epoch,
+                position:body.root.p,seq:sample.seq,received:sample.received})
+        }).collect()
+    }
+    pub fn entity_observations(&self)->serde_json::Value {self.session.entity_observations()}
+    /// Live targets for pruning obsolete server VM private state. Instance state
+    /// is intentionally independent of currently connected players.
+    pub fn resource_scope_targets(&self)->(Vec<u64>,Vec<(String,u64,u64)>) {self.resources.scope_targets()}
+    pub fn teleport_now(&mut self, actor: u64, destination: TeleportDestination) -> Result<u64,String> {
+        self.teleport(actor, destination, self.session.service_clock())
+    }
+    /// Trusted host operation; capability checks belong to the resource host.
+    pub fn teleport(&mut self, actor: u64, destination: TeleportDestination, now: u64) -> Result<u64, String> {
+        if !destination.valid() || !self.players.contains_key(&actor) || !self.resource_ready(actor) {
+            return Err("Invalid destination or unavailable player".into());
+        }
+        let instance_changed=self.instance_of(actor)!=Some(destination.instance);
+        self.session.advance_movement_epoch(self.epoch);
+        let epoch = self.session.reset_movement(actor, destination, now)?;
+        self.epoch = self.epoch.max(epoch);
+        self.overlaps.retain(|(a,b)| *a != actor && *b != actor);
+        self.last_contact.retain(|(a,b),_| *a != actor && *b != actor);
+        // Pre-relocation impulses and requests must never act in the new instance.
+        let player = self.players.get_mut(&actor).unwrap();
+        player.spawn = Some(TeleportDestination { velocity:[0.;3], ..destination });
+        player.effects.clear();
+        player.effect_epoch = epoch;
+        player.next_effect = 1;
+        player.acked = 0;
+        player.sent_through = 0;
+        player.last_request = 0;
+        if instance_changed && self.resources.active() {
+            player.epoch=epoch;
+            self.resources.add(actor,epoch);
+            self.resources.context(actor,destination.instance,Some(destination.position));
+            self.session.resource_admission(actor,false);
+            // Replaces the old application snapshot immediately. Earlier
+            // packets are rejected by the client's reset-derived epoch floor.
+            if let Some(bytes)=self.resources.record(actor) {self.session.publish_application(&crate::resources::server_key(actor),bytes,now);}
+        }
+        Ok(epoch)
+    }
+    fn teleports(&mut self, now: u64) {
+        // Admission already accepts an initial owner body. Retain that baseline
+        // as the default recovery point; later trusted host travel replaces it.
+        // A recovery request never contains a client-proposed destination.
+        for (&id, player) in &mut self.players {
+            if player.spawn.is_none() {
+                if let Some(body) = self.session.actors[&id].body.latest().and_then(|r| r.state.unpack_body()) {
+                    let [x,y,z,w] = body.root.q;
+                    player.spawn = Some(TeleportDestination {
+                        position:body.root.p, heading:(2.*(w*y+x*z)).atan2(1.-2.*(x*x+y*y)),
+                        velocity:[0.;3], instance:self.session.actors[&id].instance,
+                    });
+                }
+            }
+        }
+        let requests: Vec<_> = self.players.keys().filter_map(|&id| {
+            let value = &self.session.actors[&id].application.get(TELEPORT_KEY)?.value;
+            Some((id, serde_json::from_slice::<TeleportRequest>(value).ok()?))
+        }).collect();
+        for (actor, request) in requests {
+            let player = self.players.get_mut(&actor).unwrap();
+            if request.epoch != self.session.actors[&actor].movement_epoch || request.id <= player.last_teleport { continue; }
+            let destination = if request.destination == RESPAWN_DESTINATION {
+                // The initial reliable request can precede its first movement
+                // keyframe; keep waiting rather than consume and strand it.
+                let Some(spawn) = player.spawn else {continue;};
+                Some(spawn)
+            } else { self.destinations.get(&request.destination).copied() };
+            if player.last_teleport_at.is_some_and(|at| now.saturating_sub(at) < 500) { continue; }
+            player.last_teleport = request.id;
+            if let Some(destination) = destination {
+                player.last_teleport_at = Some(now);
+                let _ = self.teleport(actor, destination, now);
+            }
+        }
+    }
+    /// Trusted host bootstrap metadata, never a client observation. Used only
+    /// when removing a required world; ordinary initial admission is unchanged.
+    pub fn set_base_world_spawn(&mut self, spawn: TeleportDestination) -> Result<(), String> {
+        if !spawn.valid() {return Err("Invalid base-world spawn".into());}
+        self.base_world_spawn=Some(TeleportDestination {velocity:[0.;3],..spawn});
+        Ok(())
+    }
+    /// Configure the trusted spawn of the validated required world before
+    /// advertising its revision. Removal resets existing players to the trusted
+    /// base world after readiness; their private instance remains unchanged.
+    pub fn set_world_spawn(&mut self, spawn:Option<TeleportDestination>)->Result<(),String> {
+        if spawn.is_some_and(|s|!s.valid()) {return Err("Invalid required-world spawn".into());}
+        let removed_world=self.world_spawn.is_some() && spawn.is_none();
+        if removed_world && self.base_world_spawn.is_none() {return Err("Required-world removal needs a trusted base-world spawn".into());}
+        self.world_spawn=spawn;
+        for player in self.players.values_mut() {
+            player.world_spawn_pending |= spawn.is_some() || removed_world;
+            if removed_world {player.spawn=None;}
+        }
+        Ok(())
+    }
+    pub fn set_resource_budgets(&mut self, budgets: crate::resources::Budgets) -> Result<(), String> { self.resources.set_budgets(budgets) }
     pub fn configure_resources(&mut self, revision: String, port: u16, generations: BTreeMap<String,u64>) -> Result<(),String> {
         self.resources.configure(revision,port,generations)?;
         self.session.require_resources();
         // Require a new readiness claim even if a resource changed without reconnecting.
         for player in self.players.values_mut() {
             self.epoch = self.epoch.checked_add(1).ok_or("Resource epoch exhausted")?;
+            let spawn = player.spawn;
+            let pending = player.world_spawn_pending;
             *player = Player::new(self.epoch);
+            player.spawn = spawn;
+            player.world_spawn_pending=pending || self.world_spawn.is_some();
         }
         self.overlaps.clear(); self.last_contact.clear();
         Ok(())
@@ -272,11 +476,14 @@ impl Server {
     pub fn resource_ready(&self, actor:u64)->bool {self.resources.ready(actor)}
     pub fn drain_resource_events(&mut self)->Vec<crate::resources::Incoming>{self.resources.drain()}
     pub fn send_resource(&mut self, recipient:Option<u64>, message:crate::resources::Message)->Result<(),String>{self.resources.send(recipient,message)}
+    pub fn start_large_resource(&mut self,recipient:u64,message:crate::resources::Message)->Result<crate::resources::LargeTicket,String>{self.resources.start_large(recipient,message)}
+    pub fn large_resource_progress(&self,ticket:crate::resources::LargeTicket)->Result<crate::bulk::Progress,String>{self.resources.large_progress(ticket)}
+    pub fn cancel_large_resource(&mut self,ticket:crate::resources::LargeTicket)->Result<(),String>{self.resources.cancel_large(ticket)}
     pub fn player_observations(&self) -> serde_json::Value {
         serde_json::Value::Array(self.players.keys().filter(|id|self.resource_ready(**id)).map(|id| {
             let actor=&self.session.actors[id];
             let position=actor.body.latest().map(|r|r.state.position());
-            serde_json::json!({"id":id.to_string(),"position":position,"gameplay":actor.application.get(GAMEPLAY_KEY).and_then(|r|serde_json::from_slice::<Gameplay>(&r.value).ok()).unwrap_or_default()})
+            serde_json::json!({"id":id.to_string(),"position":position,"instance":actor.instance.to_string(),"movement_epoch":actor.movement_epoch.to_string(),"gameplay":actor.application.get(GAMEPLAY_KEY).and_then(|r|serde_json::from_slice::<Gameplay>(&r.value).ok()).unwrap_or_default()})
         }).collect())
     }
     fn service_resources(&mut self, now:u64) {
@@ -285,10 +492,19 @@ impl Server {
         self.resources.retain(&ids);
         for id in ids {
             self.resources.add(id,self.players[&id].epoch);
+            let actor=&self.session.actors[&id];
+            self.resources.context(id,actor.instance,actor.body.latest().map(|r|r.state.position()));
             if let Some(record)=self.session.actors[&id].application.get(crate::resources::CLIENT_KEY){
                 self.resources.receive(id,&record.value,now);
             }
-            self.session.resource_admission(id,self.resources.ready(id));
+            let ready=self.resources.ready(id);
+            self.session.resource_admission(id,ready);
+            if ready && self.players[&id].world_spawn_pending {
+                if let Some(mut destination)=self.world_spawn.or(self.base_world_spawn) {
+                    destination.instance=self.instance_of(id).unwrap_or(0);
+                    if self.teleport(id,destination,now).is_ok() {self.players.get_mut(&id).unwrap().world_spawn_pending=false;}
+                }
+            }
             if let Some(bytes)=self.resources.record(id){self.session.publish_application(&crate::resources::server_key(id),bytes,now);}
         }
         for id in self.resources.disconnects(){self.disconnect_abusive(id,now);}
@@ -299,7 +515,7 @@ impl Server {
             || !(1..=MAX_PLAYERS).contains(&config.max_players)
         {
             return Err(
-                "Dedicated server requires nonzero session/server IDs and 1..=16 players".into(),
+                "Dedicated server requires nonzero session/server IDs and 1..=64 players".into(),
             );
         }
         // Each process/rejoin gets a new ordered effect epoch. Source capture
@@ -327,6 +543,9 @@ impl Server {
             blocked: BTreeMap::new(),
             epoch,
             resources: crate::resources::Authority::default(),
+            destinations: BTreeMap::new(),
+            base_world_spawn: None,
+            world_spawn: None,
         })
     }
     pub fn player_count(&self) -> usize {
@@ -353,6 +572,7 @@ impl Server {
         self.sync_players();
         self.service_resources(now);
         self.sync_players();
+        self.teleports(now);
         self.read_acks();
         self.shoves(now);
         self.collisions(now);
@@ -384,7 +604,8 @@ impl Server {
                     .epoch
                     .checked_add(1)
                     .expect("Dedicated session epochs exhausted");
-                self.players.insert(id, Player::new(self.epoch));
+                let mut player=Player::new(self.epoch);player.world_spawn_pending=self.world_spawn.is_some();
+                self.players.insert(id, player);
             }
         }
         self.overlaps
@@ -413,7 +634,7 @@ impl Server {
             let Ok(ack) = serde_json::from_slice::<EffectAck>(&record.value) else {
                 continue;
             };
-            if ack.epoch != player.epoch
+            if ack.epoch != player.effect_epoch
                 || ack.through < player.acked
                 || ack.through > player.sent_through
             {
@@ -455,7 +676,7 @@ impl Server {
             let Some(player) = self.players.get_mut(&source) else {
                 continue;
             };
-            if request.epoch != player.epoch || request.id <= player.last_request {
+            if request.epoch != player.effect_epoch || request.id <= player.last_request {
                 continue;
             }
             player.last_request = request.id;
@@ -464,6 +685,7 @@ impl Server {
                 .is_some_and(|at| now.saturating_sub(at) < SHOVE_COOLDOWN_MS)
                 || source == request.target
                 || !self.players.contains_key(&request.target)
+                || self.instance_of(source) != self.instance_of(request.target)
             {
                 continue;
             }
@@ -515,6 +737,7 @@ impl Server {
         let mut overlaps = BTreeSet::new();
         for (index, (a_id, a)) in bodies.iter().enumerate() {
             for (b_id, b) in &bodies[index + 1..] {
+                if self.instance_of(*a_id) != self.instance_of(*b_id) { continue; }
                 let difference = sub(b.root.p, a.root.p);
                 let horizontal = [difference[0], 0., difference[2]];
                 let distance = length(horizontal);
@@ -685,7 +908,7 @@ impl Server {
             // Bound each record below the existing application MTU. Keep the
             // whole queue until the game, not merely the network, acknowledges it.
             let mut batch = EffectBatch {
-                epoch: player.epoch,
+                epoch: player.effect_epoch,
                 effects: player.effects.iter().take(BATCH_SIZE).cloned().collect(),
             };
             let bytes = loop {
@@ -720,4 +943,8 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 fn length(a: [f32; 3]) -> f32 {
     dot(a, a).sqrt()
+}
+
+fn multiply([x,y,z,w]:[f32;4], [a,b,c,d]:[f32;4]) -> [f32;4] {
+    [w*a+x*d+y*c-z*b, w*b-x*c+y*d+z*a, w*c+x*b-y*a+z*d, w*d-x*a-y*b-z*c]
 }

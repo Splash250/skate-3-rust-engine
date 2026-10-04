@@ -81,6 +81,7 @@ fn pump(
 #[test]
 fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_assets() {
     let mut host = Host::bind(Options {
+        accounts: None,
         resources: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
@@ -184,6 +185,7 @@ fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_ass
 #[test]
 fn oversized_and_unknown_datagrams_do_not_prevent_valid_admission() {
     let mut host = Host::bind(Options {
+        accounts: None,
         resources: None,
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         session: dedicated::SESSION,
@@ -242,6 +244,7 @@ fn publish_body(client: &mut Client, p: [f32; 3], velocity: [f32; 3], now: u64) 
 #[test]
 fn real_udp_shoves_and_collisions_are_delivered_as_server_effects() {
     let mut host = Host::bind(Options {
+        accounts: None,
         resources: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,

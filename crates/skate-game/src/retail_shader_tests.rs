@@ -141,7 +141,7 @@ fn world_shader_validates_under_non_uniform_material_slots() {
 /// with `SkyMaterial`'s `AsBindGroup` derive.
 #[test]
 fn sky_shader_validates() {
-    validate(include_str!("retail_sky.wgsl"), &[]);
+    validate(include_str!("retail_sky.wgsl"), &["VERTEX_POSITIONS"]);
 }
 
 /// The shadow pass is the only place a second vertex layout is in play, and a

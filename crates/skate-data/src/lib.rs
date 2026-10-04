@@ -17,6 +17,7 @@ pub mod physics_skeleton;
 mod sha256;
 pub mod state_graph;
 pub mod skate_map;
+pub mod resource_world;
 pub mod retail_collision;
 pub mod xex;
 pub mod ocean_pca;

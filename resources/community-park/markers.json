@@ -1,0 +1,20 @@
+[
+  {
+    "id": "entry",
+    "position": [
+      -8,
+      1,
+      0
+    ],
+    "radius": 1
+  },
+  {
+    "id": "finish",
+    "position": [
+      8,
+      1,
+      0
+    ],
+    "radius": 1.5
+  }
+]

@@ -143,6 +143,7 @@ pub(super) fn advance(
     }
     let teleported = callbacks.teleported;
     if teleported {
+        skater.travel_generation = skater.travel_generation.checked_add(1).expect("Travel generation exhausted");
         // TU3 82DB8D6C..8DA4 repeats the controller reset after Skeleton.
         super::offboard::board_manager::runtime::reset_for_teleport(physics, skater);
     }

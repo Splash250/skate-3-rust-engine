@@ -72,7 +72,9 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var diffuse_uv=i.uv;
     // The scroll offset is constant across the primitive, so gradients are unchanged.
     if fam==14u { diffuse_uv+=fract(frame_state.clock.x*p.water[1].xy*vec2<f32>(1.0,-1.0)); }
-    let a = bindings::sample_diffuse(slot, diffuse_uv, g);
+    var a = bindings::sample_diffuse(slot, diffuse_uv, g);
+    // Color-only portable .skate materials have no diffuse texture page.
+    if (flags & 1024u) != 0u { a=p.water[3]; }
     let lm = bindings::sample_lightmap(slot, i.uv_b, 0.0).rgb;
     // Sample before alpha rejection: gradients must stay uniform.
     var nm = vec3<f32>(0.5,0.5,1.0);

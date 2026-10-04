@@ -1077,3 +1077,7 @@ function sdk.world_audio.alarm_rule(opts) end
 ---The retail pools (instances, published, audible, waiting) and, under `own` (world_audio >= 4), the private MixMap's (instances 16 / 16, published, audible, waiting).
 ---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, waiting:integer, speech_lines:integer, own:{instances:{traffic:integer,peds:integer}, published:table, audible:table, waiting:integer}}
 function sdk.world_audio.info() end
+---Cosmetic named-rig clip banks, blends, appearances and attachments; sdk/ANIMATION.md.
+sdk.animation = {version=1}
+---@param operation {op:'load'|'unload'|'play'|'stop'|'appearance'|'attach'|'remove',key:string,bank?:string,clip?:string,path?:string,target?:string,bone?:string,speed?:number,looped?:boolean,fade_in?:number,fade_out?:number,weight?:number,offset?:number,translation?:Vec3,rotation?:Quat,scale?:Vec3}
+function sdk.animation.submit(operation) end

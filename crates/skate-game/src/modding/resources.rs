@@ -4,7 +4,7 @@ use super::Mods;
 use bevy::prelude::*;
 use skate_mods::resources::{Host, InstalledResource, Output, Side};
 use skate_net::resources::{CLIENT_KEY, Client, Kind, Offer};
-use skate_resources::{Cache, DownloadReport, Limits, ResourceSet};
+use skate_resources::{Cache, DownloadReport, ResourceSet};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -38,13 +38,25 @@ pub(super) struct ClientResources {
     source: String,
     identity: Option<Identity>,
     channel: Client,
+    local_budgets: skate_net::resources::Budgets,
+    asset_limits:super::graphics::asset_limits::Limits,
+    configuration_error: Option<String>,
+    transfers: skate_net::transfers::Transfers,
+    diagnostic_sample: Option<std::time::Instant>,
     pending: Option<Download>,
+    mounting: Option<DownloadReport>,
     active: Option<Active>,
     failure: Option<String>,
 }
 impl ClientResources {
     pub fn new(config: &crate::config::Config, root: PathBuf) -> Self {
         let endpoint = config.multiplayer.connect;
+        let (local_budgets,configuration_error)=match read_network_budgets(&root) {
+            Ok(value)=>(value,None),Err(error)=>(Default::default(),Some(error)),
+        };
+        let (asset_limits,asset_error)=match super::graphics::asset_limits::Limits::read(&root) {
+            Ok(value)=>(value,None),Err(error)=>(Default::default(),Some(error)),
+        };
         Self {
             endpoint,
             root,
@@ -52,8 +64,15 @@ impl ClientResources {
                 .map(|a| source(a, config.multiplayer.session))
                 .unwrap_or_default(),
             identity: None,
-            channel: Client::default(),
+            channel: Client::with_budgets(local_budgets).expect("validated network budgets"),
+            local_budgets,
+            configuration_error:configuration_error.or(asset_error),
+            asset_limits,
+            transfers: Default::default(),
+            diagnostic_sample: (std::env::var("SKATE_RESOURCE_DIAGNOSTICS").as_deref() == Ok("1"))
+                .then(std::time::Instant::now),
             pending: None,
+            mounting: None,
             active: None,
             failure: None,
         }
@@ -90,7 +109,7 @@ fn safe_default(capability: &str) -> bool {
     capability.starts_with("resource.")
         || matches!(
             capability,
-            "engine.ui" | "engine.audio" | "engine.graphics" | "engine.inspect"
+            "engine.ui" | "engine.audio" | "engine.graphics" | "engine.inspect" | "engine.voice"
         )
 }
 fn grants_for(set: &ResourceSet, source: &str, policy: &Policy) -> Result<Grants, String> {
@@ -126,10 +145,32 @@ fn read_policy(root: &Path) -> Result<Policy, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|e| format!("resource grants: {e}"))
 }
+fn read_network_budgets(root:&Path)->Result<skate_net::resources::Budgets,String> {
+    let path=root.join("network-budgets.json");
+    let metadata=match std::fs::symlink_metadata(&path) {
+        Ok(value)=>value,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(Default::default()),
+        Err(error)=>return Err(format!("Local resource budgets: {error}")),
+    };
+    if !metadata.is_file() || metadata.len()>16384 {return Err("network-budgets.json must be a regular file of at most16KiB".into());}
+    use std::io::Read;
+    let mut bytes=Vec::new();
+    std::fs::File::open(path).map_err(|e|e.to_string())?.take(16385).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+    if bytes.len()>16384 {return Err("network-budgets.json exceeds16KiB".into());}
+    let value:serde_json::Value=serde_json::from_slice(&bytes)
+        .map_err(|e|format!("Local resource budgets: {e}"))?;
+    if !value.is_object() {return Err("network-budgets.json must contain an object".into());}
+    let value:skate_net::resources::Budgets=serde_json::from_value(value)
+        .map_err(|e|format!("Local resource budgets: {e}"))?;
+    value.validate()?;Ok(value)
+}
 
 fn retire(world: &mut World, mods: &mut Mods, client: &mut ClientResources, unpin: bool) {
     client.cancel();
+    if let Err(error)=super::resource_world::clear(world) {warn!("Resource native rail cleanup: {error}");}
+    client.mounting=None;
+    crate::map_transition::unmount_resource(world);
     client.channel.set_ready(false);
+    client.transfers=Default::default();
     mods.manager.detach_resources();
     // Cleanup must run before a new instance can reuse the same owner ID.
     super::apply(world, mods);
@@ -145,7 +186,7 @@ fn retire(world: &mut World, mods: &mut Mods, client: &mut ClientResources, unpi
     mods.last_contacts.clear();
     mods.native_snapshot = None;
     if unpin && client.active.is_some() {
-        if let Ok(cache) = Cache::open(&client.root, Limits::default()) {
+        if let Ok(cache) = Cache::open(&client.root, client.asset_limits.content) {
             if let Err(error) = cache.deactivate(&client.source) {
                 warn!("Resource cache unpin: {error}");
             }
@@ -159,7 +200,7 @@ fn fail(world: &mut World, mods: &mut Mods, client: &mut ClientResources, error:
     if let Some(active) = &client.active
         && client.channel.ready()
     {
-        if let Ok(cache) = Cache::open(&client.root, Limits::default()) {
+        if let Ok(cache) = Cache::open(&client.root, client.asset_limits.content) {
             let _ =
                 cache.record_activation(&active.set, &client.source, &active.grants, Some(&error));
         }
@@ -189,6 +230,7 @@ fn poll_inner(
     mods: &mut Mods,
     client: &mut ClientResources,
 ) -> Result<(), String> {
+    if let Some(error)=client.configuration_error.take() {return Err(error);}
     let net = world.resource::<crate::multiplayer::Multiplayer>();
     mods.skater_remote = net
         .resource_skater_states()
@@ -237,15 +279,16 @@ fn poll_inner(
         Some((
             net.mod_identity().1,
             net.host_actor(),
-            net.connection_generation(),
+            net.resource_scope_epoch(),
         ))
     } else {
         None
     };
     let record = net.resource_record();
+    let visible_scopes=net.visible_resource_scopes();
     if identity != client.identity {
         retire(world, mods, client, true);
-        client.channel = Client::default();
+        client.channel = Client::with_budgets(client.local_budgets)?;
         client.identity = identity;
         // A new admitted connection may retry; an offline failure stays visible.
         if identity.is_some() {
@@ -282,30 +325,44 @@ fn poll_inner(
             .unwrap_or_else(|_| Err("resource download worker failed".to_string()));
         if current {
             let report = result?;
-            activate(world, mods, client, report)?;
+            client.mounting=Some(report);
         }
     }
     if client.identity.is_none() || client.failure.is_some() {
         return Ok(());
     }
-    if !client.channel.ready() && client.pending.is_none() {
+    if let Some(report)=&client.mounting {
+        let ready=if let Some(resource)=report.set.resources.iter().find(|r|r.manifest.world.is_some()) {
+            let spec=resource.manifest.world.as_ref().unwrap();
+            let root=report.roots.get(&resource.manifest.id).ok_or("Required world root is absent")?;
+            let digest=&resource.files.get(&spec.map).ok_or("Required world file is absent")?.digest;
+            crate::map_transition::mount_resource(world,
+                format!("{}:{}:{}",resource.manifest.id,resource.generation,digest),
+                crate::map_library::Entry {label:resource.manifest.id.clone(),path:Some(root.join(&spec.map))},
+                spec.max_decoded_bytes as usize,spec.lods.iter().map(|lod|(root.join(&lod.map),lod.distance)).collect(),
+                crate::map_render::streaming::Options::read(&client.root)?)?
+        } else {crate::map_transition::resource_world_idle(world)?};
+        if ready {let report=client.mounting.take().unwrap();activate(world,mods,client,report)?;}
+    }
+    if !client.channel.ready() && client.pending.is_none() && client.mounting.is_none() {
         if let Some(offer) = client.channel.offer().cloned() {
             let endpoint = SocketAddr::new(client.endpoint.unwrap().ip(), offer.port);
             let root = client.root.clone();
             let source = client.source.clone();
             let revision = offer.revision.clone();
+            let asset_limits=client.asset_limits;
             let cancel = Arc::new(AtomicBool::new(false));
             let flag = cancel.clone();
             let worker = std::thread::Builder::new()
                 .name("resource-download".into())
                 .spawn(move || {
-                    let cache = Cache::open(root, Limits::default()).map_err(|e| e.to_string())?;
+                    let cache = Cache::open(root, asset_limits.content).map_err(|e| e.to_string())?;
                     let report =
                         skate_resources::download_set(endpoint, &revision, &cache, &source, &flag)
                             .map_err(|e| e.to_string())?;
                     // Validate all downloadable models before any VM starts, so
                     // metadata/physics model helpers share the graphics boundary.
-                    if let Err(error) = validate_models(&report, &flag) {
+                    if let Err(error) = validate_models(&report, &flag,asset_limits) {
                         let _ = cache.record_activation(
                             &report.set,
                             &source,
@@ -326,7 +383,17 @@ fn poll_inner(
         }
     }
     if let Some(host) = mods.manager.resources.as_mut() {
+        let scopes:Vec<_>=visible_scopes.iter().filter_map(|scope|serde_json::to_value(scope).ok()).collect();
+        host.retain_scoped_state(&scopes);
         for message in client.channel.take_incoming() {
+            if !visible_scopes.contains(&message.scope) {continue;}
+            if message.kind==Kind::State && message.name==skate_net::rails::STATE_KEY {
+                let allowed=client.active.as_ref().is_some_and(|active|active.grants.get(&message.resource)
+                    .is_some_and(|grants|grants.iter().any(|cap|cap=="resource.world")))
+                    && host.running(&message.resource) && host.generation(&message.resource)==Some(message.generation);
+                if !allowed {return Err("Native rail state requires a live resource.world grant".into());}
+                super::resource_world::apply(world,message.resource.clone(),message.generation,message.value.clone())?;
+            }
             match message.kind {
                 Kind::Event => host.receive(
                     0,
@@ -335,11 +402,12 @@ fn poll_inner(
                     &message.name,
                     message.value,
                 )?,
-                Kind::State => host.apply_state(
+                Kind::State => host.apply_scoped_state(
                     &message.resource,
                     message.generation,
                     &message.name,
                     message.value,
+                    serde_json::to_value(message.scope).map_err(|e|e.to_string())?,
                 )?,
             }
         }
@@ -349,19 +417,33 @@ fn poll_inner(
     publish(world, client)
 }
 
-fn validate_models(report: &DownloadReport, cancel: &AtomicBool) -> Result<(), String> {
+fn validate_models(report: &DownloadReport, cancel: &AtomicBool,limits:super::graphics::asset_limits::Limits) -> Result<(), String> {
+    let mut decoded=0;
     for resource in &report.set.resources {
         let root = report
             .roots
             .get(&resource.manifest.id)
             .ok_or("missing materialized resource")?;
+        if let Some(spec)=&resource.manifest.world {
+            let bytes=skate_mods::read_bounded(root,&spec.map,512*1024*1024)?;
+            let mut remaining=spec.max_decoded_bytes as usize;
+            let map=skate_data::skate_map::SkateMap::parse_budgeted(&bytes,&mut remaining,false)?;
+            skate_data::resource_world::validate(&map).map_err(|e|format!("{}/{}: {e}",resource.manifest.id,spec.map))?;
+            for lod in &spec.lods {
+                let bytes=skate_mods::read_bounded(root,&lod.map,512*1024*1024)?;
+                let map=skate_data::skate_map::SkateMap::parse_budgeted(&bytes,&mut remaining,true)?;
+                skate_data::resource_world::validate_render(&map).map_err(|e|format!("{}/{}: {e}",resource.manifest.id,lod.map))?;
+            }
+            limits.charge(&mut decoded,(spec.max_decoded_bytes as usize-remaining) as u64)?;
+        }
         for path in resource.files.keys().filter(|p| p.ends_with(".glb")) {
             if cancel.load(Ordering::Relaxed) {
                 return Err("resource validation cancelled".into());
             }
-            let bytes = skate_mods::read_bounded(root, path, 16 * 1024 * 1024)?;
-            super::graphics::validate_resource_glb(&bytes)
+            let bytes = skate_mods::read_bounded(root, path, limits.model_file_bytes)?;
+            let usage=super::graphics::validate_resource_glb_with_limits(&bytes,limits)
                 .map_err(|e| format!("{}/{path}: {e}", resource.manifest.id))?;
+            limits.charge(&mut decoded,usage)?;
         }
     }
     Ok(())
@@ -373,11 +455,20 @@ fn activate(
     client: &mut ClientResources,
     report: DownloadReport,
 ) -> Result<(), String> {
-    let cache = Cache::open(&client.root, Limits::default()).map_err(|e| e.to_string())?;
+    let cache = Cache::open(&client.root, client.asset_limits.content).map_err(|e| e.to_string())?;
     let mut granted = Grants::new();
     let result = (|| {
         granted = grants_for(&report.set, &client.source, &read_policy(&client.root)?)?;
-        let mut host = Host::new(Side::Client, client.root.join("state"), &client.source)?;
+        let budgets=client.channel.budgets();
+        let mut limits=skate_mods::resources::RuntimeLimits::default();
+        limits.max_resources=budgets.resources;
+        limits.max_payload_bytes=budgets.value_bytes;
+        limits.max_state_keys=budgets.state_keys;
+        let maximum=64*1024*1024/limits.max_payload_bytes;
+        limits.max_state_keys=limits.max_state_keys.min(maximum);
+        limits.max_queued_events=limits.max_queued_events.min(maximum);
+        limits.max_queued_outputs=limits.max_queued_outputs.min(maximum);
+        let mut host = Host::new_with_limits(Side::Client, client.root.join("state"), &client.source,limits)?;
         host.install(
             report
                 .set
@@ -449,7 +540,7 @@ fn publish(world: &mut World, client: &ClientResources) -> Result<(), String> {
         return Err("resource control record could not be published".into());
     }
     if !client.channel.ready() {
-        net.status = "Downloading and verifying required server resources...".into();
+        net.status = if client.mounting.is_some() {"Preparing required world and collision..."} else {"Downloading and verifying required server resources..."}.into();
     }
     Ok(())
 }
@@ -466,6 +557,16 @@ pub(super) fn flush(world: &mut World) {
                     .resources
                     .as_mut()
                     .ok_or("required resource host is not running")?;
+                if let Some(sampled) = client.diagnostic_sample.as_mut()
+                    && sampled.elapsed() >= std::time::Duration::from_secs(5)
+                {
+                    for (id, metrics) in host.runtime_metrics() {
+                        if let Ok(value) = serde_json::to_string(&metrics) {
+                            info!("RESOURCE_RUNTIME_METRICS {id}: {value}");
+                        }
+                    }
+                    *sampled = std::time::Instant::now();
+                }
                 if let Some(active) = &client.active {
                     if let Some(resource) = active
                         .set
@@ -479,6 +580,14 @@ pub(super) fn flush(world: &mut World) {
                         ));
                     }
                 }
+                let state=&mut *client;
+                let events=state.transfers.poll(std::time::Instant::now(),
+                    |id,generation|host.running(id)&&host.generation(id)==Some(generation),
+                    |ticket,cancel| {
+                        if cancel {state.channel.cancel_ticket(ticket)?;}
+                        state.channel.large_progress(ticket)
+                    });
+                for event in events {let _=host.host_event(&event.resource,event.generation,"transfer_progress",event.value);}
                 for output in host.drain_outputs() {
                     match output {
                         Output::Event {
@@ -488,8 +597,27 @@ pub(super) fn flush(world: &mut World) {
                             payload,
                             ..
                         } => client.channel.emit(&resource, generation, &name, payload)?,
+                        Output::Transfer {resource,generation,key,name,payload,recipient,timeout_ms} => {
+                            let result=(|| {
+                                client.transfers.available(&resource,generation,&key,timeout_ms)?;
+                                if recipient.is_some() {return Err("Client large transfers target the server only".into());}
+                                let ticket=client.channel.start_large(&resource,generation,&name,payload)?;
+                                let progress=client.channel.large_progress(ticket)?;
+                                client.transfers.insert(&resource,generation,&key,timeout_ms,ticket,progress,std::time::Instant::now())
+                            })();
+                            let event=result.unwrap_or_else(|error|skate_net::transfers::Transfers::failed(&resource,generation,&key,error));
+                            let _=host.host_event(&event.resource,event.generation,"transfer_progress",event.value);
+                        }
+                        Output::CancelTransfer {resource,generation,key} => {
+                            let client=&mut *client;
+                            let event=client.transfers.cancel(&resource,generation,&key,|ticket,cancel| {
+                                if cancel {client.channel.cancel_ticket(ticket)?;}
+                                client.channel.large_progress(ticket)
+                            });
+                            let _=host.host_event(&event.resource,event.generation,"transfer_progress",event.value);
+                        }
                         Output::Log { resource, text } => info!("RESOURCE_LOG {resource}: {text}"),
-                        Output::State { .. } => {
+                        Output::Competition { .. } | Output::World { .. } | Output::Voice { .. } | Output::Entity { .. } | Output::State { .. } | Output::Teleport { .. } | Output::Service { .. } | Output::CancelService { .. } => {
                             return Err(
                                 "client attempted to publish server-owned resource state".into()
                             );
@@ -530,6 +658,26 @@ pub(super) fn shutdown(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_network_budgets_are_bounded_and_reject_unknown_fields() {
+        let root = std::env::temp_dir().join(format!("skate-local-network-budgets-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(read_network_budgets(&root).unwrap().value_bytes, 16 * 1024);
+        let path = root.join("network-budgets.json");
+        std::fs::write(&path, r#"{"value_bytes":262144}"#).unwrap();
+        assert_eq!(read_network_budgets(&root).unwrap().value_bytes, 256 * 1024);
+        for invalid in [r#"{"value_bytes":262145}"#, r#"{"unbounded":true}"#, "[]"] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(read_network_budgets(&root).is_err(), "accepted {invalid}");
+        }
+        std::fs::write(&path, " ".repeat(16385)).unwrap();
+        assert!(read_network_budgets(&root).unwrap_err().contains("16KiB"));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_network_budgets(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     fn set(capabilities: &[&str]) -> ResourceSet {
         serde_json::from_value(serde_json::json!({"revision":"unused","resources":[{
             "manifest":{"format":1,"api":1,"id":"demo","version":"1.0.0","language":"lua","capabilities":capabilities},
