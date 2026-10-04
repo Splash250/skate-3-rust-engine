@@ -23,6 +23,7 @@ default = ["dev-dynamic"]
 dev-dynamic = ["bevy/dynamic_linking"]
 
 [dependencies]
+tracing = "=0.1.44"
 skate-voice = { path = "../skate-voice", features = ["devices"] }
 skate-accounts = { path = "../skate-accounts" }
 bevy = { workspace = true, features = ["jpeg", "trace", "debug", "bevy_audio", "wav"] }

@@ -10,3 +10,6 @@ zstd = "=0.13.3"
 skate-core = { path = "../skate-core" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tracing = "=0.1.44"

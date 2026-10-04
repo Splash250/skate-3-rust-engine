@@ -280,6 +280,30 @@ impl Vm {
         }
         host.call(self, object, method, args)
     }
+    /// Use the same prototype, argument and execution limits as NewObject.
+    /// The caller owns the update boundary; construction never replenishes it.
+    pub fn construct(
+        &mut self,
+        class: usize,
+        args: Vec<Value>,
+        host: &mut impl Host,
+    ) -> Result<usize, String> {
+        if args.len() > 256 {
+            return Err("APT argument limit".into());
+        }
+        let kind = self.objects.get(class).ok_or("Invalid APT class")?.kind.clone();
+        if self.remaining == 0 || self.objects.len() > 4096 {
+            return Err("APT execution/object budget exceeded".into());
+        }
+        let id = self.object(ObjectKind::Plain);
+        if let Value::Object(proto) = self.get(class, "prototype") {
+            self.objects[id].prototype = Some(proto);
+        }
+        if let ObjectKind::Function(f) = kind {
+            self.invoke(f, id, args, host)?;
+        }
+        Ok(id)
+    }
     fn invoke(
         &mut self,
         index: usize,
@@ -576,22 +600,18 @@ impl Vm {
                     let args = (0..n)
                         .map(|_| pop(&mut stack))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let id = self.object(ObjectKind::Plain);
-                    if name == "Array" {
+                    let id = if name == "Array" {
+                        let id = self.object(ObjectKind::Plain);
                         for (j, v) in args.into_iter().enumerate() {
                             self.set(id, j.to_string(), v)?;
                         }
                         self.set(id, "length", Value::Number(n as f64))?;
+                        id
                     } else if let Value::Object(class) = self.get(self.global, &name) {
-                        if let Value::Object(proto) = self.get(class, "prototype") {
-                            self.objects[id].prototype = Some(proto);
-                        }
-                        if let ObjectKind::Function(f) = self.objects[class].kind.clone() {
-                            self.invoke(f, id, args, host)?;
-                        }
+                        self.construct(class, args, host)?
                     } else {
                         return Err(format!("APT constructor absent: {name}"));
-                    }
+                    };
                     stack.push(Value::Object(id));
                 }
                 0x52 | 0xb0 | 0xb1 | 0xb2 | 0xb3 | 0x3d | 0x5d => {
@@ -634,3 +654,7 @@ impl Vm {
         Ok(Value::Undefined)
     }
 }
+
+#[cfg(test)]
+#[path = "apt_vm_tests.rs"]
+mod tests;

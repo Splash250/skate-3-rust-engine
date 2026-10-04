@@ -10,6 +10,7 @@ mod apt_text;
 mod apt_scene;
 mod hud_runtime;
 mod scoring_runtime;
+mod score_packet;
 mod scoring_hud;
 mod animation_pose;
 mod app;

@@ -75,38 +75,7 @@ impl Operation {
     }
 }
 
-/// Meaningful graph outputs are retained even though a scoring UI is outside
-/// this game.82595D08 sets a name and ORs a bit in the graph's score packet.
-#[derive(Default)]
-pub struct ScorePacket {
-    pub handplant: Option<(skate_core::animation::output::attributes::AttributeName, [f32; 2])>,
-    /// ScoringGrabs 82BBEF60: selected authored name and tweak vector.
-    pub grab: Option<(skate_core::animation::output::attributes::AttributeName, [f32; 2])>,
-    pub trick_names: super::motion_scoring_trick::Names,
-    pub name: Option<u32>,
-    pub flags: u32,
-}
-impl ScorePacket {
-    pub fn set(&mut self, value: u32) {
-        let bit = match value {
-            0 => 31,
-            1 => 30,
-            2 => 29,
-            3 => 28,
-            4 => 27,
-            5 => 26,
-            6 => 23,
-            7 => 21,
-            8 => 22,
-            9 => 20,
-            _ => return,
-        };
-        self.flags |= 1 << bit;
-        if value != 2 && value != 3 {
-            self.name = Some(value);
-        }
-    }
-}
+pub use crate::score_packet::ScorePacket;
 
 ///CreateInstance82BBAA98 seeds velocity0 and prior-air false.
 #[derive(Default)]

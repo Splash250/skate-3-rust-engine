@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn pipelines_accept_valid_group_outputs_when_fingerprint_changes() {
         let expected = serde_json::json!({"core": "new", "maps": "maps-new"});
-        let marker = serde_json::json!({
+        let mut marker = serde_json::json!({
             "pipelines": {"core": "old", "maps": "maps-old"},
             "outputs": {
                 "maps": {"maps/university.skate": {"size": 4}}
@@ -384,8 +384,22 @@ mod tests {
         let maps = root.join("maps/university.skate");
         std::fs::create_dir_all(maps.parent().unwrap()).unwrap();
         std::fs::write(&maps, b"test").unwrap();
+        // Each changed group needs its own receipt; a valid map cannot prove
+        // the independently changed core extraction is still complete.
+        assert!(!pipelines_acceptable(&marker, &expected, None, &root));
+        let core = root.join("assets/private/stock/skater-collections.json");
+        std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+        std::fs::write(&core, b"{}").unwrap();
+        marker["outputs"]["core"] = serde_json::json!({
+            "assets/private/stock/skater-collections.json": {"size": 2}
+        });
         assert!(pipelines_acceptable(&marker, &expected, None, &root));
         assert!(!pipelines_current(&marker, &expected, None));
+        std::fs::write(&maps, b"short").unwrap();
+        assert!(!pipelines_acceptable(&marker, &expected, None, &root));
+        std::fs::write(&maps, b"test").unwrap();
+        std::fs::remove_file(core).unwrap();
+        assert!(!pipelines_acceptable(&marker, &expected, None, &root));
         std::fs::remove_dir_all(root).unwrap();
     }
 

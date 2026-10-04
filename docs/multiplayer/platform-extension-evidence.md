@@ -292,3 +292,43 @@ tooling tests passed again (`/tmp/skate-precommit-competition.log` and
 `/tmp/skate-precommit-python.log`); `git diff --check` also passed. This does not
 supersede the broader run results or close any remaining acceptance gaps above.
 No push, publication or deployment is part of this authorization.
+
+
+## Remaining-gaps continuation: regression repairs
+
+Fresh investigation reproduces the off-board marker failure without changing its
+assertions. `enter_after_teleport` prematurely selected `BipedGround` before the
+reset animation had republished input; that shortcut also exists in original
+`69ed377`. Entering the native `PhysicsGround` reset state lets the existing graph
+own the later off-board transition. The redundant manual latch is removed; the
+pending marker reply still carries its on-board value. All three owned-asset
+wipeout tests now pass, including the original tick61 assertion.
+
+The setup cache contract requires a receipt for **each** changed extraction group.
+Its fixture changed both core and maps but supplied only maps. The repaired test
+first proves missing core fails, then supplies a real core output/receipt and
+also rejects wrong size and removed output. Production cache validation is unchanged.
+
+The HUD localization helper and graph score packet are now shared with headless
+data examples instead of requiring renderer modules. Full all-target validation
+then exposed the stale scoring example frame and missing public APT constructor.
+The example uses current fields; direct construction shares bounded NewObject
+semantics, with two regression tests for arguments/prototypes and execution limits.
+`tracing` reuses the already locked version, with no added external crate version.
+
+Fresh commands/results (`/tmp/skate-platform-followup-20261004/`):
+
+| Check | Actual result | Evidence |
+| --- | --- | --- |
+| `cargo test --locked -p skate-game --bin skate3rust` | 361 passed,106 ignored,0 failed | `game-repaired.log` |
+| `cargo test --locked -p skate-data --all-targets` | 51 passed,13 ignored across18 targets | `data-all-targets-repaired.log` |
+| Owned `physics::wipeout_tests -- --ignored --nocapture` | 3 passed | `wipeout-repaired.log` |
+| Owned `scoring_runtime::tests -- --ignored --nocapture` | 11 passed | `scoring-tests-owned.log` |
+| Owned `apt_data` / `scoring_flow_data` examples | Both passed;38 authored APT timelines and constructor, unchanged scoring assertions | `apt-owned-repaired.log`, `scoring-owned-repaired.log` |
+| Owned `hud_data` audit | 1800 frames passed | `regression-results.json` |
+
+Set `SKATE3_ASSET_ROOT` to an **absolute** prepared asset directory for owned tests.
+Exact argv, exit codes and timings are in `all-target-repair-results.json` and
+`regression-results.json`. Existing workspace formatting differences remain;
+no broad rewrite is included. The missing private Skyline map still blocks its
+unchanged integration suite.

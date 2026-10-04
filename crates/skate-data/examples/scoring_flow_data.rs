@@ -13,6 +13,8 @@ mod apt_vm;
 mod hud_runtime;
 #[path = "../../skate-game/src/scoring_runtime.rs"]
 mod scoring_runtime;
+#[path = "../../skate-game/src/score_packet.rs"]
+mod score_packet;
 use skate_core::{
     animation::output::attributes::AttributeName, physics::filtered_state::FilteredCategory,
 };
@@ -25,7 +27,7 @@ fn frame(
         tick,
         dt: 1. / 60.,
         category,
-        state: 100,
+        state: if category == FilteredCategory::Air { 200 } else { 100 },
         descriptor,
         grind_id: -1,
         flags: 0,
@@ -34,7 +36,11 @@ fn frame(
         forward: [0., 0., 1.],
         switch: false,
         fakie: false,
-        nollie: false,
+        regular: true,
+        player_basis: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        board_basis: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        reckoning_up: [0., 1., 0.],
+        front_flip: false,
         body_flip: false,
         suspend_air: false,
         landing: Default::default(),

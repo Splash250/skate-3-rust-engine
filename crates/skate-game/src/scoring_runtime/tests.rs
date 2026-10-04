@@ -228,11 +228,11 @@ fn composed_names_localize_every_component() {
         .language
         .insert("ID_TRICK_AUTHENTIC_FS_HALFCAB".into(), "FS Half-Cab".into());
     assert_eq!(
-        crate::scoring_hud::localize_trick("ID_TRICK_KICKFLIP 360", Some(&assets)),
+        crate::hud_runtime::localize_trick("ID_TRICK_KICKFLIP 360", Some(&assets)),
         "Kickflip 360"
     );
     assert_eq!(
-        crate::scoring_hud::localize_trick(
+        crate::hud_runtime::localize_trick(
             "ID_TRICK_KICKFLIP ID_TRICK_AUTHENTIC_FS_HALFCAB",
             Some(&assets)
         ),
@@ -447,7 +447,7 @@ fn manuals_accumulate_and_preserve_the_sequence() {
         r.session.combo.multiplier = 3.0;
         r.session.combo.timer.points = r.data.combo_capacity;
         r.session.line.points = r.data.line_capacity;
-        let mut packet = crate::graph_host::motion_native::ScorePacket::default();
+        let mut packet = crate::score_packet::ScorePacket::default();
         packet.set(augmentation);
         for tick in 0..480 {
             let mut f = frame(tick, FilteredCategory::Ground, None);

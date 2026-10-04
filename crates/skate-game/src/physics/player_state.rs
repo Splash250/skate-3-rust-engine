@@ -151,10 +151,10 @@ pub(crate) fn enter_after_teleport(
     physics: &mut GamePhysics,
     skater: &mut SkaterRuntime,
 ) -> Result<(), String> {
-    let target = if skater.teleport_state.take_manual_on_board() == Some(false) {
-        PhysicalStateId::BipedGround
-    } else { PhysicalStateId::PhysicsGround };
-    transition::set(physics, skater, target)
+    // ResetSystems clears the current input flags before the normal selector
+    // runs. Native82DB8998 first enters Ground; the following animation input
+    // owns the off-board transition requested by the captured702 reply.
+    transition::set(physics, skater, PhysicalStateId::PhysicsGround)
 }
 
 ///Original82DB6050 prefix; coordinator calls the selected state pre-update next.

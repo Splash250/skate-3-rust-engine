@@ -449,10 +449,10 @@ impl Runtime {
         }
         if next != self.collector {
             if self.collector == Collector::Air {
-                bevy::log::info!(target: "scoring", "SCORING_AIR_REWARDS tick={} trick={:?} carrier={:?} spin_degrees={} body_flip={} metrics={:?} air_factor={} repetition={}", f.tick, self.trick_name,
+                tracing::info!(target: "scoring", "SCORING_AIR_REWARDS tick={} trick={:?} carrier={:?} spin_degrees={} body_flip={} metrics={:?} air_factor={} repetition={}", f.tick, self.trick_name,
                     self.carriers[0].as_ref().map(|c| (c.scorable.id, c.reward, c.announced)),
                     self.spin.to_degrees(), self.body_flip_count, self.air_metrics, self.air_factor, self.air_repetition);
-                bevy::log::info!(target: "scoring", "SCORING_AIR_EXIT tick={} state={} preview={} multiplier={} line_points={} combo_points={} landing_valid={} landing_type={} switch={} fakie={}", f.tick, f.state, self.sequence_score, self.session.combo.multiplier, self.session.line.points, self.session.combo.timer.points, f.landing.landing_data_167, f.landing.landing_type_96, f.switch, f.fakie);
+                tracing::info!(target: "scoring", "SCORING_AIR_EXIT tick={} state={} preview={} multiplier={} line_points={} combo_points={} landing_valid={} landing_type={} switch={} fakie={}", f.tick, f.state, self.sequence_score, self.session.combo.multiplier, self.session.line.points, self.session.combo.timer.points, f.landing.landing_data_167, f.landing.landing_type_96, f.switch, f.fakie);
             }
             let complete = next != Collector::None;
             let previous_type = self
@@ -695,7 +695,7 @@ impl Runtime {
                 if self.sketchy {
                     factor *= self.data.collector.scalar(0x620);
                 }
-                bevy::log::info!(target: "scoring", "SCORING_LANDING_FACTOR tick={} pending={} accumulated={} factor={} clean={} sketchy={}", f.tick, self.session.holder.snapshot.general_pending + self.session.holder.snapshot.fingerflip_pending, self.session.holder.snapshot.accumulated, factor, self.clean, self.sketchy);
+                tracing::info!(target: "scoring", "SCORING_LANDING_FACTOR tick={} pending={} accumulated={} factor={} clean={} sketchy={}", f.tick, self.session.holder.snapshot.general_pending + self.session.holder.snapshot.fingerflip_pending, self.session.holder.snapshot.accumulated, factor, self.clean, self.sketchy);
                 self.session.holder.reward_sequence(factor);
             } else {
                 self.landing_countdown -= 1;
@@ -748,7 +748,7 @@ impl Runtime {
             self.sequence_score =
                 self.session
                     .publish_sequence(&self.data.session_rules(), 1., bailout, true);
-            bevy::log::info!(target: "scoring", "SCORING_BANK tick={} state={} raw={} applied_multiplier={} reward={} next_multiplier={} line={} line_expired={} bail={} teleport={}", f.tick, f.state, raw_reward, applied_multiplier, self.sequence_score, self.session.combo.multiplier, self.session.holder.snapshot.line, self.session.line.expired, bailout, f.teleported);
+            tracing::info!(target: "scoring", "SCORING_BANK tick={} state={} raw={} applied_multiplier={} reward={} next_multiplier={} line={} line_expired={} bail={} teleport={}", f.tick, f.state, raw_reward, applied_multiplier, self.sequence_score, self.session.combo.multiplier, self.session.holder.snapshot.line, self.session.line.expired, bailout, f.teleported);
             if !bailout
                 && !f.teleported
                 && f.category == FilteredCategory::Ground
@@ -801,7 +801,7 @@ impl Runtime {
                 * self.session.combo.multiplier;
         }
         if self.session.line.expired || f.teleported || bailout {
-            bevy::log::info!(target: "scoring", "SCORING_RESET tick={} score={} multiplier={} line_expired={} bail={} teleport={}", f.tick, self.sequence_score, self.session.combo.multiplier, self.session.line.expired, bailout, f.teleported);
+            tracing::info!(target: "scoring", "SCORING_RESET tick={} score={} multiplier={} line_expired={} bail={} teleport={}", f.tick, self.sequence_score, self.session.combo.multiplier, self.session.line.expired, bailout, f.teleported);
             self.sequence_score = 0.;
         }
         self.session.settle_line(f.teleported || bailout, active);
