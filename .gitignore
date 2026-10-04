@@ -117,5 +117,6 @@ mods/world-audio-test/logs/
 /tools/steam-launcher/SkateLauncher.exe
 
 # Private server resource persistence (example server default).
-/resource-data/
-# Private server resource persistence (example server default).
+
+# Generated local knowledge graphs, snapshots, and caches.
+/graphify-out/
