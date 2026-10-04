@@ -62,6 +62,9 @@ only changed asset groups.
 
 ## Build
 
+Linux developers can use [`docs/LINUX.md`](docs/LINUX.md) for native build,
+owned-asset preparation, controller, and launch instructions.
+
 Requires Windows, Rust with the MSVC toolchain, and LLVM installed in its default
 location. Run `BUILD.bat` to build, then `PLAY.bat` to launch the test world.
 `PLAY.bat` opens your saved map (University by default); use the in-game menu to switch maps, or drag a `.skate` file onto `PLAY.bat`. An SDL3-compatible gamepad is required for gameplay;

@@ -2,6 +2,7 @@ use skate_net::directory::{self, Command as LobbyCommand, Event, Request, Respon
 use std::{
     io,
     net::{SocketAddr, UdpSocket},
+    path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -96,6 +97,49 @@ pub(super) struct Steam {
     last_command: Instant,
     request_id: u64,
 }
+
+fn relay_command(game_dir: &Path) -> Result<Command, String> {
+    if !cfg!(any(
+        windows,
+        all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            target_env = "gnu"
+        )
+    )) {
+        return Err("Steam relay requires Windows or x86_64 GNU/Linux; solo and direct multiplayer remain available".into());
+    }
+    let relay_dir = game_dir.join("steam-relay");
+    let helper = relay_dir.join(skate_platform::exe::name("skate-steam-relay"));
+    let library = if cfg!(windows) {
+        "steam_api64.dll"
+    } else {
+        "libsteam_api.so"
+    };
+    if !helper.is_file() || !relay_dir.join(library).is_file() {
+        return Err(
+            "Steam relay files missing; solo and direct multiplayer remain available".into(),
+        );
+    }
+    let mut command = Command::new(helper);
+    command.current_dir(&relay_dir);
+    // Only the helper links Steam. Keep its SDK search path out of the game
+    // process while preserving any loader paths supplied by PLAY.sh or Steam.
+    #[cfg(target_os = "linux")]
+    {
+        let mut paths = vec![relay_dir];
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        command.env(
+            "LD_LIBRARY_PATH",
+            std::env::join_paths(paths)
+                .map_err(|e| format!("Invalid Steam relay library path: {e}"))?,
+        );
+    }
+    Ok(command)
+}
+
 impl Steam {
     pub fn new(peer: u64, session: u64) -> Result<Self, String> {
         let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -105,14 +149,8 @@ impl Steam {
             .parent()
             .unwrap()
             .to_path_buf();
-        let helper = dir.join("steam-relay/skate-steam-relay.exe");
-        if !helper.is_file() || !dir.join("steam-relay/steam_api64.dll").is_file() {
-            return Err(
-                "Steam relay files missing; solo and direct multiplayer remain available".into(),
-            );
-        }
         let cookie = format!("{:016x}", super::unique());
-        let mut command = Command::new(helper);
+        let mut command = relay_command(&dir)?;
         command
             .args([
                 socket.local_addr().map_err(|e| e.to_string())?.to_string(),
@@ -146,6 +184,112 @@ impl Steam {
             last_command: Instant::now() - Duration::from_secs(1),
             request_id: 0,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "skate relay {} {}",
+                std::process::id(),
+                super::super::unique()
+            ));
+            std::fs::create_dir_all(path.join("steam-relay")).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn missing_steam_files_do_not_prevent_direct_udp() {
+        let fixture = Fixture::new();
+        assert!(
+            relay_command(&fixture.0)
+                .unwrap_err()
+                .contains("direct multiplayer remain available")
+        );
+        let mut first = Direct::new("127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut second = Direct::new("127.0.0.1:0".parse().unwrap()).unwrap();
+        let destination = endpoint(second.socket.local_addr().unwrap()).unwrap();
+        first.send(destination, b"direct without Steam").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let received = second.receive().unwrap();
+            if !received.is_empty() {
+                assert_eq!(
+                    received,
+                    vec![(
+                        endpoint(first.socket.local_addr().unwrap()).unwrap(),
+                        b"direct without Steam".to_vec()
+                    )]
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "Direct UDP did not arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    #[test]
+    fn native_linux_relay_launches_from_paths_with_spaces_and_finds_its_library() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let relay_dir = fixture.0.join("steam-relay");
+        let helper = relay_dir.join("skate-steam-relay");
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\npwd\nprintf '%s\\n' \"$LD_LIBRARY_PATH\"\nprintf '<%s>\\n' \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(relay_command(&fixture.0).is_err());
+        std::fs::write(relay_dir.join("libsteam_api.so"), b"fixture").unwrap();
+        let result = relay_command(&fixture.0)
+            .unwrap()
+            .args(["127.0.0.1:1234", "42", "480", "cookie"])
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let output = String::from_utf8(result.stdout).unwrap();
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(Path::new(lines[0]), relay_dir);
+        let mut expected = vec![relay_dir];
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            expected.extend(std::env::split_paths(&existing));
+        }
+        assert_eq!(
+            std::env::split_paths(lines[1]).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            &lines[2..],
+            &["<127.0.0.1:1234>", "<42>", "<480>", "<cookie>"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_relay_still_uses_packaged_executable_and_dll() {
+        let fixture = Fixture::new();
+        let relay_dir = fixture.0.join("steam-relay");
+        let helper = relay_dir.join("skate-steam-relay.exe");
+        std::fs::write(&helper, b"fixture").unwrap();
+        assert!(relay_command(&fixture.0).is_err());
+        std::fs::write(relay_dir.join("steam_api64.dll"), b"fixture").unwrap();
+        assert_eq!(
+            relay_command(&fixture.0).unwrap().get_program(),
+            helper.as_os_str()
+        );
     }
 }
 impl Drop for Steam {

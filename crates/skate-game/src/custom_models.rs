@@ -385,7 +385,8 @@ fn start_import(directory: &Path, reference: &Path) -> Result<Import, String> {
         .map_err(|e| e.to_string())?
         .parent()
         .ok_or("Missing game directory")?
-        .join("support/skate3setup.exe");
+        .join("support")
+        .join(skate_platform::exe::name("skate3setup"));
     if !executable.is_file() {
         return Err("Character importer is missing. Restore support/skate3setup.exe from the complete Windows package.".into());
     }
@@ -413,11 +414,7 @@ fn start_import(directory: &Path, reference: &Path) -> Result<Import, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    skate_platform::process::hidden(&mut command);
     let child = command
         .spawn()
         .map_err(|e| format!("Could not open importer: {e}"))?;

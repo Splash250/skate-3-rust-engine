@@ -12,6 +12,22 @@ def saved_source(marker):
     if selected.is_file() or selected.is_dir():return selected
     return None
 
+def set_window_icon(window,icon):
+    if os.name=='nt' and icon.is_file():window.iconbitmap(str(icon))
+
+def headless(args):
+    from tools.asset_pipeline.customiser_setup import install
+    try:
+        installed_root=install(args.source,args.base,args.game_exe,print,refresh=args.refresh)
+        from tools.asset_pipeline.optional_content import summary
+        summary(installed_root)
+        return 0
+    except Exception as error:
+        args.base.mkdir(parents=True,exist_ok=True)
+        (args.base/'setup-error.log').write_text(traceback.format_exc(),encoding='utf-8')
+        print('Setup could not finish: '+str(error),file=sys.stderr)
+        return 2
+
 class TolerantStream:
     """Console stream whose write/flush failures are ignored.
 
@@ -73,30 +89,33 @@ def restart():
     else:command=[sys.executable,str(Path(__file__).resolve()),*sys.argv[1:]]
     return subprocess.call(command,env=env)
 
-def main():
+def main(argv=None):
     tolerate_dead_console()
-    if len(sys.argv)>1 and sys.argv[1]=='--character-import':
+    argv=list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0]=='--character-import':
         # Keep the importer inside the already versioned setup payload: even
         # protocol-1 updaters deliver it atomically with the game executable.
         importer=ROOT/'tools/mixamo_to_skate'
         sys.path.insert(0,str(importer))
         from main import main as import_character
-        return import_character(sys.argv[2:])
-    if len(sys.argv)>2 and sys.argv[1]=='--task':
-        script=Path(sys.argv[2])
+        return import_character(argv[1:])
+    if len(argv)>1 and argv[0]=='--task':
+        script=Path(argv[1])
         if not script.is_absolute():script=ROOT/script
         script=script.resolve()
         if not script.is_relative_to((ROOT/'tools').resolve()):raise RuntimeError('Invalid conversion script')
         sys.path.insert(0,str(script.parent))
-        sys.argv=[str(script),*sys.argv[3:]]
+        sys.argv=[str(script),*argv[2:]]
         runpy.run_path(str(script),run_name='__main__')
         return 0
     parser=argparse.ArgumentParser()
     parser.add_argument('--base',type=Path,required=True)
     parser.add_argument('--game-exe',type=Path,required=True)
     parser.add_argument('--refresh',action='store_true')
-    args=parser.parse_args()
+    parser.add_argument('--source',type=Path)
+    args=parser.parse_args(argv)
     if enable_long_paths():return restart()
+    if args.source is not None:return headless(args)
     import tkinter as tk
     from tkinter import filedialog,messagebox,ttk
     from tools.asset_pipeline.customiser_setup import install
@@ -111,7 +130,7 @@ def main():
     window.title('Skate 3 Rust Engine setup')
     window.geometry('700x420');window.resizable(False,False)
     icon=ROOT/'docs/images/skating-crab.ico'
-    if icon.is_file():window.iconbitmap(str(icon))
+    set_window_icon(window,icon)
     frame=ttk.Frame(window,padding=24);frame.pack(fill='both',expand=True)
     ttk.Label(frame,text='Update game assets' if updating else 'Set up Skate 3 Rust Engine',font=('Segoe UI',20)).pack(anchor='w',pady=(0,16))
     ttk.Label(frame,text=('Asset version changes: '+(', '.join(sorted(changed)) or 'none')+'.\nOnly changed or incomplete groups will be prepared again.\nYour previous character data remains until preparation succeeds.\n'

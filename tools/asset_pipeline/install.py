@@ -138,6 +138,24 @@ def dependency(cache,name,url,sha,report):
     if executable is None:raise RuntimeError('Missing downloaded tool: '+name)
     return executable
 
+def xiso_extractor(base,game_exe,report):
+    """Select a native extractor before retaining the pinned Windows fallback."""
+    name='skate-xiso.exe' if os.name=='nt' else 'skate-xiso'
+    override=os.environ.get('SKATE_XISO')
+    if override:
+        selected=Path(override).expanduser()
+        if not selected.is_file():
+            raise RuntimeError('SKATE_XISO does not name an existing file: '+str(selected))
+        return selected
+    candidates=[Path(game_exe).resolve().parent/name,
+                TOOLS.parent/'target/release'/name,
+                TOOLS.parent/'target/debug'/name]
+    for selected in candidates:
+        if selected.is_file():return selected
+    if os.name=='nt':
+        return dependency(base/'tools','extract-xiso',XISO_URL,XISO_SHA,report)
+    raise RuntimeError('Native ISO extractor is missing. Build it with: cargo build --locked -p skate-xiso')
+
 def spawn(args,**popen):
     from .setup_budget import priority_class
     # Child processes inherit the setup priority budget.
@@ -437,11 +455,11 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         if game_root is None:
             iso=iso.resolve()
             if not iso.is_file() or iso.suffix.lower()!='.iso':raise RuntimeError('Select an Xbox 360 Skate 3 ISO')
-            extractor=dependency(base/'tools','extract-xiso',XISO_URL,XISO_SHA,report)
+            extractor=xiso_extractor(base,game_exe,report)
             game_root=work/'disc'
             report('Extracting your ISO')
             # extract-xiso expects all options before the ISO path.
-            run([extractor,'-x','-d',game_root,iso],log,report)
+            run([extractor,'-d',game_root,'-x',iso],log,report)
         else:game_root=game_root.resolve()
         required_files=['default.xex']
         if 'core' in groups:required_files += ['data/big/miscload.big','data/big/miscboot.big','data/big/db.big']
