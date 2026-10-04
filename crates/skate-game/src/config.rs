@@ -37,18 +37,20 @@ impl Config {
         };
         let mut difficulty_override = None;
         let mut explicit_map = false;
+        let mut explicit_session = false;
         let mut args = std::env::args_os().skip(1);
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--trace" | "--trace-seconds" | "--trace-delay" | "--trace-min-us") => { args.next().ok_or("Trace option requires a value")?; }
                 Some("--trace-wait" | "--trace-gpu") => {}
+                Some("--connect") => config.multiplayer.connect = Some(args.next().ok_or("--connect requires an IPv4:PORT server address")?.to_string_lossy().parse().map_err(|_| "Invalid dedicated server address; expected IPv4:PORT")?),
                 Some("--net-host") => config.multiplayer.host = Some(args.next().ok_or("Missing host bind address")?.to_string_lossy().parse().map_err(|_|"Invalid host bind address")?),
                 Some("--net-local") => {
                     let bind=args.next().ok_or("--net-local requires bind and peer addresses")?.to_string_lossy().parse().map_err(|_|"Invalid bind address")?;
                     let peer=args.next().ok_or("--net-local requires peer address")?.to_string_lossy().parse().map_err(|_|"Invalid peer address")?;
                     config.multiplayer.direct=Some((bind,peer));
                 }
-                Some("--net-session") => config.multiplayer.session=args.next().ok_or("Missing session")?.to_string_lossy().parse().map_err(|_|"Invalid session")?,
+                Some("--net-session") => { config.multiplayer.session=args.next().ok_or("Missing session")?.to_string_lossy().parse().map_err(|_|"Invalid session")?; explicit_session = true; },
                 Some("--spawn-offset") => {
                     let offset:f32=args.next().ok_or("Missing spawn offset")?.to_string_lossy().parse().map_err(|_|"Invalid spawn offset")?;
                     if !offset.is_finite() || offset.abs()>20. {return Err("Spawn offset must be within 20 metres".into());}
@@ -94,11 +96,12 @@ impl Config {
                 }
                 _ => {
                     return Err(format!(
-                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets | --validate-maps] [--start-paused] [--mute]"
+                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets | --validate-maps] [--start-paused] [--mute] [--connect IPv4:PORT] [--net-session NUMBER]"
                     ));
                 }
             }
         }
+        validate_network_options(&mut config.multiplayer, explicit_session)?;
         config.asset_root = config
             .asset_root
             .canonicalize()
@@ -152,4 +155,39 @@ pub(crate) fn map_fingerprint(path: Option<&std::path::Path>) -> Result<u64, Str
             loop {let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{break;}for b in &buffer[..n]{hash=(hash^u64::from(*b)).wrapping_mul(0x100000001b3);}}
             hash
         } else {skate_net::hash(b"skate-test-world-v1")})
+}
+
+fn validate_network_options(options: &mut crate::multiplayer::Options, explicit_session: bool) -> Result<(), String> {
+    if let Some(server) = options.connect {
+        if options.host.is_some() || options.direct.is_some() { return Err("--connect cannot be combined with --net-host or --net-local".into()); }
+        if !server.is_ipv4() || server.port() == 0 || server.ip().is_unspecified() || server.ip().is_multicast() || server.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST) { return Err("--connect requires a unicast IPv4 address and a nonzero port".into()); }
+        if !explicit_session { options.session = skate_net::dedicated::SESSION; }
+        if options.session == 0 { return Err("Dedicated multiplayer requires a nonzero --net-session".into()); }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod dedicated_config_tests {
+    use super::*;
+    #[test]
+    fn dedicated_session_defaults_and_explicit_override_are_order_independent() {
+        let mut options = crate::multiplayer::Options { connect: Some("127.0.0.1:31030".parse().unwrap()), ..Default::default() };
+        validate_network_options(&mut options,false).unwrap();
+        assert_eq!(options.session, skate_net::dedicated::SESSION);
+        options.session=123;
+        validate_network_options(&mut options,true).unwrap();
+        assert_eq!(options.session,123);
+        options.session=0;
+        assert!(validate_network_options(&mut options,true).is_err());
+    }
+    #[test]
+    fn dedicated_rejects_mixed_modes_and_invalid_endpoints() {
+        let mut options=crate::multiplayer::Options { connect:Some("127.0.0.1:31030".parse().unwrap()),host:Some("0.0.0.0:31030".parse().unwrap()),..Default::default() };
+        assert!(validate_network_options(&mut options,false).is_err());
+        options.host=None;
+        for invalid in ["[::1]:31030","0.0.0.0:31030","127.0.0.1:0","224.0.0.1:31030","255.255.255.255:31030"] {
+            options.connect=Some(invalid.parse().unwrap());
+            assert!(validate_network_options(&mut options,false).is_err(),"{invalid}");
+        }
+    }
 }

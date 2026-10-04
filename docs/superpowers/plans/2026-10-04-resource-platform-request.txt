@@ -1,0 +1,224 @@
+Implement the agreed FiveM-style resource platform autonomously in:
+
+/run/media/csanad/Linux-Big/skate/skatemp/skate-3-rust-engine
+
+Model: GPT-6 Astra
+Reasoning effort: Ultra
+
+This is an implementation request, not another brainstorming session. The direction below is approved. Make reasonable, reversible implementation decisions, document them, and continue through implementation, integration, testing and review. Do not stop after creating a plan or delivering only a demonstration.
+
+Preserve all existing uncommitted and untracked work. Do not commit, push, publish or deploy.
+
+READ FIRST
+
+Read:
+- AGENTS.md and applicable nested AGENTS.md files
+- CONTEXT.md
+- docs/multiplayer/README.md
+- docs/superpowers/plans/2026-10-04-dedicated-server.md
+- sdk/AGENTS.md
+- sdk/GENERAL_API.md
+- sdk/ENGINE_API.md
+
+Inspect git status before editing. The uncommitted checkout contains required Linux and dedicated-server implementation work. Work in place with disjoint ownership if delegating; a clean worktree would omit needed changes.
+
+Follow the repository’s Graphify instructions. Verify graph findings against current source and run graphify update . after code changes. Coordinate Cargo runs to avoid concurrent builds sharing target/.
+
+EXISTING FOUNDATION
+
+The repository contains:
+- A headless skate-server using direct UDP and Hybrid Authority.
+- Dedicated client admission, movement/body/pose/gameplay replication, and server-authorized collisions/shoves.
+- Windows server packaging and Windows/Linux networking CI.
+- Optional native Linux support for the existing peer-hosted Steam relay.
+- An existing Lua mod SDK with validated commands, engine APIs, lifecycle handling and VM limits.
+
+Dedicated-server Steam integration remains a separate follow-up. Keep direct UDP fully usable without Steam, and make the resource system independent of transport.
+
+Previous local validation reported 76 networking/server tests, 9 focused game tests and 35 Python tests passing, plus workspace and Windows MSVC-target cross-checks. Native Windows package execution and live mixed-OS Steam gameplay were not verified. Treat these as historical results and run fresh checks.
+
+APPROVED PRODUCT DIRECTION
+
+Build a highly customizable, FiveM-style resource platform.
+
+Lua is the first supported resource language. Design runtime boundaries so JavaScript and C# can be added later, but do not implement those runtimes now. Python is not the selected resource language.
+
+Closely follow FiveM’s developer-facing operating model:
+- Resources and manifests.
+- Separate client, server and shared scripts.
+- Resource dependencies and exports.
+- Local and network events.
+- Replicated state with explicit ownership.
+- Server configuration.
+- Resource start, stop, restart and ensure behavior.
+- Server-selected client resources.
+- Automatic client downloads and persistent cache reuse.
+
+Research current official Cfx documentation and relevant citizenfx source. Record a concise compatibility matrix explaining supported behavior and deliberate differences. Do not claim arbitrary GTA/FiveM scripts work unchanged: GTA-specific natives require Skate-specific equivalents. Preserve third-party licensing if reusing source.
+
+IMPLEMENTATION SCOPE
+
+1. Resource manifests and lifecycle
+
+Implement a versioned resource contract describing:
+- Identity, version and required engine/API capabilities.
+- Client, server and shared script entry points.
+- Downloadable assets and files.
+- Dependencies and exported interfaces.
+- Permissions or capabilities where relevant.
+
+Validate paths, duplicates, dependencies, cycles and compatibility.
+
+Provide dependency-aware start/stop/restart/ensure behavior and useful diagnostics. Resource failure must be contained. Cleanup must be enforced by the engine, including entities, callbacks, timers, UI, audio and engine overrides; do not rely solely on script cleanup.
+
+Preserve existing local Lua mods through a documented compatibility or migration path.
+
+2. Dedicated-server Lua runtime
+
+Add an actual headless resource host to skate-server.
+
+Support server scripts for game rules, challenges, commands, permissions and resource-scoped persistence. Separate server capabilities from client-only rendering, camera, input and presentation APIs.
+
+The dedicated server remains the authority for shared state and authorization. Existing SDK assumptions about player-hosted sessions or transferring authority between players must be adapted deliberately.
+
+3. Client resource synchronization and activation
+
+On connection:
+- Negotiate the server’s required resource set and compatible versions.
+- Resolve dependencies and required content.
+- Reuse verified cached content.
+- Download missing content.
+- Validate it before publication and execution.
+- Activate client/shared resources in the correct order.
+- Admit the player to gameplay only after required resources are ready.
+
+Server-only scripts, secrets and private server configuration must never enter the client download set.
+
+Use a separate bounded resource-transfer path so downloads do not interfere with movement traffic. Prefer an appropriate HTTP(S) content path after assessing existing dependencies and hosting requirements.
+
+Handle cancellation, interrupted downloads, corrupt content, failed startup, disconnects, resource updates and reconnects coherently. Failed updates must not leave a partially published resource set.
+
+4. Persistent content cache and client audit
+
+Implement persistent, immutable content storage using full cryptographic digests and canonical cross-platform path/manifest rules.
+
+Reuse identical content across:
+- Reconnects.
+- Client restarts.
+- Different servers.
+- Resource versions containing unchanged files.
+
+Resource names and version labels alone must never determine cache identity.
+
+Maintain a persistent client resource inventory/history with:
+- Resource identity and version.
+- Exact content digests.
+- Server/source provenance.
+- Requested capabilities and applicable grants.
+- Verification results.
+- Download size.
+- Activation/failure history.
+
+Provide a usable way to inspect this information and manage cached content. Bound cache size and history growth.
+
+Share cached immutable bytes across servers, while keeping script state, permission decisions and private server data appropriately isolated. Leaving a server must unload its running resources and restore owned overrides without deleting reusable content.
+
+A client inventory is not proof against a modified client; do not treat it as anti-cheat attestation.
+
+5. Resource networking
+
+Implement the events, exports and replicated state needed by resources.
+
+Define delivery and ownership semantics. Validate client requests on the server, derive sender identity from the connection, and enforce payload/rate/resource limits.
+
+Prevent one resource from impersonating another or mutating state it does not own. Handle resource generations so stale messages from stopped/restarted resources cannot affect new instances.
+
+Keep this layer compatible with both direct UDP and a future Steam dedicated transport.
+
+6. Extensible engine API
+
+Build on existing generic Lua APIs and expose customization through documented, versioned capabilities covering:
+- Entities and lifecycle.
+- Physics and skating controls.
+- Animation.
+- Camera and input.
+- UI and audio.
+- Maps/world content.
+- Scoring and game-mode rules.
+- Networking and resource persistence.
+
+Audit what already exists, connect it to the new client/server resource hosts, and implement missing primitives needed for complete working resources.
+
+Keep game-mode rules in Lua where practical. Avoid hardcoding special behavior for individual resource IDs.
+
+Do not interpret “expose everything” as arbitrary process memory access or automatically downloading native DLL/SO code. Use supported engine interfaces, ownership and validation. Document real API limitations honestly rather than claiming complete customization prematurely.
+
+7. Working resources and developer experience
+
+Ship redistributable example resources that exercise the system end to end, including:
+- A server-controlled skating challenge or competition.
+- Downloadable client Lua and custom UI/assets.
+- A dependency/export interaction.
+- Validated client-to-server events.
+- Replicated state.
+- Resource-scoped persistent data.
+- Lifecycle commands and clean shutdown.
+
+Document resource authoring, server setup, language/API boundaries, resource distribution, cache/audit behavior, troubleshooting and migration from existing mods.
+
+KNOWN CODEBASE GAPS TO VERIFY
+
+Earlier inspection found:
+- skate-mods manifests currently have a single entry point rather than separate client/server/shared entries.
+- archive::Cache is path-keyed, extracts into a session directory, and deletes that directory on drop. It is not the required persistent cross-server cache.
+- Existing package fingerprints hash native path strings and reduce a BLAKE3 digest to u64. Do not reuse that representation as a portable persistent content/security identity.
+- Existing capability discovery describes compiled features rather than per-resource permission grants.
+- Dedicated clients currently skip mod execution/replication.
+- Dedicated networking currently rejects arbitrary application records and blob transfers.
+- skate-server currently has no mod-runtime dependency.
+
+Inspect these in current source before choosing changes. Preserve legacy networking and local mod behavior.
+
+AUTONOMOUS EXECUTION
+
+Create a concrete design and implementation plan, then execute it in this run without routine approval checkpoints. The resource model and Lua-first scope are already authorized.
+
+Use subagents for independent implementation and review tracks with explicit file ownership. Verify their work yourself.
+
+Ask only if an unresolved choice materially changes the approved scope, introduces an unavoidable external requirement, or requires destructive action. Complete independent work while waiting.
+
+Do not introduce unnecessary dependencies, broad unrelated refactors or repository-wide formatting. Do not transmit private assets, credentials or retail game data. Use synthetic or redistributable fixtures.
+
+VALIDATION AND COMPLETION
+
+At minimum, prove:
+- A cold client downloads and runs a server-selected resource.
+- A warm reconnect downloads no unchanged content.
+- Reuse survives a full client restart.
+- A second server using identical content reuses cached bytes.
+- Changed files download and revalidate while unchanged files remain reusable.
+- Same-name resources with different content do not collide.
+- Corrupt, truncated, incompatible or oversized resources fail safely.
+- Interrupted downloads recover without executing incomplete content.
+- Server-only scripts never appear in downloadable packages.
+- Dependency failures and cycles produce useful errors.
+- Stop/restart/disconnect removes resource-owned runtime state.
+- Stale events cannot affect restarted resource instances.
+- Unauthorized/spoofed client requests are rejected.
+- Persistence and permissions stay isolated across servers/resources.
+- Windows/Linux manifest and content identities agree.
+- Direct UDP works without Steam.
+- Existing dedicated networking and local mod behavior remain intact.
+
+Use real process/socket/filesystem tests where they exercise the intended behavior. Add Windows/Linux CI coverage and graphical integration checks where the environment supports them.
+
+Use the initial end-to-end example as an implementation milestone, not the stopping point. Complete the approved platform capabilities, documentation and review.
+
+Finish with:
+- What was implemented and how to run it.
+- Actual validation results.
+- Remaining limitations and unavailable platform checks.
+- Any deliberate differences from FiveM.
+- Confirmation that existing work was preserved and no commit/push/publication occurred.
+
+Do not claim unexecuted Windows or graphical tests passed, and do not mark the full scope complete while required components remain stubs.

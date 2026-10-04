@@ -613,7 +613,10 @@ pub(crate) fn interact(
                     menu.selected = 51;
                 },
                 13 => { menu.daylight = true; menu.selected = 0; menu.status = "Custom maps: change time, cycle speed and ambient light. Retail lighting stays authored.".into(); },
-                14 => mods.begin(),
+                14 => {
+                    if config.multiplayer.connect.is_some() { menu.status = "Mods are disabled in dedicated sessions. Restart without --connect to use mods.".into(); }
+                    else { mods.begin(); }
+                },
                 16..=18 => menu.status = audio.adjust(audio_row(row), direction),
                 FRAME_STATS_ROW => menu.settings.frame_stats = !menu.settings.frame_stats,
                 _ => {}
@@ -902,7 +905,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
     *done = true;
     match std::env::var("SKATE_VERIFY_MENU").as_deref() {
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; },
-        Ok("mods") => { menu.open = true; mods.begin(); }
+        Ok("mods") if config.multiplayer.connect.is_none() => { menu.open = true; mods.begin(); }
         Ok("multiplayer") => { menu.open = true; menu.select_section(3); }
         _ => {}
     }

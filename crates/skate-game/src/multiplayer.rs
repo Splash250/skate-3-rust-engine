@@ -1,10 +1,12 @@
-//! Transport-neutral ten-player free-skate; each player owns their simulation.
+//! Legacy free-skate and dedicated multiplayer over the shared body/pose transport.
 mod render;
 pub(crate) mod appearance;
 mod appearance_transfer;
 mod transport;
 mod nametags;
 mod hud;
+mod dedicated;
+mod dedicated_input;
 use crate::{
     app::SimulationSet,
     physics::{GamePhysics, SkaterRuntime, network},
@@ -37,6 +39,7 @@ pub(crate) fn unique() -> u64 {
 pub(crate) struct Options {
     pub direct: Option<(SocketAddr, SocketAddr)>,
     pub host: Option<SocketAddr>,
+    pub connect: Option<SocketAddr>,
     pub session: u64,
     pub spawn_offset: f32,
     pub appearance: Option<String>,
@@ -98,10 +101,12 @@ pub(crate) struct Multiplayer {
     pub player_name: String,
     name_path: std::path::PathBuf,
     names: BTreeMap<u64, String>,
+    dedicated: dedicated::Client,
+    dedicated_launch: bool,
 }
 impl Multiplayer {
     pub(crate) fn diagnostic_summary(&self) -> String {
-        let provider = if self.room.is_some() { "platform_relay" }
+        let provider = if self.is_dedicated() { "dedicated" } else if self.room.is_some() { "platform_relay" }
             else if self.transport.is_some() { "direct_local" } else { "inactive" };
         let rtt = self.lobby.as_ref().map(|lobby| lobby.stats.rtt_ms);
         format!("provider:{provider} active:{} remote_count:{} rtt_ms:{rtt:?}", self.active(), self.remotes.len())
@@ -115,18 +120,37 @@ impl Multiplayer {
         let Some(lobby) = &self.lobby else {
             return Vec::new();
         };
-        let mut ids = vec![lobby.local];
-        ids.extend(lobby.actors.keys().copied());
-        ids.extend(self.remotes.keys().copied());
-        ids.sort_unstable();
-        ids.dedup();
-        ids
+        lobby.player_ids()
     }
     pub(crate) fn session_identity(&self) -> Option<(u64, u64, u64)> {
         self.lobby.as_ref().map(|l| (l.session, l.local, l.host_peer()))
     }
     pub(crate) fn host_actor(&self) -> u64 {
         self.lobby.as_ref().and_then(|l| l.host_actor()).unwrap_or(0)
+    }
+    pub(crate) fn connection_generation(&self) -> u64 {
+        self.lobby.as_ref().map_or(0, Session::connection_generation)
+    }
+    pub(crate) fn connected(&self) -> bool {
+        self.lobby.as_ref().is_some_and(Session::connected)
+    }
+    /// Resource offers and messages must come from the admitted control actor,
+    /// never another player's application record or a script-supplied identity.
+    pub(crate) fn resource_record(&self) -> Option<skate_net::resources::ServerRecord> {
+        let lobby = self.lobby.as_ref().filter(|l| l.is_dedicated())?;
+        let host = lobby.host_actor()?;
+        let bytes = &lobby.actors.get(&host)?.application
+            .get(&skate_net::resources::server_key(lobby.local))?.value;
+        serde_json::from_slice(bytes).ok()
+    }
+    pub(crate) fn resource_skater_states(&self) -> Vec<(u64, BodyState, skate_net::dedicated::Gameplay)> {
+        if !self.is_dedicated() { return Vec::new(); }
+        self.remotes.iter().filter_map(|(&id, remote)| {
+            let actor = self.lobby.as_ref()?.actors.get(&id)?;
+            let state = actor.application.get(skate_net::dedicated::GAMEPLAY_KEY)?;
+            let gameplay = serde_json::from_slice(&state.value).ok()?;
+            Some((id, remote.body.clone(), gameplay))
+        }).collect()
     }
     pub(crate) fn published_name(&self) -> String {
         sanitize_name(&self.player_name)
@@ -169,6 +193,9 @@ impl Multiplayer {
                 .collect()
         })
     }
+    pub(crate) fn is_dedicated(&self) -> bool {
+        self.lobby.as_ref().is_some_and(Session::is_dedicated)
+    }
     pub fn active(&self) -> bool {
         self.lobby.is_some()
     }
@@ -182,6 +209,7 @@ impl Multiplayer {
         self.lobby = None;
         self.remotes.clear();
         self.names.clear();
+        self.dedicated = dedicated::Client::default();
         self.host_code.clear();
         self.room = None;
         self.status = "Offline. Steam is only needed for Steam multiplayer.".into();
@@ -203,6 +231,10 @@ impl Multiplayer {
         self.status = "Waiting for players... (up to 10)".into();
     }
     pub fn local(&mut self, host: bool) {
+        if self.dedicated_launch {
+            self.status = "Restart without --connect to use local or Steam multiplayer".into();
+            return;
+        }
         let bind = if host {
             "127.0.0.1:31030"
         } else {
@@ -222,6 +254,10 @@ impl Multiplayer {
         }
     }
     fn lobby_command(&mut self, command: LobbyCommand) {
+        if self.dedicated_launch {
+            self.status = "Restart without --connect to use local or Steam multiplayer".into();
+            return;
+        }
         // Retry discovery after Steam was opened following an initialization failure.
         if !self.active()
             && self.transport.as_ref().is_some_and(|t| {
@@ -276,6 +312,10 @@ impl Multiplayer {
         });
     }
     pub fn steam(&mut self, host: bool) {
+        if self.dedicated_launch {
+            self.status = "Restart without --connect to use local or Steam multiplayer".into();
+            return;
+        }
         if host {
             self.leave();
             self.lobby_command(LobbyCommand::Host {
@@ -385,8 +425,21 @@ impl Plugin for MultiplayerPlugin {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| load_player_name(&player_name_path(&config.asset_root))),
             names: BTreeMap::new(),
+            dedicated: dedicated::Client::default(),
+            dedicated_launch: config.multiplayer.connect.is_some(),
         };
-        if let Some(bind) = config
+        if let Some(server) = config.multiplayer.connect {
+            match transport::Direct::new("0.0.0.0:0".parse().unwrap()) {
+                Ok(t) => {
+                    net.start(Box::new(t), config.multiplayer.session, Some(transport::endpoint(server).expect("validated IPv4 server")));
+                    net.lobby = Some(Session::dedicated_client(config.multiplayer.session, net.info, transport::endpoint(server).unwrap()));
+                    net.loopback = server.ip().is_loopback();
+                    net.lobby.as_mut().unwrap().set_loopback(net.loopback);
+                    net.status = format!("Connecting to dedicated server {server}...");
+                }
+                Err(e) => net.status = format!("Could not connect to dedicated server: {e}"),
+            }
+        } else if let Some(bind) = config
             .multiplayer
             .host
             .or(config.multiplayer.direct.map(|(b, _)| b))
@@ -413,7 +466,8 @@ impl Plugin for MultiplayerPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                prepare
+                (dedicated::fixed, prepare).chain()
+                    .run_if(crate::graphics_menu::gameplay_active)
                     .before(SimulationSet::Physics)
                     .after(SimulationSet::Controls),
             )
@@ -449,7 +503,7 @@ fn world_changed(
     net.browser_total = 0;
     net.browser_status.clear();
 }
-fn receive(mut net: ResMut<Multiplayer>) {
+pub(crate) fn receive(mut net: ResMut<Multiplayer>) {
     let now = net.started.elapsed().as_millis() as u64;
     let net = &mut *net;
     let Some(t) = &mut net.transport else {
@@ -545,7 +599,7 @@ fn receive(mut net: ResMut<Multiplayer>) {
     }
     net.remotes.retain(|id, _| lobby.actors.contains_key(id));
     for (&id, actor) in &lobby.actors {
-        if id == lobby.local {
+        if id == lobby.local || (lobby.is_dedicated() && Some(id) == lobby.host_actor()) {
             continue;
         }
         let Some(body) = actor.body.latest() else {
@@ -635,6 +689,10 @@ fn receive(mut net: ResMut<Multiplayer>) {
     }
     net.status = if !lobby.notice.is_empty() {
         lobby.notice.clone()
+    } else if lobby.is_dedicated() {
+        if lobby.connected() {
+            format!("Dedicated server | {}/{} players | synced movement, tricks and shoves", lobby.player_ids().len(), skate_net::dedicated::MAX_PLAYERS)
+        } else { "Connecting to dedicated server...".into() }
     } else if lobby.actors.len() > 1 {
         format!(
             "Connected: {}/10 players | collisions on | synced characters",
@@ -674,6 +732,12 @@ pub(crate) fn prepare(net: Res<Multiplayer>, mut physics: ResMut<GamePhysics>, s
     proxies.volumes.clear();
     proxies.solids.clear();proxies.groups.clear();proxies.actors.clear();
     proxies.dynamics_before.clear();proxies.dynamics_deltas.clear();
+    // Dedicated collision impulses come only from the server. Rendering still
+    // uses remote body and pose snapshots; do not solve player pairs twice.
+    if net.is_dedicated() {
+        physics.network_proxies = proxies;
+        return;
+    }
     for (peer, remote) in &net.remotes {
         if mods.as_ref().is_some_and(|m| crate::modding::peer_suspended(m, *peer)) { continue; }
         if let Some(prediction) = skate_net::prediction::CollisionPrediction::at(remote.body_at.elapsed().as_secs_f32()) {
@@ -692,6 +756,7 @@ fn send(mut net: ResMut<Multiplayer>, physics: Res<GamePhysics>, skater: Res<Ska
     if !net.active() || skater.pose_generation == 0 {
         return;
     }
+    dedicated::publish(&mut net, &skater);
     let now = net.started.elapsed().as_millis() as u64;
     if net.last_body.elapsed() >= Duration::from_millis(49) {
         let mut state=network::capture_body(&physics,&skater);

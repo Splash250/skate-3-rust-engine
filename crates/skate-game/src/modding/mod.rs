@@ -14,6 +14,7 @@ mod observation;
 mod engine_access;
 mod participation;
 mod camera_stream;
+mod resources;
 pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
@@ -41,6 +42,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Resource)]
 pub(crate) struct Mods {
     pub manager: Manager,
+    server_selected: bool,
+    resource_asset_root: std::path::PathBuf,
     native_snapshot: Option<([u64; 4], skate_mods::SnapshotFields)>,
     world: DynamicsWorld,
     bodies: BTreeMap<(String, String), u64>,
@@ -144,6 +147,10 @@ pub(crate) struct ModdingPlugin;
 
 impl Plugin for ModdingPlugin {
     fn build(&self, app: &mut App) {
+        let config = app.world().resource::<crate::config::Config>();
+        let server_selected = config.multiplayer.connect.is_some();
+        let resource_asset_root = resources::cache_root(&config.asset_root);
+        let resource_client = resources::ClientResources::new(config, resource_asset_root.clone());
         let root = package_root();
         if let Err(e) = std::fs::create_dir_all(&root) {
             warn!("Cannot create mods folder {}: {e}", root.display());
@@ -159,8 +166,15 @@ impl Plugin for ModdingPlugin {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .join("settings/mods")
             });
-        app.insert_resource(Mods::new(Manager::new(root, settings)))
-        .init_resource::<ModMenu>();
+        let mut mods = Mods::new(Manager::new(root, settings));
+        mods.server_selected = server_selected;
+        mods.resource_asset_root = resource_asset_root;
+        app.insert_resource(mods)
+        .init_resource::<ModMenu>()
+        .insert_resource(resource_client);
+        if server_selected {
+            info!("Dedicated client: server-selected resources; local mod discovery disabled");
+        }
         menu::install(app);
         audio::install(app);
         world_audio::install(app);
@@ -169,11 +183,13 @@ impl Plugin for ModdingPlugin {
         triggers::install(app);
         app.add_systems(
             PreUpdate,
-            maintenance.after(crate::map_transition::MapTransitionSet),
+            (maintenance, resources::poll).chain()
+                .after(crate::map_transition::MapTransitionSet)
+                .after(crate::multiplayer::receive),
         )
         .add_systems(
             FixedUpdate,
-            (replication::sample_fixed, bridge::dynamics_to_board).chain()
+            (replication::sample_fixed.run_if(peer_mod_networking), bridge::dynamics_to_board).chain()
                 .after(crate::app::SimulationSet::Controls)
                 .after(crate::multiplayer::prepare)
                 .before(crate::app::SimulationSet::Physics)
@@ -190,8 +206,9 @@ impl Plugin for ModdingPlugin {
             Update,
             (
                 update.after(crate::app::FrameSet::Animation),
-                bridge::sync_network.after(crate::multiplayer::send_pose).after(update),
-                sync_net.after(bridge::sync_network).after(ModCameraSet),
+                bridge::sync_network.after(crate::multiplayer::send_pose).after(update).run_if(peer_mod_networking),
+                sync_net.after(bridge::sync_network).after(ModCameraSet).run_if(peer_mod_networking),
+                resources::flush.after(update).after(ModCameraSet),
                 participation::present.after(update).after(crate::app::FrameSet::Animation),
                 graphics::debug.after(bridge::sync_network).after(update),
                 present_camera
@@ -202,17 +219,25 @@ impl Plugin for ModdingPlugin {
                     .after(crate::multiplayer::RemoteRenderSet)
                     .before(crate::app::FrameSet::Verification),
             ),
-        );
+        )
+        .add_systems(Last, resources::shutdown);
     }
 }
 
-pub(crate) fn register_source(app: &mut App) {
+pub(crate) fn register_source(app: &mut App, asset_root: &std::path::Path) {
     let root = package_root();
     app.register_asset_source(
         "mods",
         AssetSourceBuilder::new(move || Box::new(FileAssetReader::new(root.clone()))),
     );
+    let resource_root = resources::cache_root(asset_root);
+    app.register_asset_source(
+        "resources",
+        AssetSourceBuilder::new(move || Box::new(FileAssetReader::new(resource_root.clone()))),
+    );
 }
+
+fn peer_mod_networking(mods: Res<Mods>) -> bool { !mods.server_selected }
 
 pub(crate) fn package_root() -> std::path::PathBuf {
     std::env::var_os("SKATE3_MODS")
@@ -400,12 +425,12 @@ fn maintenance(world: &mut World) {
                 mods.manager
                     .dispatch("on_event", json!({"name":"world_changed","map":map}));
             }
-            mods.manager.scan(false);
+            if !mods.server_selected { mods.manager.scan(false); }
             audio_reloads(world, &mut mods);
             sync_audio_content(world, &mods);
             return;
         }
-        mods.manager.scan(false);
+        if !mods.server_selected { mods.manager.scan(false); }
         audio_reloads(world, &mut mods);
         sync_audio_content(world, &mods);
         if !mods.runtime_busy() {
@@ -521,6 +546,9 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         .unwrap_or_else(|| vec![local_id.clone()]);
     json!({
         "player": player,
+        // Resource discovery reuses the frame-current local/remote observation
+        // objects, including canonical string IDs, rather than a second roster.
+        "players": skaters.as_object().map(|rows|rows.values().cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "skaters": skaters,
         "command_results": mods.command_results.iter().fold(serde_json::Map::<String,Value>::new(), |mut out,((owner,key),value)| {
             out.entry(owner.clone()).or_insert_with(||json!({}))[key]=value.clone();out
@@ -566,6 +594,7 @@ fn fixed(world: &mut World) {
     }
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
+        if mods.server_selected && !mods.runtime_busy() { return; }
         bridge::take_reactions(&mut mods, &mut world.resource_mut::<crate::physics::GamePhysics>());
         let camera = camera_position(world);
         if mods.runtime_busy()
@@ -1762,6 +1791,8 @@ impl Mods {
     pub(crate) fn new(manager: Manager) -> Self {
         Self {
             manager,
+            server_selected: false,
+            resource_asset_root: std::path::PathBuf::new(),
             native_snapshot: None,
             world: DynamicsWorld::default(),
             bodies: BTreeMap::new(),

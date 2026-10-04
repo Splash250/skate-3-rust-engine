@@ -59,7 +59,7 @@ pub(crate) fn build(
     let retail_scene = config.map.as_ref().is_some_and(|map| crate::retail_render::RetailScene::for_map(map));
     let mut app = App::new();
     crate::custom_models::register_source(&mut app);
-    crate::modding::register_source(&mut app);
+    crate::modding::register_source(&mut app, &config.asset_root);
     app.add_plugins(
         DefaultPlugins
             .set(AssetPlugin {

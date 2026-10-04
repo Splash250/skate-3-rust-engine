@@ -84,6 +84,9 @@ not affiliated with EA.
 
 ## Advanced diagnostics
 
+For the headless server and direct client connections, see the
+[dedicated multiplayer guide](docs/multiplayer/README.md).
+
 Windows builds support opt-in [performance timeline capture](docs/performance-tracing.md)
 through the `--trace` CLI option, including optional GPU pass diagnostics.
 

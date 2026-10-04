@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 mod codec;
 pub mod lobby;
+pub mod dedicated;
+pub mod resources;
 pub mod blob;
 pub mod socket;
 pub mod directory;

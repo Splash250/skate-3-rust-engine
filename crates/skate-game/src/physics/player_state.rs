@@ -174,3 +174,9 @@ pub(crate) fn resume_after_climb(physics: &mut GamePhysics, skater: &mut SkaterR
 
     Ok(())
 }
+
+/// Server-accepted fighting uses the existing complete physical lifecycle.
+pub(super) fn enter_network_wipeout(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+    transition::set(physics, skater, PhysicalStateId::WipeoutGround)?;
+    publish(physics, skater)
+}

@@ -28,7 +28,9 @@ pub(super) fn draw(
                         if let Ok(pixel) = camera.world_to_viewport(&GlobalTransform::from(*pose), point) {
                             let pixel = pixel / view * screen;
                             if pixel.x >= 0. && pixel.y >= 0. && pixel.x <= screen.x && pixel.y <= screen.y {
-                                labels.insert(actor.0, (net.skater_name(&actor.0.to_string(), &net.mod_identity().1.to_string()), pixel));
+                                let mut name = net.skater_name(&actor.0.to_string(), &net.mod_identity().1.to_string());
+                                if let Some(activity) = net.dedicated.activity(actor.0) { name.push('\n'); name.push_str(&activity); }
+                                labels.insert(actor.0, (name, pixel));
                             }
                         }
                     }

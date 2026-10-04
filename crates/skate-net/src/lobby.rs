@@ -1,7 +1,7 @@
 //! Transport-neutral ten-player star lobby. The host admits and forwards;
 //! each actor retains local physics ownership. No platform SDK or wall clock.
 use crate::packed::{self, BODY, HEADER, POSE, Packed, Reader};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub const MAX_PLAYERS: usize = 10;
 pub const HELLO: u8 = 3;
 pub const ROSTER: u8 = 4;
@@ -12,6 +12,8 @@ pub const REJECT: u8 = 8;
 pub const GOODBYE: u8 = 9;
 pub const APPLICATION: u8 = 10;
 pub const APPLICATION_ACK: u8 = 11;
+pub const DEDICATED_HELLO: u8 = 15;
+pub const DEDICATED_ROSTER: u8 = 16;
 pub const MAX_APP_KEYS: usize = 256;
 pub const MAX_APP_VALUE: usize = 1024;
 #[derive(Clone, Debug)]
@@ -105,6 +107,7 @@ impl Actor {
 }
 struct Link {
     actor: u64,
+    incarnation: u64,
     seen: u64,
     acks: BTreeMap<(u64, u8), u32>,
     sent: BTreeMap<(u64, u8), (u64, u32)>,
@@ -122,6 +125,7 @@ impl Link {
     fn new(actor: u64, now: u64) -> Self {
         Self {
             actor,
+            incarnation: 0,
             seen: now,
             acks: BTreeMap::new(),
             sent: BTreeMap::new(),
@@ -158,12 +162,19 @@ pub struct Session {
     pub stats: Stats,
     pub notice: String,
     host: Option<u64>,
+    dedicated: bool,
+    resources_required: bool,
+    resource_ready: BTreeSet<u64>,
+    max_players: usize,
     links: BTreeMap<u64, Link>,
     pending: Vec<Outgoing>,
     last_hello: u64,
     last_roster: u64,
     roster_seq: u32,
     received_roster: u32,
+    received_incarnation: u64,
+    next_incarnation: u64,
+    application_seq: u32,
     last_service: u64,
     credits: f64,
     budget: f64,
@@ -185,6 +196,10 @@ impl Session {
             session,
             actors,
             host,
+            dedicated: false,
+            resources_required: false,
+            resource_ready: BTreeSet::new(),
+            max_players: MAX_PLAYERS - 1,
             links,
             stats: Stats::default(),
             notice: String::new(),
@@ -193,6 +208,9 @@ impl Session {
             last_roster: 0,
             roster_seq: 0,
             received_roster: 0,
+            received_incarnation: 0,
+            next_incarnation: 0,
+            application_seq: 0,
             last_service: 0,
             credits: 12_000.,
             budget: if host.is_none() {
@@ -206,6 +224,48 @@ impl Session {
             blobs: Default::default(),
         }
     }
+    /// Connect only to the dedicated handshake, never a peer-hosted lobby.
+    pub fn dedicated_client(session: u64, info: Info, host: u64) -> Self {
+        let mut result = Self::new(session, info, Some(host));
+        result.dedicated = true;
+        result.max_players = crate::dedicated::MAX_PLAYERS;
+        result
+    }
+    pub(crate) fn dedicated_host(session: u64, info: Info, max_players: usize, incarnation: u64) -> Self {
+        let mut result = Self::new(session, info, None);
+        result.dedicated = true;
+        result.max_players = max_players;
+        result.next_incarnation = incarnation;
+        result
+    }
+    pub fn is_dedicated(&self) -> bool { self.dedicated }
+    pub(crate) fn require_resources(&mut self) {
+        self.resources_required = true;
+        self.resource_ready.clear();
+        for (&id, actor) in &mut self.actors {
+            if id != self.local { actor.body = Stream::default(); actor.pose = Stream::default(); }
+        }
+    }
+    pub(crate) fn resource_admission(&mut self, actor:u64, ready:bool) {
+        if ready { self.resource_ready.insert(actor); } else { self.resource_ready.remove(&actor); }
+    }
+    pub fn connection_generation(&self) -> u64 { self.received_incarnation }
+
+    /// The dedicated control actor is a server identity, never a player.
+    pub fn player_ids(&self) -> Vec<u64> {
+        let server = self.dedicated.then(|| self.host_actor()).flatten();
+        self.actors.keys().copied().filter(|id| Some(*id) != server).collect()
+    }
+    pub(crate) fn remove_player(&mut self, id: u64) -> Option<u64> {
+        let peer = self.links.iter().find_map(|(&peer, link)| (link.actor == id).then_some(peer))?;
+        self.links.remove(&peer);
+        self.actors.remove(&id);
+        self.last_roster = 0;
+        Some(peer)
+    }
+    fn roster_limit(&self) -> usize {
+        if self.dedicated { crate::dedicated::MAX_PLAYERS + 1 } else { MAX_PLAYERS }
+    }
     /// An external membership authority chooses the new endpoint. Preserve our
     /// actor/capture history; rebuild membership and recipient delta baselines.
     pub fn migrate(&mut self, host: Option<u64>, now: u64) {
@@ -217,6 +277,7 @@ impl Session {
         self.actors.retain(|id, _| *id == self.local);
         self.pending.clear();
         self.received_roster = 0;
+        self.received_incarnation = 0;
         self.roster_seq = 0;
         self.last_hello = 0;
         self.last_roster = 0;
@@ -279,10 +340,17 @@ impl Session {
     /// Repeated full records recover loss and initialize late joiners without replaying Lua.
     pub fn publish_application(&mut self, key: &str, value: Vec<u8>, now: u64) -> bool {
         if key.is_empty() || key.len() > 128 || value.len() > MAX_APP_VALUE { return false; }
+        if self.dedicated && !(if self.is_host() {
+            crate::dedicated::server_key(key)
+        } else { crate::dedicated::valid_client_application(key, &value) }) { return false; }
         let records = &mut self.actors.get_mut(&self.local).unwrap().application;
         if records.len() >= MAX_APP_KEYS && !records.contains_key(key) { return false; }
         if records.get(key).is_some_and(|r| r.value == value) { return true; }
-        let seq = records.get(key).map_or(1, |r| r.seq.saturating_add(1));
+        let seq = if self.dedicated && self.host.is_none() {
+            let Some(next) = self.application_seq.checked_add(1) else { return false; };
+            self.application_seq = next;
+            next
+        } else { records.get(key).map_or(1, |r| r.seq.saturating_add(1)) };
         records.insert(key.into(), Application {seq, value, received: now});
         true
     }
@@ -311,7 +379,9 @@ impl Session {
             return;
         }
         let mut r = Reader(&data[HEADER..]);
-        if kind == HELLO && self.is_host() {
+        let hello = if self.dedicated { DEDICATED_HELLO } else { HELLO };
+        let roster = if self.dedicated { DEDICATED_ROSTER } else { ROSTER };
+        if kind == hello && self.is_host() {
             let Some(info) = read_info(&mut r) else {
                 return;
             };
@@ -319,11 +389,12 @@ impl Session {
                 return;
             }
             // Map, rig and physics fingerprints describe peers; they do not gate admission.
-            let error = if !self.links.contains_key(&peer) && self.links.len() >= MAX_PLAYERS - 1 {
-                3
-            } else {
-                0
-            };
+            let own = self.local_info();
+            let error = if self.dedicated && info.map != own.map { 1 }
+            else if self.dedicated && (info.rig == 0 || info.physics == 0
+                || (own.rig != 0 && (info.rig != own.rig || info.physics != own.physics))) { 2 }
+            else if !self.links.contains_key(&peer) && self.links.len() >= self.max_players { 3 }
+            else { 0 };
             if error != 0 {
                 let mut b = packed::header(self.session, self.local, REJECT, 0);
                 b.push(error);
@@ -337,13 +408,22 @@ impl Session {
             {
                 return;
             }
+            if self.dedicated && self.local_info().rig == 0 {
+                let own = &mut self.actors.get_mut(&self.local).unwrap().info;
+                own.rig = info.rig;
+                own.physics = info.physics;
+            }
             let old = self.links.get(&peer).map(|l| l.actor);
             if old != Some(actor) {
                 if let Some(old) = old {
                     self.actors.remove(&old);
                 }
-                self.links.insert(peer, Link::new(actor, now));
+                let mut link = Link::new(actor, now);
+                self.next_incarnation = self.next_incarnation.checked_add(1).expect("Connection generations exhausted");
+                link.incarnation = self.next_incarnation;
+                self.links.insert(peer, link);
                 self.actors.insert(actor, Actor::new(info));
+                self.resource_ready.remove(&actor);
                 self.last_roster = 0;
             }
             self.links.get_mut(&peer).unwrap().seen = now;
@@ -356,14 +436,14 @@ impl Session {
         if !self.links.contains_key(&peer) {
             return;
         }
-        if kind == ROSTER && self.host == Some(peer) {
-            if seq <= self.received_roster {
+        if kind == roster && self.host == Some(peer) {
+            if !self.dedicated && seq <= self.received_roster {
                 return;
             }
             let Some(count) = r.byte() else {
                 return;
             };
-            if count == 0 || count as usize > MAX_PLAYERS {
+            if count == 0 || count as usize > self.roster_limit() {
                 return;
             }
             let mut infos = vec![];
@@ -378,9 +458,28 @@ impl Session {
                 }
                 infos.push(info);
             }
+            let incarnation = if self.dedicated {
+                let Some(value) = r.u64() else { return; };
+                if value == 0 { return; }
+                value
+            } else { 0 };
             if !r.0.is_empty() || infos[0].id != actor || !infos.iter().any(|i| i.id == self.local)
             {
                 return;
+            }
+            if self.dedicated && (incarnation < self.received_incarnation
+                || (incarnation == self.received_incarnation && seq <= self.received_roster)) { return; }
+            if self.dedicated && (self.received_incarnation != incarnation || self.links[&peer].actor != actor) {
+                // Readmission can happen after one-way loss while the client
+                // still sees server heartbeats. Reset both reliable-record ACKs
+                // and snapshot baselines, and never resend a previous action.
+                self.links.insert(peer, Link::new(actor, now));
+                self.actors.retain(|id, _| *id == self.local);
+                let local = self.actors.get_mut(&self.local).unwrap();
+                local.application.remove(crate::dedicated::SHOVE_KEY);
+                local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
+                local.application.remove(crate::resources::CLIENT_KEY);
+                self.received_incarnation = incarnation;
             }
             self.received_roster = seq;
             self.links.get_mut(&peer).unwrap().actor = actor;
@@ -399,13 +498,14 @@ impl Session {
             self.notice = match r.byte() {
                 Some(1) => "Map mismatch",
                 Some(2) => "Physics definition mismatch",
-                Some(3) => "Lobby full (10 players)",
+                Some(3) => if self.dedicated { "Dedicated server full" } else { "Lobby full (10 players)" },
                 _ => "Lobby rejected connection",
             }
             .into();
             return;
         }
         if matches!(kind, crate::blob::META | crate::blob::DATA | crate::blob::ACK) {
+            if self.dedicated { return; }
             let valid = if kind == crate::blob::ACK {
                 self.links[&peer].actor == actor
             } else {
@@ -432,11 +532,20 @@ impl Session {
         }
         if kind == APPLICATION {
             if actor == self.local || (self.is_host() && self.links[&peer].actor != actor) { return; }
+            let host_actor = self.host_actor();
+            let host_mode = self.is_host();
             let Some(a) = self.actors.get_mut(&actor) else { return; };
             let Some(length) = r.byte() else { return; };
             let length = length as usize;
             if length == 0 || length > 128 || r.0.len() < length || r.0.len() - length > MAX_APP_VALUE { return; }
             let Ok(key) = std::str::from_utf8(&r.0[..length]) else { return; };
+            if self.dedicated {
+                let value = &r.0[length..];
+                let valid = if !host_mode && Some(actor) == host_actor {
+                    crate::dedicated::server_key(key)
+                } else { crate::dedicated::valid_client_application(key, value) };
+                if !valid { return; }
+            }
             if a.application.len() >= MAX_APP_KEYS && !a.application.contains_key(key) { return; }
             if a.application.get(key).is_none_or(|old| seq > old.seq) {
                 a.application.insert(key.into(), Application { seq, value: r.0[length..].to_vec(), received: now });
@@ -487,7 +596,7 @@ impl Session {
             let Some(count) = r.byte() else {
                 return;
             };
-            if count as usize > MAX_PLAYERS {
+            if count as usize > self.roster_limit() {
                 return;
             }
             let mut ack = vec![];
@@ -517,6 +626,7 @@ impl Session {
         if self.is_host() && self.links[&peer].actor != actor {
             return;
         }
+        if self.resources_required && self.is_host() && !self.resource_ready.contains(&actor) { return; }
         let stream = self.actors.get_mut(&actor).unwrap().stream_mut(kind);
         if stream.latest().is_some_and(|s| seq <= s.seq) {
             self.stats.late += 1;
@@ -534,6 +644,11 @@ impl Session {
             self.stats.invalid += 1;
             return;
         };
+        if self.dedicated && self.host.is_none() && kind == BODY
+            && !crate::dedicated::plausible_body(&state, stream.latest(), now) {
+            self.stats.invalid += 1;
+            return;
+        }
         stream.push(seq, state, now);
         self.stats.decoded += 1;
         self.links.get_mut(&peer).unwrap().seen = now;
@@ -547,15 +662,7 @@ impl Session {
             })
             .collect()
     }
-    pub fn service(&mut self, now: u64) -> Vec<Outgoing> {
-        let dt = now.saturating_sub(self.last_service).min(1000) as f64 / 1000.;
-        self.last_service = now;
-        self.credits = (self.credits + dt * self.budget).min(self.session_credit_cap());
-        let link_cap = self.link_credit_cap();
-        for l in self.links.values_mut() {
-            l.credits = (l.credits + dt * self.link_budget).min(link_cap);
-            l.app_credits = (l.app_credits + dt * APP_BUDGET).min(APP_CREDIT_CAP);
-        }
+    pub(crate) fn expire_connections(&mut self, now: u64) {
         if self.is_host() {
             let expired: Vec<_> = self
                 .links
@@ -575,18 +682,49 @@ impl Session {
         {
             self.actors.retain(|id, _| *id == self.local);
             self.received_roster = 0;
+            if self.dedicated {
+                self.received_incarnation = 0;
+                self.last_hello = 0;
+                let peer = self.host.unwrap();
+                self.links.insert(peer, Link::new(0, now));
+                let local = self.actors.get_mut(&self.local).unwrap();
+                local.application.remove(crate::dedicated::SHOVE_KEY);
+                local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
+                local.application.remove(crate::resources::CLIENT_KEY);
+            }
             self.notice = "Host unavailable; waiting to reconnect".into();
         }
+    }
+    fn prune_links(&mut self) {
+        for link in self.links.values_mut() {
+            link.acks.retain(|(id, _), _| self.actors.contains_key(id));
+            link.sent.retain(|(id, _), _| self.actors.contains_key(id));
+            link.keys.retain(|(id, _), _| self.actors.contains_key(id));
+            link.app_sent.retain(|(id, key), _| self.actors.get(id).is_some_and(|a| a.application.contains_key(key)));
+            link.app_acks.retain(|(id, key), _| self.actors.get(id).is_some_and(|a| a.application.contains_key(key)));
+        }
+    }
+    pub fn service(&mut self, now: u64) -> Vec<Outgoing> {
+        let dt = now.saturating_sub(self.last_service).min(1000) as f64 / 1000.;
+        self.last_service = now;
+        self.credits = (self.credits + dt * self.budget).min(self.session_credit_cap());
+        let link_cap = self.link_credit_cap();
+        for l in self.links.values_mut() {
+            l.credits = (l.credits + dt * self.link_budget).min(link_cap);
+            l.app_credits = (l.app_credits + dt * APP_BUDGET).min(APP_CREDIT_CAP);
+        }
+        self.expire_connections(now);
+        self.prune_links();
         if let Some(peer) = self.host {
             if now.saturating_sub(self.last_hello) >= 500 || self.last_hello == 0 {
-                let mut b = packed::header(self.session, self.local, HELLO, 0);
+                let mut b = packed::header(self.session, self.local, if self.dedicated { DEDICATED_HELLO } else { HELLO }, 0);
                 write_info(&mut b, self.local_info());
                 self.queue(peer, b);
                 self.last_hello = now.max(1);
             }
         } else if now.saturating_sub(self.last_roster) >= 500 || self.last_roster == 0 {
             self.roster_seq = self.roster_seq.wrapping_add(1);
-            let mut b = packed::header(self.session, self.local, ROSTER, self.roster_seq);
+            let mut b = packed::header(self.session, self.local, if self.dedicated { DEDICATED_ROSTER } else { ROSTER }, self.roster_seq);
             b.push(self.actors.len() as u8);
             write_info(&mut b, self.local_info());
             for (&id, a) in &self.actors {
@@ -595,7 +733,9 @@ impl Session {
                 }
             }
             for peer in self.links.keys().copied().collect::<Vec<_>>() {
-                self.queue(peer, b.clone());
+                let mut roster = b.clone();
+                if self.dedicated { roster.extend(self.links[&peer].incarnation.to_le_bytes()); }
+                self.queue(peer, roster);
             }
             self.last_roster = now.max(1);
         }
@@ -639,7 +779,9 @@ impl Session {
         self.write_physics(&mut output, &peers, &ids, POSE, now);
         let members = self.actors.keys().copied().collect();
         let peers: Vec<_> = self.links.iter().map(|(&peer, link)| (peer, link.actor, link.rtt)).collect();
-        output.extend(self.blobs.service(self.session, self.local, self.host.is_none(), &members, &peers, now));
+        if !self.dedicated {
+            output.extend(self.blobs.service(self.session, self.local, self.host.is_none(), &members, &peers, now));
+        }
         self.stats.rtt_ms = self.links.values().map(|l| l.rtt).max().unwrap_or(0);
         output
     }
@@ -647,6 +789,8 @@ impl Session {
         for &peer in peers {
             let Some(link_actor) = self.links.get(&peer).map(|l| l.actor) else { continue };
             for &id in ids {
+                if self.resources_required && self.host.is_none()
+                    && (!self.resource_ready.contains(&link_actor) || !self.resource_ready.contains(&id)) { continue; }
                 if id == link_actor || (self.host.is_some() && id != self.local) {
                     continue;
                 }
@@ -737,7 +881,11 @@ impl Session {
             link.app_sent.retain(|(id, _), _| self.actors.contains_key(id));
             link.app_acks.retain(|(id, _), _| self.actors.contains_key(id));
             let records: Vec<_> = self.actors.iter().filter(|(id, _)| **id != link.actor && (self.host.is_none() || **id == self.local))
-                .flat_map(|(&id, a)| a.application.iter().map(move |(key, record)| (id, key, record))).collect();
+                .flat_map(|(&id, a)| a.application.iter().map(move |(key, record)| (id, key, record)))
+                .filter(|(id, key, _)| !self.dedicated || self.host.is_some()
+                    || (*id == self.local && (**key == crate::dedicated::effects_key(link.actor) || **key == crate::resources::server_key(link.actor)))
+                    || (*id != self.local && (!self.resources_required || (self.resource_ready.contains(id) && self.resource_ready.contains(&link.actor))) && matches!(key.as_str(), crate::dedicated::GAMEPLAY_KEY | "mp:name" | "mp:ping")))
+                .collect();
             let count = records.len();
             for offset in 0..count {
                 let index = (link.app_round + offset) % count;
@@ -778,4 +926,48 @@ fn read_info(r: &mut Reader) -> Option<Info> {
         physics: r.u64()?,
         appearance: r.u64()?,
     })
+}
+
+#[cfg(test)]
+mod dedicated_tests {
+    use super::*;
+    fn info(id:u64)->Info { Info{id,map:1,rig:2,physics:3,appearance:0} }
+    fn pump(host:&mut Session, observer:&mut Session, visitor:&mut Session,now:u64) {
+        for packet in observer.service(now) {host.receive(100,&packet.data,now);}
+        for packet in visitor.service(now) {host.receive(200,&packet.data,now);}
+        for packet in host.service(now) {
+            match packet.peer {
+                100=>observer.receive(1,&packet.data,now),
+                200=>visitor.receive(1,&packet.data,now),
+                _=>panic!("Unexpected endpoint"),
+            }
+        }
+    }
+    #[test]
+    fn departed_players_and_deleted_effect_keys_do_not_accumulate_link_state() {
+        let mut host=Session::dedicated_host(7,info(99),16,1000);
+        let mut observer=Session::dedicated_client(7,info(2),1);
+        let root=crate::Pose {p:[0.;3],q:[0.,0.,0.,1.]};
+        let body=Packed::body(&packed::BodyState {root,enabled:1,bodies:vec![crate::Body{pose:root,velocity:[0.;3],angular:[0.;3]};33]}).unwrap();
+        for id in 110..210 {
+            let mut visitor=Session::dedicated_client(7,info(id),1);
+            let begin=(id-110)*1000;
+            visitor.publish(BODY,body.clone(),begin);
+            visitor.publish_application("mp:name",b"Visitor".to_vec(),begin);
+            let key=crate::dedicated::effects_key(id);
+            host.publish_application(&key,b"{}".to_vec(),begin);
+            for now in (begin..begin+800).step_by(10) {pump(&mut host,&mut observer,&mut visitor,now);}
+            assert!(observer.actors[&id].body.latest().is_some(), "visitor {id}, host {:?}, observer {:?}", host.stats, observer.stats);
+            for packet in visitor.goodbye() {host.receive(200,&packet.data,begin+800);}
+            host.actors.get_mut(&99).unwrap().application.remove(&key);
+            host.service(begin+800);
+            for link in host.links.values() {
+                assert!(link.acks.keys().all(|(id,_)|host.actors.contains_key(id)));
+                assert!(link.sent.keys().all(|(id,_)|host.actors.contains_key(id)));
+                assert!(link.keys.keys().all(|(id,_)|host.actors.contains_key(id)));
+                assert!(link.app_sent.keys().all(|(id,key)|host.actors.get(id).is_some_and(|actor|actor.application.contains_key(key))));
+                assert!(link.app_acks.keys().all(|(id,key)|host.actors.get(id).is_some_and(|actor|actor.application.contains_key(key))));
+            }
+        }
+    }
 }

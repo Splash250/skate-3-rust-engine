@@ -95,4 +95,6 @@ needed. Two Steam players need separate Steam accounts. The helper currently
 uses the development App ID 480.
 
 The ordinary `./BUILD.sh` and `./BUILD.sh --release` commands remain
-Steam-independent.
+Steam-independent. [Dedicated multiplayer](multiplayer/README.md) uses direct
+UDP with `--connect`; it does not need Steam or this helper. Steam lobbies do
+not provide a Steam transport for the dedicated server.

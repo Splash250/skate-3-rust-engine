@@ -2,7 +2,6 @@
 use super::{Mods, resolve_body};
 use bevy::{
     asset::RenderAssetUsages,
-    image::{CompressedImageFormats, ImageSampler, ImageType},
     mesh::{Indices, PrimitiveTopology, VertexAttributeValues},
     prelude::*,
 };
@@ -60,20 +59,17 @@ pub(super) fn install(app: &mut App) {
 }
 
 fn decode_texture_png(input: &[u8]) -> Result<Image, String> {
-    let image = Image::from_buffer(
-        input,
-        ImageType::MimeType("image/png"),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::default(),
-        RenderAssetUsages::RENDER_WORLD,
-    )
-    .map_err(|e| format!("PNG decode failed: {e}"))?;
-    let (width, height) = (image.width(), image.height());
-    if width == 0 || height == 0 || width > 2048 || height > 2048 {
-        return Err("Texture dimensions out of range".into());
-    }
-    Ok(image)
+    // Bevy's general Image::from_buffer deliberately disables decoder limits.
+    // Resource textures (and existing local PNG textures) keep the established
+    // 2048-pixel contract while bounding compressed profile/metadata allocation.
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(input),image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width=Some(2048);limits.max_image_height=Some(2048);
+    limits.max_alloc=Some(32*1024*1024);
+    reader.limits(limits);
+    let decoded=reader.decode().map_err(|e| format!("PNG decode failed: {e}"))?;
+    if decoded.width()==0 || decoded.height()==0 {return Err("Texture dimensions out of range".into());}
+    Ok(Image::from_dynamic(decoded,true,RenderAssetUsages::RENDER_WORLD))
 }
 
 fn ensure_texture(

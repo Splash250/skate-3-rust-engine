@@ -1,5 +1,7 @@
-//! Physics/transport boundary. Remote dynamic proxies join the existing solve;
-//! only the locally owned assembly retains its solved reactions.
+//! Physics/transport boundary. Legacy remote proxies join the existing solve;
+//! dedicated sessions apply server effects through the native movement owners.
+#[path = "network_delta.rs"]
+mod delta;
 use super::*;
 use skate_core::physics::{
     assembly::BodySnapshot,
@@ -397,3 +399,50 @@ impl Proxies {
         }
     }
 }
+
+/// Apply a deduplicated canonical result from the connected server endpoint. AttackAccepted
+/// feeds the recovered Shove animation probe; no hit is inferred from a pose.
+pub(crate) fn apply_server_effect(physics: &mut GamePhysics, skater: &mut SkaterRuntime, effect: &skate_net::dedicated::Effect) -> Result<(), String> {
+    use skate_net::dedicated::EffectKind;
+    if !effect.delta_velocity.iter().chain(&effect.position).all(|v|v.is_finite()) {
+        return Err("Server effect contained nonfinite values".into());
+    }
+    if skater.climbing.release_for_network_impact() {
+        super::player_state::resume_after_climb(physics, skater)?;
+    }
+    if effect.kind == EffectKind::AttackAccepted {
+        let p = &mut skater.player_input.processed;
+        p.probe_1792.bytes_72_73[0] = 1;
+        p.probe_1792.vectors_16_32_48[0] = [effect.position[0],effect.position[1],effect.position[2],0.].map(f32::to_bits);
+        p.probe_1792.vectors_16_32_48[1] = p.probe_1792.vectors_16_32_48[0];
+        p.flags_2476 |= 0x400000;
+        return Ok(());
+    }
+    if effect.kind == EffectKind::Shove {
+        super::player_state::enter_network_wipeout(physics,skater)?;
+    }
+    for (value, delta) in physics.network_delta_velocity.iter_mut().zip(effect.delta_velocity) { *value += delta; }
+    Ok(())
+}
+
+/// Route after state selection: native walking and the rigid-body solver must
+/// never both consume the same server impulse in a single tick.
+pub(super) fn prepare_server_movement(physics: &mut GamePhysics, skater: &mut SkaterRuntime) {
+    use skate_core::player::state::PhysicalStateId;
+    let grounded_offboard = matches!(skater.player_state.current(), PhysicalStateId::BipedGround | PhysicalStateId::OffBoardPushing);
+    delta::route_to_ground(grounded_offboard, &mut skater.biped_ground.controller.state.sliding.velocity_528, &mut physics.network_delta_velocity);
+}
+
+pub(super) fn apply_server_velocity(physics: &mut GamePhysics, skater: &mut SkaterRuntime) {
+    let delta = std::mem::replace(&mut physics.network_delta_velocity,[0.;3]);
+    if delta == [0.;3] { return; }
+    let delta = vector(delta);
+    for body in physics.board.bodies_mut().iter_mut().chain(skater.skeleton.bodies_mut()) {
+        let velocity = body.rates.linear_velocity;
+        body.rates.linear_velocity = Vector3::new(velocity.x + delta.x, velocity.y + delta.y, velocity.z + delta.z);
+    }
+}
+
+#[cfg(test)]
+#[path = "network_asset_tests.rs"]
+mod dedicated_asset_tests;

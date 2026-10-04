@@ -99,6 +99,8 @@ use skate_core::{
 pub(crate) struct GamePhysics {
     pub(crate) network_proxies: network::Proxies,
     pub(crate) network_active: bool,
+    /// Accepted server impulses applied after native movement, before the solve.
+    pub(crate) network_delta_velocity: [f32; 3],
     pub(crate) network_contacts: usize,
     clock: clock::SimulationClock,
     pub board: BoardRuntime,
@@ -326,6 +328,7 @@ impl GamePhysics {
         Ok(Self {
             network_proxies: network::Proxies::default(),
             network_active: false,
+            network_delta_velocity: [0.; 3],
             network_contacts: 0,
             clock: clock::SimulationClock::default(),
             board,

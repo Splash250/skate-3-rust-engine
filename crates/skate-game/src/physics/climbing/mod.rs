@@ -47,6 +47,13 @@ struct Attached {
     carry_board: bool,
 }
 impl Runtime {
+    /// A canonical remote impact releases the local ledge movement owner.
+    pub(super) fn release_for_network_impact(&mut self) -> bool {
+        let attached = self.active.take().is_some();
+        self.approach = None;
+        self.cooldown = 0.3;
+        attached
+    }
     pub fn load(root: &std::path::Path, names: &[String]) -> Result<Self, String> {
         let clips = Clips::load(root)?;
         let indices = match &clips {

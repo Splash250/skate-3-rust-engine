@@ -54,6 +54,12 @@ pub(super) fn sync(
         }
         return;
     };
+    if lobby.is_dedicated() {
+        // All remote models use prepared local stock assets in basic mode.
+        // Never publish, request, or load a blob from the dedicated connection.
+        if state.connection.is_some() { *state = default(); }
+        return;
+    }
     let connection = (lobby.session, lobby.local);
     if state.connection != Some(connection) {
         *state = Appearances {

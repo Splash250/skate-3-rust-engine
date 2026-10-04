@@ -81,6 +81,9 @@ fn rows(menu: &ModMenu, mods: &Mods) -> Vec<(String, Action)> {
     }
     if let Some(id) = &menu.id {
         if let Some(p) = manager.packages.get(id) {
+            if mods.server_selected {
+                return vec![("Managed by the dedicated server — Back".into(), Action::Back)];
+            }
             let mut rows = vec![
                 (
                     if p.running() {
@@ -116,8 +119,10 @@ fn rows(menu: &ModMenu, mods: &Mods) -> Vec<(String, Action)> {
             rows.insert(0,(definition.title.clone(),Action::CustomOpen(owner.clone(),key.clone(),Vec::new())));
         }
     }
-    rows.push(("Open mods folder".into(), Action::OpenFolder));
-    rows.push(("Refresh installed mods".into(), Action::Scan));
+    if !mods.server_selected {
+        rows.push(("Open mods folder".into(), Action::OpenFolder));
+        rows.push(("Refresh installed mods".into(), Action::Scan));
+    }
     rows.push(("Back to pause menu".into(), Action::Back));
     rows
 }
@@ -293,17 +298,16 @@ fn input(
                 .map_err(|e| format!("Could not open mods folder: {e}"))
         }
         Action::Scan => {
-            mods.manager.scan(true);
-            Ok(())
+            if mods.server_selected { Err("Local mods are disabled in dedicated sessions".into()) }
+            else { mods.manager.scan(true); Ok(()) }
         }
         Action::Enable(id) => {
             let enabled = !mods.manager.packages[&id].running();
             mods.manager.enable(&id, enabled)
         }
         Action::Reload(id) => {
-            mods.manager.scan(true);
-            mods.manager.reload(&id);
-            Ok(())
+            if mods.server_selected { Err("Resource lifecycle is managed by the server".into()) }
+            else { mods.manager.scan(true); mods.manager.reload(&id); Ok(()) }
         }
         Action::Reset(id) => mods.manager.reset(&id),
         Action::Setting(id, key) => {

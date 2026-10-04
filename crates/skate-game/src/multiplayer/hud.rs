@@ -22,7 +22,7 @@ pub(super) fn setup(mut commands: Commands) {
         panel.spawn((RosterTitle, Text::new("FREESKATE"),
             TextFont { font_size: 14., ..default() }, TextColor(Color::srgb(0.55, 0.81, 1.)),
             Node { margin: UiRect::bottom(px(5)), ..default() }));
-        for row in 0..10 {
+        for row in 0..skate_net::dedicated::MAX_PLAYERS {
             panel.spawn((RosterRow(row), Node { width: percent(100), min_height: px(30),
                 align_items: AlignItems::Center, padding: UiRect::axes(px(8), px(4)),
                 column_gap: px(8), display: Display::None, ..default() },
@@ -53,7 +53,7 @@ pub(super) fn draw(
     if let Some(lobby) = &net.lobby {
         let mut ids = net.player_ids();
         ids.sort_by_key(|id| (*id != lobby.local, *id));
-        for id in ids.into_iter().take(10) {
+        for id in ids.into_iter().take(skate_net::dedicated::MAX_PLAYERS) {
             let name = if id == lobby.local { net.published_name() }
                 else { net.names.get(&id).cloned().unwrap_or_else(|| "Player".into()) };
             // Ping is each player's RTT to the host. A host has no network hop.
