@@ -70,6 +70,7 @@ DOCUMENTATION_FILES = (
     'docs/multiplayer/backend-services.md', 'docs/multiplayer/browser-interfaces.md',
     'docs/multiplayer/large-messages.md', 'docs/multiplayer/platform-extension.md',
     'docs/multiplayer/platform-extension-evidence.md',
+    'docs/multiplayer/production-validation.md',
     'docs/multiplayer/resource-compatibility.md', 'docs/multiplayer/resource-validation.md',
     'docs/multiplayer/resource-worlds.md', 'docs/multiplayer/resources.md',
     'docs/multiplayer/shared-entities.md', 'docs/multiplayer/verified-competitions.md',

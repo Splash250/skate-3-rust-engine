@@ -116,9 +116,12 @@ Back up a stopped server's services directory, or use a proper SQLite online
 backup procedure. Do not copy only a live database while a rollback journal is
 active. Ordinary resource unload never deletes durable data. Removing resource
 data is an explicit administrator filesystem action. SQLite transaction recovery
-is automatic on open. Fresh tests exercise process restart after committed
-writes; abrupt process-kill/power-loss fault injection remains separate from that
-evidence.
+is automatic on open. Tests exercise restart after committed writes, forced
+process termination during a confirmed active transaction, and stopped-directory
+backup/restore. The killed transaction preserves the committed balance; restored
+data preserves its migration and accepts independent writes. This does not prove
+power-loss handling or every commit I/O boundary. See the exact fixture and
+limitations in [production validation](production-validation.md).
 
 ## Budgets and adapter contract
 
@@ -178,3 +181,12 @@ revoked queued HTTP request, transactional cancellation, migration rollback and
 upgrade, lowered storage budgets, statement-batch rejection without recursive
 preparation, and exact-origin configuration validation. Native Windows, live
 HTTPS certificate success, and abrupt power-loss recovery were not exercised.
+
+Continuation validation on the same date adds two regressions: indirect
+view/trigger access cannot read or mutate migration metadata, and an actual
+killed writer preserves committed state before an offline backup/restore round
+trip. A fresh full `skate-services` run passes 11 parent tests plus the normal
+restart helper. The separate abrupt-termination helper is deliberately killed
+by its parent after proving the transaction is active; its forced exit is not
+counted as a passing child test. See [production validation](production-validation.md)
+for the exact commands, workload and untested failure modes.

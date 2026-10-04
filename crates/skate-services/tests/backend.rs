@@ -868,3 +868,64 @@ fn http_grants_validate_before_script_activation() {
         ErrorCode::TooLarge
     );
 }
+
+#[test]
+fn views_and_triggers_cannot_read_or_mutate_protected_migration_metadata() {
+    let temp = Temp::new();
+    let mut service = Services::new(temp.0.clone(), Limits::default()).unwrap();
+    let owner = register_owner(&mut service, "indirect-metadata");
+    execute(&mut service, &owner, migration()).unwrap();
+    execute(
+        &mut service,
+        &owner,
+        transaction(vec![sql(
+            "CREATE VIEW metadata_alias AS SELECT version,digest FROM _skate_migrations",
+            vec![],
+        )]),
+    )
+    .unwrap();
+    assert_eq!(
+        execute(&mut service, &owner, query("SELECT * FROM metadata_alias"))
+            .unwrap_err()
+            .code,
+        ErrorCode::Denied,
+        "a view must not launder protected metadata reads"
+    );
+    execute(
+        &mut service,
+        &owner,
+        transaction(vec![sql(
+            "CREATE TRIGGER mutate_metadata AFTER INSERT ON progression BEGIN DELETE FROM _skate_migrations; END",
+            vec![],
+        )]),
+    )
+    .unwrap();
+    assert_eq!(
+        execute(
+            &mut service,
+            &owner,
+            transaction(vec![sql(
+                "INSERT INTO progression VALUES('local-account',100)",
+                vec![],
+            )]),
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Denied,
+        "a trigger must not mutate protected metadata"
+    );
+    let Response::Database { results } = execute(
+        &mut service,
+        &owner,
+        query("SELECT COUNT(*) FROM progression"),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(results[0].rows[0][0], SqlValue::Integer(0));
+    assert_eq!(
+        execute(&mut service, &owner, migration()).unwrap(),
+        Response::Migrated { version: 1 },
+        "the denied trigger must preserve the original migration digest"
+    );
+}
