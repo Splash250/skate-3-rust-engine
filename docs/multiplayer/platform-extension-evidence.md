@@ -13,6 +13,26 @@ establish completion of its parent capability or graphical/device acceptance.
 The matrix is current; dated milestone notes below retain earlier failures and
 pending checks for traceability and are superseded by later evidence.
 
+Continuation started from clean `68236c91d326ece39d904979cac817fd90e37b8c` on the
+same branch, with both requested ancestors verified. The dependency-ordered
+[remaining-gaps plan](../superpowers/plans/2026-10-04-platform-gaps.md) tracks
+current work. Local commits are authorized; no push, publication or deployment.
+
+Fresh prerequisites: the available host is Linux. No Windows remote is configured;
+the only running QEMU guest is Docker Desktop LinuxKit. `/proc/asound/cards`
+lists a Plantronics Blackwire 3220 headset, but opening its control/capture/playback
+devices as this session's user fails with EACCES. Their ACL grants the greeter,
+not this user; ALSA enumeration exposes no cards and PipeWire exposes Dummy Output
+only. The user is away from the machine. Native Windows and physical/acoustic
+acceptance therefore remain blocked, requiring a usable Windows desktop and an
+authorized active audio session plus an operator to confirm sound. No access
+controls were changed and no microphone audio was captured. Inventory evidence:
+`/tmp/skate-platform-followup-20261004/prerequisites.json`.
+
+Before implementation, `cargo fmt --all -- --check` reports differences in 512
+files (`/tmp/skate-followup-fmt-baseline.log`). These exist at clean `68236c9`;
+changed code will be formatted locally without a repository-wide rewrite.
+
 | Requirement | Status | Evidence / remaining acceptance |
 | --- | --- | --- |
 | 1 Shared entities, state and instances | Implemented and verified | Real UDP ownership/restart/spoof/late-join tests and two native-client interaction/isolation pass. Both players produce actual server and native crate contacts; private instance retires peer/replicas/colliders and public return restores them. Fresh graphical rerun also restores both peer names after return. |
