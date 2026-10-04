@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "skate-rules",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": ["shared.lua"],
+  "exports": ["landing_point", "progress_label"],
+  "capabilities": ["resource.exports"]
+}

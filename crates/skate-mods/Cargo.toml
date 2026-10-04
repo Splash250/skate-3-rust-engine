@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 skate-dynamics = { path = "../skate-dynamics" }
 skate-audio = { path = "../skate-audio" }
+skate-resources = { path = "../skate-resources" }
 gltf = { version = "=1.4.1", default-features = true }
 zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 

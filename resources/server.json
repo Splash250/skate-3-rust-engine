@@ -1,0 +1,12 @@
+{
+  "root": ".",
+  "storage": "../resource-data",
+  "ensure": ["landing-challenge"],
+  "grants": {
+    "skate-rules": ["resource.exports"],
+    "landing-challenge": [
+      "resource.events", "resource.network", "resource.state", "resource.storage",
+      "resource.commands", "resource.exports", "engine.ui"
+    ]
+  }
+}

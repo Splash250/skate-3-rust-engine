@@ -11,6 +11,38 @@ pub struct ObjectLists {
 const MAX_VERTS: usize = 65_536;
 const MAX_HULL: usize = 256;
 
+/// Downloaded resources only need the named-object metadata here. Importing a
+/// glTF document also opens external URIs and decodes images, and typed glTF
+/// validation can panic on malformed accessor indices. Do neither in this API.
+pub(crate) fn list_resource_objects(root: &Path, relative: &str) -> Result<ObjectLists, String> {
+    skate_resources::validate_path(relative).map_err(|e| e.to_string())?;
+    if !relative.ends_with(".glb") { return Err("resource object metadata requires a GLB".into()); }
+    let bytes=crate::read_bounded(root,relative,16*1024*1024)?;
+    let word=|at:usize| u32::from_le_bytes(bytes[at..at+4].try_into().unwrap()) as usize;
+    if bytes.len()<20 || &bytes[..4]!=b"glTF" || word(4)!=2 || word(8)!=bytes.len() || &bytes[16..20]!=b"JSON" {
+        return Err("invalid GLB metadata header".into());
+    }
+    let length=word(12);
+    if length>1024*1024 || length%4!=0 || length>bytes.len()-20 {return Err("invalid or oversized GLB metadata".into());}
+    let json:serde_json::Value=serde_json::from_slice(&bytes[20..20+length]).map_err(|e|format!("GLB metadata: {e}"))?;
+    if json["asset"]["version"]!="2.0" {return Err("unsupported GLB metadata version".into());}
+    let names=|key:&str| -> Result<Vec<String>,String> {
+        let Some(values)=json.get(key) else {return Ok(Vec::new());};
+        let values=values.as_array().ok_or("GLB object list must be an array")?;
+        if values.len()>4096 {return Err("GLB object list exceeds 4096 entries".into());}
+        let mut names=Vec::new();
+        for value in values {
+            if let Some(name)=value.get("name") {
+                let name=name.as_str().ok_or("GLB object name must be text")?;
+                if name.len()>120 {return Err("GLB object name exceeds 120 bytes".into());}
+                names.push(name.to_owned());
+            }
+        }
+        names.sort();names.dedup();Ok(names)
+    };
+    Ok(ObjectLists{nodes:names("nodes")?,meshes:names("meshes")?})
+}
+
 pub fn list_objects(root: &Path, relative: &str) -> Result<ObjectLists, String> {
     if relative.is_empty()
         || relative.len() > 256

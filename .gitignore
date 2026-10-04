@@ -108,6 +108,7 @@ __pycache__/
 /PLAY-SCROLL-SETTINGS.bat
 /PLAY-SHOWCASE.bat
 
+<<<<<<< HEAD
 # Claude Code notes and skills (local only).
 /.claude/
 
@@ -115,3 +116,11 @@ __pycache__/
 mods/world-audio-test/logs/
 # Built by tools/steam-launcher/build.bat
 /tools/steam-launcher/SkateLauncher.exe
+
+# Private server resource persistence (example server default).
+/resource-data/
+||||||| parent of 8a53beb (feat(resources): add verified content cache and isolated Lua runtime)
+=======
+# Private server resource persistence (example server default).
+/resource-data/
+>>>>>>> 8a53beb (feat(resources): add verified content cache and isolated Lua runtime)

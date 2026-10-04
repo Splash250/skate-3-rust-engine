@@ -16,6 +16,7 @@ mod query;
 mod schema;
 mod vm;
 pub mod extensions;
+pub mod resources;
 
 pub use archive::{read_bounded, validate_package, validate_package_content, validate_package_content_at, Cache};
 pub use assets::convex_points_file;
@@ -56,6 +57,8 @@ pub struct Package {
     pub settings: BTreeMap<String, Value>,
     pub enabled: bool,
     vm: Option<vm::Vm>,
+    resource_owned: bool,
+    resource_running: bool,
     fingerprint: u64,
     pending: Option<(u64, Instant)>,
     /// The files of the running mod's `audio.json` (and `audio.json` itself): an edit of only these
@@ -88,12 +91,13 @@ impl Package {
         set
     }
     pub fn running(&self) -> bool {
-        self.vm.is_some()
+        self.vm.is_some() || self.resource_running
     }
 }
 
 pub struct Manager {
     pub packages: BTreeMap<String, Package>,
+    pub resources: Option<resources::Host>,
     pub diagnostics: Vec<String>,
     root: PathBuf,
     preferences: PathBuf,
@@ -118,6 +122,7 @@ impl Manager {
     pub fn new(root: PathBuf, preferences: PathBuf) -> Self {
         Self {
             packages: BTreeMap::new(),
+            resources: None,
             diagnostics: vec![],
             root,
             preferences,
@@ -132,7 +137,50 @@ impl Manager {
         }
     }
 
+    /// Attach a fully staged client host. All startup must succeed before replacing
+    /// the current host or exposing its engine commands.
+    pub fn attach_resources(&mut self, mut host: resources::Host) -> Result<(), String> {
+        if host.side() != resources::Side::Client { return Err("Manager requires a client resource host".into()); }
+        for id in host.installed().keys() {
+            if self.packages.get(id).is_some_and(|p|!p.resource_owned) { return Err(format!("resource {id} conflicts with a local mod")); }
+        }
+        host.set_snapshot(self.snapshot.clone(),self.snapshot_fields.clone());
+        host.start_all()?;
+        self.detach_resources();
+        self.resources=Some(host);
+        self.sync_resources();
+        Ok(())
+    }
+
+    pub fn detach_resources(&mut self) {
+        self.commands.retain(|(id,_)|!self.packages.get(id).is_some_and(|p|p.resource_owned));
+        if let Some(mut host)=self.resources.take() { host.disconnect();self.retired.extend(host.drain_retired()); }
+        self.packages.retain(|_,p|!p.resource_owned);
+    }
+
+    /// Drain host commands/retirements after transport events and mirror metadata
+    /// for the existing engine asset/ownership adapters.
+    pub fn sync_resources(&mut self) {
+        let Some(host)=self.resources.as_mut() else {return;};
+        for (id,resource) in host.installed() {
+            let package=self.packages.entry(id.clone()).or_insert_with(||Package {
+                manifest:Manifest {id:id.clone(),api:2,name:id.clone(),version:resource.manifest.version.clone(),author:String::new(),description:"Server-selected resource".into(),entry:String::new(),settings:BTreeMap::new()},
+                root:resource.root.clone(),error:None,settings:BTreeMap::new(),enabled:true,vm:None,resource_owned:true,resource_running:false,fingerprint:0,pending:None,
+            });
+            package.resource_running=host.running(id);
+            package.root=resource.root.clone();
+            package.manifest.version=resource.manifest.version.clone();
+        }
+        let retired=host.drain_retired();
+        self.commands.retain(|(id,_)|!retired.contains(id));
+        self.retired.extend(retired);
+        self.commands.extend(host.drain_commands());
+        self.diagnostics.append(&mut host.diagnostics);
+        if self.diagnostics.len()>128 {self.diagnostics.drain(..self.diagnostics.len()-128);}
+    }
+
     pub fn scan(&mut self, force: bool) {
+        if self.resources.is_some() { self.sync_resources(); return; }
         if !force && self.last_scan.elapsed() < Duration::from_millis(500) {
             return;
         }
@@ -314,6 +362,8 @@ impl Manager {
                         audio_files: Default::default(),
                         audio_changes: None,
                         changes: Vec::new(),
+                        resource_owned: false,
+                        resource_running: false,
                     },
                 );
                 if enabled {
@@ -365,6 +415,7 @@ impl Manager {
     }
 
     pub fn enable(&mut self, id: &str, enabled: bool) -> Result<(), String> {
+        if self.packages.get(id).is_some_and(|p|p.resource_owned) {return Err("server-selected resource lifecycle is managed by the server".into());}
         self.packages.get_mut(id).ok_or("Unknown mod")?.enabled = enabled;
         if enabled {
             self.reload(id);
@@ -375,6 +426,10 @@ impl Manager {
     }
 
     pub fn reload(&mut self, id: &str) {
+        if self.packages.get(id).is_some_and(|p|p.resource_owned) {
+            if let Some(host)=self.resources.as_mut() { if let Err(error)=host.restart(id) {host.fail(id,error);} }
+            self.sync_resources(); return;
+        }
         self.stop(id);
         if self.packages.get(id).is_some_and(|p| p.enabled) {
             self.start(id);
@@ -411,6 +466,10 @@ impl Manager {
     }
 
     fn stop(&mut self, id: &str) {
+        if self.packages.get(id).is_some_and(|p|p.resource_owned) {
+            if let Some(host)=self.resources.as_mut() {let _=host.stop(id);}
+            self.sync_resources(); return;
+        }
         if let Some(p) = self.packages.get_mut(id) {
             if let Some(mut vm) = p.vm.take() {
                 if let Err(e) = vm.call_shared("on_unload", Value::Null, &self.snapshot, None, &self.snapshot_fields) {
@@ -432,6 +491,13 @@ impl Manager {
     }
 
     fn call_one(&mut self, id: &str, callback: &str, payload: Value) {
+        if self.packages.get(id).is_some_and(|p|p.resource_owned) {
+            if let Some(host)=self.resources.as_mut() {
+                host.set_snapshot(self.snapshot.clone(),self.snapshot_fields.clone());
+                host.call(id,callback,payload);
+            }
+            self.sync_resources(); return;
+        }
         let result = self
             .packages
             .get_mut(id)
@@ -451,6 +517,13 @@ impl Manager {
     }
 
     pub fn call_with_physics(&mut self,id:&str,callback:&str,payload:Value,physics:Value) {
+        if self.packages.get(id).is_some_and(|p|p.resource_owned) {
+            if let Some(host)=self.resources.as_mut() {
+                host.set_snapshot(self.snapshot.clone(),self.snapshot_fields.clone());
+                host.call_with_physics(id,callback,payload,Some(physics));
+            }
+            self.sync_resources(); return;
+        }
         let result=self.packages.get_mut(id).and_then(|p|p.vm.as_mut())
             .map(|vm|vm.call_shared(callback,payload,&self.snapshot,Some(physics),&self.snapshot_fields));
         match result {

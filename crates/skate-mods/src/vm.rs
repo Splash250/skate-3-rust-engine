@@ -857,7 +857,7 @@ impl Command {
 
 /// Query results must reach Lua as `nil` when absent. `lua.to_value` maps JSON
 /// null to a null *userdata*, which is truthy and blows up on indexing.
-fn command_kind(command: &Command) -> &'static str {
+pub(crate) fn command_kind(command: &Command) -> &'static str {
     match command {
         Command::RigPart {..} => "rig_part",
         Command::GraphGate {..} => "graph_gate",
@@ -1140,6 +1140,15 @@ impl Vm {
         settings: &BTreeMap<String, Value>,
         snapshot: &Value,
     ) -> Result<Self, String> {
+        Self::build(root, manifest, settings, snapshot, None)
+    }
+
+    pub(crate) fn new_resource(root: &Path, id: &str, snapshot: &Value, resource: &crate::resources::Bootstrap) -> Result<Self, String> {
+        let manifest = Manifest { id:id.into(), api:2, name:id.into(), version:"1.0.0".into(), author:String::new(), description:String::new(), entry:String::new(), settings:BTreeMap::new() };
+        Self::build(root, &manifest, &BTreeMap::new(), snapshot, Some(resource))
+    }
+
+    fn build(root:&Path, manifest:&Manifest, settings:&BTreeMap<String,Value>, snapshot:&Value, resource:Option<&crate::resources::Bootstrap>) -> Result<Self,String> {
         let build = || -> mlua::Result<Self> {
             let lua = Lua::new_with(
                 StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
@@ -1181,6 +1190,7 @@ impl Vm {
             )?;
             let queue = Arc::new(Mutex::new(Vec::<Command>::new()));
             let out = queue.clone();
+            let permission = resource.cloned();
             let sdk = lua.create_table()?;
             sdk.set("api_version", 2)?;
             let capabilities = lua.create_table()?;
@@ -1241,6 +1251,9 @@ impl Vm {
                 "_submit",
                 lua.create_function(move |lua, value: mlua::Value| {
                     let c: Command = lua.from_value(value)?;
+                    if let Some(permission) = &permission {
+                        permission.permits(&c).map_err(mlua::Error::RuntimeError)?;
+                    }
                     if !c.validate() {
                         return Err(mlua::Error::RuntimeError(format!(
                             "Invalid command arguments ({})",
@@ -1267,33 +1280,43 @@ impl Vm {
                     String::from_utf8(b).map_err(mlua::Error::external)
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_assets_objects",
                 lua.create_function(move |lua, path: String| {
-                    let lists = crate::assets::list_objects(&asset_root_objects, &path)
+                    if let Some(permission) = &permission { permission.native_query("engine.graphics")?; }
+                    let lists = if permission.is_some() {
+                        crate::assets::list_resource_objects(&asset_root_objects, &path)
+                    } else { crate::assets::list_objects(&asset_root_objects, &path) }
                         .map_err(mlua::Error::RuntimeError)?;
                     lua.to_value(&lists)
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_raycast",
-                lua.create_function(|lua, (origin, direction, options): (mlua::Value, mlua::Value, mlua::Value)| {
+                lua.create_function(move |lua, (origin, direction, options): (mlua::Value, mlua::Value, mlua::Value)| {
+                    if let Some(permission) = &permission { permission.native_query("engine.physics")?; }
                     let origin: [f32; 3] = lua.from_value(origin)?;
                     let direction: [f32; 3] = lua.from_value(direction)?;
                     let options: crate::query::RaycastOptions = lua.from_value(options)?;
                     query_value(lua, crate::query::raycast_json(origin, direction, options))
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_velocity_at",
-                lua.create_function(|lua, (key, point): (String, mlua::Value)| {
+                lua.create_function(move |lua, (key, point): (String, mlua::Value)| {
+                    if let Some(permission) = &permission { permission.native_query("engine.physics")?; }
                     let point: [f32; 3] = lua.from_value(point)?;
                     query_value(lua, crate::query::velocity_at_json(key, point))
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_effective_inv_mass",
-                lua.create_function(|lua, (key, point, direction): (String, mlua::Value, mlua::Value)| {
+                lua.create_function(move |lua, (key, point, direction): (String, mlua::Value, mlua::Value)| {
+                    if let Some(permission) = &permission { permission.native_query("engine.physics")?; }
                     let point: [f32; 3] = lua.from_value(point)?;
                     let direction: [f32; 3] = lua.from_value(direction)?;
                     query_value(
@@ -1302,16 +1325,20 @@ impl Vm {
                     )
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_spring_ray",
-                lua.create_function(|lua, (key, desc): (String, mlua::Value)| {
+                lua.create_function(move |lua, (key, desc): (String, mlua::Value)| {
+                    if let Some(permission) = &permission { permission.native_query("engine.physics")?; }
                     let desc: skate_dynamics::SpringRayDesc = lua.from_value(desc)?;
                     query_value(lua, crate::query::spring_ray_json(key, desc))
                 })?,
             )?;
+            let permission = resource.cloned();
             sdk.set(
                 "_local_ang_accel_impulse",
-                lua.create_function(|lua, (key, local_accel, dt): (String, mlua::Value, f32)| {
+                lua.create_function(move |lua, (key, local_accel, dt): (String, mlua::Value, f32)| {
+                    if let Some(permission) = &permission { permission.native_query("engine.physics")?; }
                     let local_accel: [f32; 3] = lua.from_value(local_accel)?;
                     query_value(
                         lua,
@@ -1330,30 +1357,30 @@ impl Vm {
             sdk.set("_advance", mlua::Value::Nil)?;
             let timers_due = sdk.get("_timers_due")?;
             sdk.set("_timers_due", mlua::Value::Nil)?;
-            let code = read_bounded(root, &manifest.entry, 256 * 1024)
-                .map_err(mlua::Error::RuntimeError)?;
-            let source = std::str::from_utf8(&code).map_err(mlua::Error::external)?;
-            let callbacks: Table = lua
-                .load(source)
-                .set_name(format!("@{}/{}", manifest.id, manifest.entry))
-                .eval()?;
-            for pair in callbacks.clone().pairs::<String, mlua::Value>() {
-                let (key, value) = pair?;
-                if ![
-                    "on_load",
-                    "on_unload",
-                    "on_update",
-                    "on_fixed_update",
-                    "on_ui_update",
-                    "on_event",
-                    "on_settings",
-                ]
-                .contains(&key.as_str())
-                    || !matches!(value, mlua::Value::Function(_))
-                {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "Unknown callback or non-function: {key}"
-                    )));
+            if let Some(resource) = resource { resource.install(&lua, &sdk, budget.clone())?; }
+            let callbacks = lua.create_table()?;
+            let scripts = resource.map(|r|r.scripts()).unwrap_or_else(||vec![manifest.entry.clone()]);
+            for entry in scripts {
+                let code = read_bounded(root, &entry, 256 * 1024).map_err(mlua::Error::RuntimeError)?;
+                let source = std::str::from_utf8(&code).map_err(mlua::Error::external)?;
+                let value: mlua::Value = lua.load(source).set_name(format!("@{}/{}", manifest.id, entry)).into_function()?.call(())?;
+                let script_callbacks = match value {
+                    mlua::Value::Table(table) => table,
+                    mlua::Value::Nil if resource.is_some() => continue,
+                    _ => return Err(mlua::Error::RuntimeError("entry must return a callback table (resource scripts may return nil)".into())),
+                };
+                for pair in script_callbacks.pairs::<String, mlua::Value>() {
+                    let (key, value) = pair?;
+                    if !["on_load", "on_unload", "on_update", "on_fixed_update", "on_ui_update", "on_event", "on_settings"].contains(&key.as_str()) {
+                        return Err(mlua::Error::RuntimeError(format!("Unknown callback: {key}")));
+                    }
+                    let mlua::Value::Function(function) = value else {return Err(mlua::Error::RuntimeError(format!("Non-function callback: {key}")));};
+                    if let Some(previous) = callbacks.get::<Option<mlua::Function>>(key.clone())? {
+                        callbacks.set(key, lua.create_function(move |_, payload: mlua::Value| {
+                            previous.call::<()>(payload.clone())?;
+                            function.call::<()>(payload)
+                        })?)?;
+                    } else { callbacks.set(key, function)?; }
                 }
             }
             Ok(Self {
@@ -1366,6 +1393,22 @@ impl Vm {
             })
         };
         build().map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn resource_callbacks(&mut self, callbacks:Vec<mlua::Function>, payload:Value, sender:u64, snapshot:&Arc<Value>, fields:&crate::SnapshotFields) -> Result<Vec<Command>,String> {
+        self.budget.store(LUA_BUDGET_UNITS, Ordering::Relaxed);
+        let invoke = || -> mlua::Result<()> {
+            let sdk = self.lua.globals().get::<Table>("sdk")?;
+            sdk.set("snapshot", lazy_snapshot_fields(&self.lua,snapshot.clone(),None,fields.clone())?)?;
+            for callback in callbacks { callback.call::<()>((json_to_lua(&self.lua,&payload)?,sender.to_string()))?; }
+            self.lua.gc_step()?;
+            Ok(())
+        };
+        // Events and commands may be delivered while another resource owns the
+        // engine bridge. They never borrow that caller's native body namespace.
+        let result = crate::query::without_host(invoke);
+        let commands = std::mem::take(&mut *self.queue.lock().unwrap());
+        result.map(|_|commands).map_err(|e|e.to_string())
     }
 
     #[allow(dead_code)]

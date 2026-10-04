@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "landing-challenge",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": ["shared.lua"],
+  "client_scripts": ["client.lua"],
+  "server_scripts": ["server.lua"],
+  "files": ["ui/title.txt"],
+  "dependencies": {"skate-rules": "1.0.0"},
+  "capabilities": [
+    "resource.events", "resource.network", "resource.state",
+    "resource.storage", "resource.commands", "resource.exports", "engine.ui"
+  ]
+}

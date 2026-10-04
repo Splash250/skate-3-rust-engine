@@ -5103,6 +5103,7 @@ dependencies = [
  "serde_json",
  "skate-audio",
  "skate-dynamics",
+ "skate-resources",
  "zip",
 ]
 
@@ -5124,6 +5125,15 @@ version = "0.1.0"
 dependencies = [
  "gilrs",
  "skate-core",
+]
+
+[[package]]
+name = "skate-resources"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

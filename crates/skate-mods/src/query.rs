@@ -76,14 +76,21 @@ pub fn with_host<R>(host: &mut dyn DynamicsHost, f: impl FnOnce() -> R) -> R {
     let ptr: *mut dyn DynamicsHost = host;
     // SAFETY: `f` runs synchronously on this thread; the pointer is cleared before return.
     let static_ptr: *mut dyn DynamicsHost = unsafe { std::mem::transmute(ptr) };
-    HOST.with(|slot| {
-        *slot.borrow_mut() = Some(static_ptr);
-    });
-    let out = f();
-    HOST.with(|slot| {
-        *slot.borrow_mut() = None;
-    });
-    out
+    scoped_host(Some(static_ptr), f)
+}
+
+/// Cross-resource exports must not inherit the caller's engine ownership scope.
+pub(crate) fn without_host<R>(f: impl FnOnce() -> R) -> R {
+    scoped_host(None, f)
+}
+
+fn scoped_host<R>(host: Option<*mut dyn DynamicsHost>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<*mut dyn DynamicsHost>);
+    impl Drop for Restore {
+        fn drop(&mut self) { HOST.with(|slot| *slot.borrow_mut() = self.0); }
+    }
+    let _restore = Restore(HOST.with(|slot| slot.replace(host)));
+    f()
 }
 
 fn with_mut<R>(f: impl FnOnce(&mut dyn DynamicsHost) -> R) -> Option<R> {
