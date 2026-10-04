@@ -44,6 +44,10 @@ pub struct Snapshot {
 #[derive(Clone, Debug)]
 pub struct ScoreHolder {
     pub snapshot: Snapshot,
+    // Host observation of completed native publications. These are separate
+    // from the recovered layout and never feed back into reward calculations.
+    awarded_total: f64,
+    publication_count: u64,
     repetitions: [i8; SCORABLE_COUNT],      //4096
     sequence_history: [i8; SCORABLE_COUNT], //4428
     type_history: [i8; SCORE_TYPE_COUNT],   //4760
@@ -55,6 +59,8 @@ impl Default for ScoreHolder {
     fn default() -> Self {
         Self {
             snapshot: Snapshot::default(),
+            awarded_total: 0.,
+            publication_count: 0,
             repetitions: [0; SCORABLE_COUNT],
             sequence_history: [0; SCORABLE_COUNT],
             type_history: [0; SCORE_TYPE_COUNT],
@@ -65,6 +71,14 @@ impl Default for ScoreHolder {
 }
 
 impl ScoreHolder {
+    /// Sum of the exact final f32 rewards passed to the native publisher,
+    /// including isolated sequences which never activate the line timer.
+    pub fn awarded_total(&self) -> f64 {
+        self.awarded_total
+    }
+    pub fn publication_count(&self) -> u64 {
+        self.publication_count
+    }
     pub fn has_pending_sequence(&self) -> bool {
         self.pending_sequence
     }
@@ -132,6 +146,8 @@ impl ScoreHolder {
     /// PublishAndResetAirSequence82DA6538 receives the final reward from the
     /// module; it does not itself calculate the multiplier or bail penalty.
     pub fn publish(&mut self, reward: f32, add_to_line: bool) {
+        self.awarded_total += f64::from(reward);
+        self.publication_count = self.publication_count.saturating_add(1);
         let s = &mut self.snapshot;
         if add_to_line {
             s.line += reward;
@@ -163,8 +179,12 @@ impl ScoreHolder {
     /// Native Reset82DA5C78 retains lifetime completed-lines (+24).
     pub fn reset(&mut self) {
         let completed_lines = self.snapshot.completed_lines;
+        let awarded_total = self.awarded_total;
+        let publication_count = self.publication_count;
         *self = Self::default();
         self.snapshot.completed_lines = completed_lines;
+        self.awarded_total = awarded_total;
+        self.publication_count = publication_count;
     }
 }
 
@@ -231,5 +251,28 @@ mod tests {
         h.set_suppressed(true);
         h.end_trick(FLIP, 20.0);
         assert_eq!(h.repetition_count(FLIP), Some(1));
+    }
+    #[test]
+    fn published_awards_include_isolated_rewards_without_counting_line_banking_twice() {
+        let mut h = ScoreHolder::default();
+        h.publish(22., false);
+        assert_eq!(h.awarded_total(), 22.);
+        assert_eq!(h.publication_count(), 1);
+        assert_eq!(h.snapshot.completed_lines + h.snapshot.line, 0.);
+        h.publish(50., true);
+        h.publish(15., true);
+        assert_eq!(h.awarded_total(), 87.);
+        h.finish_line();
+        h.finish_line();
+        h.reset();
+        assert_eq!(h.awarded_total(), 87.);
+        assert_eq!(h.publication_count(), 3);
+        assert_eq!(h.snapshot.completed_lines, 65.);
+        h.end_trick(FLIP, 100.);
+        assert_eq!(
+            h.awarded_total(),
+            87.,
+            "unsettled trick rewards are not awards"
+        );
     }
 }

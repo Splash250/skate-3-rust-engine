@@ -7,6 +7,7 @@ mod nametags;
 mod hud;
 mod dedicated;
 mod dedicated_input;
+pub(crate) mod native_authority;
 pub(crate) mod entities;
 pub(crate) mod voice;
 use crate::{
@@ -473,6 +474,7 @@ impl Plugin for MultiplayerPlugin {
                 Err(e) => net.status = format!("Local multiplayer could not start: {e}"),
             }
         }
+        native_authority::install(app);
         app.insert_resource(net)
             .init_resource::<entities::SharedObjects>()
             .add_systems(PreUpdate, entities::sync.after(receive))

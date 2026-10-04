@@ -11,10 +11,10 @@ mod apt_text;
 mod apt_vm;
 #[path = "../../skate-game/src/hud_runtime.rs"]
 mod hud_runtime;
-#[path = "../../skate-game/src/scoring_runtime.rs"]
-mod scoring_runtime;
 #[path = "../../skate-game/src/score_packet.rs"]
 mod score_packet;
+#[path = "../../skate-game/src/scoring_runtime.rs"]
+mod scoring_runtime;
 use skate_core::{
     animation::output::attributes::AttributeName, physics::filtered_state::FilteredCategory,
 };
@@ -27,7 +27,11 @@ fn frame(
         tick,
         dt: 1. / 60.,
         category,
-        state: if category == FilteredCategory::Air { 200 } else { 100 },
+        state: if category == FilteredCategory::Air {
+            200
+        } else {
+            100
+        },
         descriptor,
         grind_id: -1,
         flags: 0,

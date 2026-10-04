@@ -72,7 +72,11 @@ are filtered by instance. [Shared primitive entities](shared-entities.md) use se
 
 Native recovery requests return to the server's stored spawn/latest approved
 travel destination instead of sending arbitrary client coordinates. Required resource worlds supply a validated server-selected spawn and terrain collision for shared simulation and version1 competition checks. Without a required world, the initial spawn is derived from the admitted owner's first validated observation. Coordinate validation alone is not world-geometry validation. Stock trick scores,
-landings and detailed articulated skating outcomes remain owner-reported.
+landings and detailed articulated skating outcomes remain owner-reported during
+ordinary dedicated play. Opt-in [native-input-v1 competitions](native-skating-authority.md)
+use a trusted headless engine companion, bounded controller streams and full-state
+client replay in a solitary instance. See its explicit world/interaction limits
+and the evidence ledger for accepted native outcomes.
 
 Dedicated wire framing changed for movement epochs, chunked rosters and
 application acknowledgements carrying both endpoints' movement epochs. These

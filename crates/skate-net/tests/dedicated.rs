@@ -142,6 +142,115 @@ fn body(x: f32, z: f32, vx: f32) -> Packed {
     })
     .unwrap()
 }
+fn entity_sample(server: &mut Server, guests: &mut [Session], x: f32, wheel_velocity: f32,
+    rig_velocity: f32, captured: u64, received: u64) {
+    let mut state=body(x,0.,rig_velocity).unpack_body().unwrap();
+    state.bodies[0].velocity=[wheel_velocity,0.,0.];
+    guests[0].publish(packed::BODY,Packed::body(&state).unwrap(),captured);
+    let revision=guests[0].actors[&2].body.latest().unwrap();
+    let mut packet=packed::delta(7,2,packed::BODY,revision.seq,&revision.state,None);
+    packet.extend(guests[0].movement_epoch().to_le_bytes());
+    let before=server.stats().decoded;
+    server.receive(10,&packet,received);
+    assert_eq!(server.stats().decoded,before+1,"fixture must enter accepted BODY history");
+    for packet in server.service(received) {guests[(packet.peer-10) as usize].receive(1,&packet.data,received);}
+}
+fn entity_velocity(server: &Server) -> [f32;3] {
+    server.entity_players().into_iter().find(|p|p.actor==2).unwrap().velocity
+}
+#[test]
+fn entity_contact_velocity_tracks_root_motion_instead_of_rebounding_wheel() {
+    let mut server=server();let mut guests=clients();
+    for now in (0..200).step_by(10) {pump(&mut server,&mut guests,now,false);}
+    entity_sample(&mut server,&mut guests,0.,4.,4.,200,200);
+    // Accepted root samples still enter the object while an articulated wheel
+    // has already bounced. The capsule is anchored to the root, not that wheel.
+    entity_sample(&mut server,&mut guests,0.2,-1.,4.,250,250);
+    assert!((entity_velocity(&server)[0]-4.).abs()<0.001,
+        "incoming root motion must not acquire the wheel's outgoing velocity: {:?}",entity_velocity(&server));
+}
+#[test]
+fn entity_contact_root_velocity_is_bounded_under_clock_jitter_and_discontinuities() {
+    for (captured,received,x,rig,expected) in [
+        (250,250,0.2,4.,4.), // ordinary 50 ms sample interval
+        (201,250,0.2,4.,4.), // tiny source interval cannot beat arrival time
+        (250,200,0.2,4.,4.), // receive bunching retains source interval
+        (201,200,0.2,4.,4.), // both clocks compressed: bounded by observed rig speed
+        (200,250,0.2,4.,0.), // duplicate source capture time has no derivative
+        (200,200,0.2,4.,0.), // duplicate capture and receive times
+        (451,250,0.2,4.,0.), // old source baseline
+        (451,451,0.2,4.,0.), // old receive baseline
+        (250,250,5.,4.,0.), // tolerated movement offset is not a kinematic shove
+        (250,250,0.,4.,0.), // wheel motion alone does not move the root capsule
+        (201,200,0.5,400.,200.), // conservative proxy speed cap
+    ] {
+        let mut server=server();let mut guests=clients();
+        for now in (0..200).step_by(10) {pump(&mut server,&mut guests,now,false);}
+        entity_sample(&mut server,&mut guests,0.,rig,rig,200,200);
+        entity_sample(&mut server,&mut guests,x,-rig,rig,captured,received);
+        let actual=entity_velocity(&server);
+        assert!((actual[0]-expected).abs()<0.001 && actual[1]==0. && actual[2]==0.,
+            "capture={captured} receive={received} x={x} rig={rig}: {actual:?} != {expected}");
+    }
+}
+#[test]
+fn entity_contact_root_history_retires_on_teleport_staleness_and_disconnect() {
+    let mut server=server();let mut guests=clients();
+    for now in (0..200).step_by(10) {pump(&mut server,&mut guests,now,false);}
+    entity_sample(&mut server,&mut guests,0.,4.,4.,200,200);
+    assert_eq!(entity_velocity(&server),[0.;3],"one owner sample is not root motion evidence");
+    entity_sample(&mut server,&mut guests,0.2,-1.,4.,250,250);
+    for (instance,now) in [(0,300),(7,600)] {
+        let epoch=server.teleport(2,dedicated::TeleportDestination {
+            position:[40.,1.,0.],heading:0.,velocity:[12.,0.,0.],instance},now).unwrap();
+        pump(&mut server,&mut guests,now,false);
+        assert_eq!(entity_velocity(&server),[0.;3],"reset placement must not inherit old root travel");
+        assert_eq!(server.entity_players()[0].instance,instance);
+        assert_eq!(server.entity_players()[0].epoch,epoch);
+        guests[0].complete_movement_reset(epoch);
+        entity_sample(&mut server,&mut guests,40.05,4.,4.,now+50,now+50);
+        assert_eq!(entity_velocity(&server),[0.;3],"synthetic reset sample is not a derivative baseline");
+        entity_sample(&mut server,&mut guests,40.25,-1.,4.,now+100,now+100);
+        assert!((entity_velocity(&server)[0]-4.).abs()<0.001);
+    }
+    server.service(951);
+    assert!(server.entity_players().is_empty(),"stale root history cannot remain a contact proxy");
+    for packet in guests[0].goodbye() {server.receive(10,&packet.data,952);}
+    server.service(952);
+    assert!(!server.entity_players().iter().any(|p|p.actor==2));
+    guests[0]=Session::dedicated_client(7,info(2),1);
+    for now in (1000..1200).step_by(10) {pump(&mut server,&mut guests,now,false);}
+    entity_sample(&mut server,&mut guests,100.,4.,4.,1200,1200);
+    assert_eq!(entity_velocity(&server),[0.;3],"reconnected identity must establish new root history");
+}
+#[test]
+fn entity_contact_root_history_does_not_cross_resource_readmission() {
+    let mut server=server();let mut guests=clients();
+    for now in (0..200).step_by(10) {pump(&mut server,&mut guests,now,false);}
+    entity_sample(&mut server,&mut guests,0.,4.,4.,200,200);
+    entity_sample(&mut server,&mut guests,0.2,4.,4.,250,250);
+    assert!((entity_velocity(&server)[0]-4.).abs()<0.001);
+    server.configure_resources("a".repeat(64),31031,
+        std::collections::BTreeMap::from([("app".into(),1)])).unwrap();
+    assert!(server.entity_players().is_empty());
+    let mut channels=[skate_net::resources::Client::default(),skate_net::resources::Client::default()];
+    for now in (300..700).step_by(10) {
+        pump(&mut server,&mut guests,now,false);
+        for (guest,channel) in guests.iter_mut().zip(&mut channels) {
+            let host=guest.host_actor().unwrap();
+            let Some(record)=guest.actors[&host].application.get(&skate_net::resources::server_key(guest.local)) else {continue};
+            channel.receive(&serde_json::from_slice(&record.value).unwrap()).unwrap();
+            channel.set_ready(true);
+            guest.publish_application(skate_net::resources::CLIENT_KEY,channel.encode().unwrap(),now);
+        }
+    }
+    assert!(server.resource_ready(2));
+    entity_sample(&mut server,&mut guests,0.4,4.,4.,700,700);
+    assert_eq!(entity_velocity(&server),[0.;3],"old resource generation must not supply a derivative baseline");
+    entity_sample(&mut server,&mut guests,0.6,-1.,4.,750,750);
+    assert!((entity_velocity(&server)[0]-4.).abs()<0.001);
+}
+
 fn frames(guests: &mut [Session], now: u64, distance: f32) {
     guests[0].publish(packed::BODY, body(0., 0., 2.), now);
     guests[1].publish(packed::BODY, body(distance, 0., -2.), now);

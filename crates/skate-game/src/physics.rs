@@ -43,6 +43,7 @@ mod animation_phase;
 mod biped_ground;
 mod frame;
 pub(crate) mod startup_check;
+pub(crate) mod native_authority;
 #[cfg(debug_assertions)]
 mod dev_trace;
 mod grind;
@@ -413,9 +414,9 @@ impl Plugin for PhysicsPlugin {
             .insert_resource(controls)
             .add_systems(
                 FixedUpdate,
-                controls::sample.in_set(SimulationSet::Controls),
+                controls::sample.in_set(SimulationSet::Controls).run_if(crate::multiplayer::native_authority::ordinary),
             )
-            .add_systems(FixedUpdate, advance.in_set(SimulationSet::Physics))
+            .add_systems(FixedUpdate, advance.in_set(SimulationSet::Physics).run_if(crate::multiplayer::native_authority::ordinary))
             .add_systems(Update, present.in_set(FrameSet::Physics));
     }
 }

@@ -163,6 +163,7 @@ impl Course {
     }
 }
 impl Competition {
+    pub fn active(&self, actor: u64) -> bool { self.attempts.contains_key(&actor) }
     /// Build static collision once on a trusted resource-world transition.
     pub fn set_terrain(&mut self, terrain: Option<&Terrain>) -> Result<()> {
         if self.world_revision.as_ref() == terrain.map(|t| &t.revision) {

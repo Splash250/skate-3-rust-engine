@@ -7,7 +7,7 @@ authorized local commits on 2026-10-04; pushing, publication and deployment
 remain unauthorized. Earlier no-commit statements below describe the initial
 implementation handoff, before this authorization.
 
-Statuses: Pending; In progress; Implemented but unverified; Implemented and
+Statuses: Pending; In progress; Incomplete; Implemented but unverified; Implemented and
 verified; Blocked (with concrete prerequisite). A subfeature's tests do not
 establish completion of its parent capability or graphical/device acceptance.
 The matrix is current; dated milestone notes below retain earlier failures and
@@ -29,18 +29,18 @@ authorized active audio session plus an operator to confirm sound. No access
 controls were changed and no microphone audio was captured. Inventory evidence:
 `/tmp/skate-platform-followup-20261004/prerequisites.json`.
 
-Before implementation, `cargo fmt --all -- --check` reports differences in 512
-files (`/tmp/skate-followup-fmt-baseline.log`). These exist at clean `68236c9`;
+Before implementation, `cargo fmt --all -- --check` reports differences at 512
+reported source paths (including example-module aliases) (`/tmp/skate-followup-fmt-baseline.log`). These exist at clean `68236c9`;
 changed code will be formatted locally without a repository-wide rewrite.
 
 | Requirement | Status | Evidence / remaining acceptance |
 | --- | --- | --- |
 | 1 Shared entities, state and instances | Implemented and verified | Real UDP ownership/restart/spoof/late-join tests and two native-client interaction/isolation pass. Both players produce actual server and native crate contacts; private instance retires peer/replicas/colliders and public return restores them. Fresh graphical rerun also restores both peer names after return. |
-| 2 Teleports and authoritative gameplay | In progress | Immediate trusted resets, hot-reload continuity, approved travel cancellation and all 11 competition tests pass. Two native clients complete course-v1 through ordinary controls: server-derived 175 points, 2545 ms, three checkpoints, one pickup, zero extra resets. Capsule walls/ceilings, bounded terrain support, speed/acceleration and forged-result rejection are tested. Full server-derived articulated stock trick/landing/combo scoring remains unimplemented and open. |
-| 3 Negotiated capacity and bounded transfer | Implemented and verified | Negotiated bounds, >16 MiB packages, >64 KiB persistence and real 12 KiB Lua bidirectional transfer/cancel/deadline pass. Combined64 real UDP simulated clients with objects/events/8 Opus talkers passes; measurements below. Not64 graphical clients or WAN capacity. |
+| 2 Teleports and authoritative gameplay | In progress | Immediate trusted resets, hot-reload continuity, approved travel cancellation and all 11 competition tests pass. Two native clients complete course-v1 through ordinary controls: server-derived 175 points, fresh 2475 ms, three checkpoints, one pickup, zero extra resets. Capsule walls/ceilings, bounded terrain support, speed/acceleration and forged-result rejection are tested. Opt-in native-input-v1 now independently runs the recovered articulated solver/scorer and accepts only bounded inputs. Headless heelflip, grab, static rail, clean multiplier combo and full replay pass. Two real Linux clients pass server-derived native scoring and matching prediction through terminal reconciliation. Real loopback delay/loss/reordering also passes. Full trick-family and dynamic shared-world native acceptance remain open (see continuation notes). |
+| 3 Negotiated capacity and bounded transfer | Implemented and verified | Negotiated bounds, >16 MiB packages, >64 KiB persistence and real 12 KiB Lua bidirectional transfer/cancel/deadline pass. Fresh bounded120s impaired64-client UDP workload passes with objects/events/8 Opus talkers and fair reliable resource completion; [measurements](production-validation.md). This is not64 graphical clients or WAN capacity. |
 | 4 Browser interfaces | Implemented but unverified | Actual Linux WebKit3 tests include memory enforcement; authenticated downloaded inventory synchronizes, stops, restarts with a new child and closes on disconnect. Keyboard focus/timeout recovery checked in actual Chrome. Native Windows remains unverified. |
 | 5 Voice and radio | Implemented but unverified | Actual Opus/UDP and authenticated radio/proximity/isolation pass; CPAL ALSA deterministic capture/playback/teardown passes. Eight-talker fairness regression fixed; default bounded512-packet egress verified under combined64-client workload. Physical microphone/native Windows unverified. |
-| 6 Backend services/persistence | Implemented and verified | Local asynchronous SQLite/HTTP, transactional progression, concurrent updates, rollback, full-process restart, cancellation/deadline/results/origin limits verified in service and actual-server tests. Native Windows and sudden power-loss validation unverified. |
+| 6 Backend services/persistence | Implemented and verified | Local asynchronous SQLite/HTTP, transactional progression, concurrent updates, rollback, full-process restart, cancellation/deadline/results/origin limits verified in service and actual-server tests. Fresh forced-process-kill rollback and stopped-directory backup/restore pass; SQL views/triggers cannot reach protected metadata. Native Windows and sudden power-loss validation remain unverified. |
 | 7 Accounts/permissions/administration | Implemented and verified | Persistent identity/role/ban/revocation, TLS/AEAD/replay protection, actual admin status/kick and fresh actual game login/UDP tests pass. Authenticated inventory uses verified account identity. Native Windows filesystem/admin runtime remains unverified. |
 | 8 Maps/streaming/custom parks/placement | Implemented and verified | Two native Linux clients download/enter the original park and survive park→base→park transitions with exact collision/rail counts, unpaused gameplay and all shared objects. Owned six-map-transition cleanup and native paired-truck grind tests pass. Native Windows remains unverified. |
 | 9 Animation/characters/gameplay hooks | Implemented and verified | Both native clients display distinct imported held poses on both25-joint robots, correctly oriented hats and markers. Stop visibly restores stock skaters and zeros all owned animation registrations; restart restores both presentations. Cosmetic clips and course-v1 hooks are verified; stock trick authority remains open under requirement2. |
@@ -48,6 +48,9 @@ changed code will be formatted locally without a repository-wide rewrite.
 | 11 Reusable resources/developer experience | Implemented and verified | Redistributable examples, placement and repeatable native verification tools, SDK declarations, timing/heap/queue/error diagnostics, setup docs and explicit packaging inventory pass local checks. Two-client interaction, course, presentation and map lifecycle pass. Independent review findings are fixed and tested. Linux/Windows CI definitions are updated; hosted jobs and native Windows acceptance have not run. |
 | Existing resource guarantees | Implemented and verified | Fresh cache/content/contracts/server/UDP/runtime suites cover distribution, process cache reuse, confidential files, dependencies, capability/persistence/generation isolation. Actual cold/warm game reconnect and authenticated browser stop/restart/disconnect pass. Native Windows/mixedOS unverified. |
 | Native Windows, mixed OS and physical audio | Blocked | Requires a native Windows host, a mixed Windows/Linux session and physical capture/playback devices. Linux game/WebKit and synthetic CPAL audio actually ran. CI is configured but has not run remotely. |
+| Reported regression/build failures | Implemented and verified | Marker assertions remain intact and three owned wipeout tests pass; setup fixture now supplies every changed group's receipt and rejects invalid receipts; data all-target tests and workspace all-target check pass. Pre-existing workspace formatting differences remain, with scoped formatting for new code. |
+| Bounded production operation/recovery | Implemented and verified within stated workload | Fresh 120 s combined 64-owner real-UDP impairment soak, latency/fairness/queue/RSS gates, actual process-kill rollback and offline backup/restore pass. Longer multi-host/WAN, power-failure and native multi-worker load remain unverified. |
+| Exhaustive native skating acceptance | Incomplete | The reused pipeline derives stock outcomes; heelflip, grab, short static grind, clean two-trick multiplier combo and replay are exercised. All variants, shared dynamic native-world interactions and Windows parity are not established. |
 
 ## Investigation
 
@@ -332,3 +335,283 @@ Exact argv, exit codes and timings are in `all-target-repair-results.json` and
 `regression-results.json`. Existing workspace formatting differences remain;
 no broad rewrite is included. The missing private Skyline map still blocks its
 unchanged integration suite.
+
+
+## Remaining-gaps continuation: bounded operation and recovery
+
+Local commit `2327ec3` adds the impaired traffic and recovery probes. The fresh
+five-second baseline and eight-owner impaired workload pass. The final120s
+64-owner workload also passes:122.078s including drain,7465 echoes (115–118 per
+owner), echo p952163ms/max2795ms,904000 movement samples p95253ms, end-observer
+age p95923ms/max2612ms,2055760 encoded voice packets p95189ms. TX241875646B and
+RX929345574B came from real client UDP sockets. There were42086 seeded drops,
+54646 sparse deterministic drops and3140593 reordered datagrams; the largest
+individual delayed queue held104 datagrams/28568B. The voice router accepted34654
+frames, rejected2777 and dropped44868 queued recipient copies. These are actual
+losses, not a lossless or physical-audio claim.
+
+Combined server/simulated-client RSS grew28072KiB from596268KiB at measured
+95% BODY-history warmup to624340KiB at120s. All258048 BODY-history slots filled;
+only129 optional POSE revisions were retained under this saturated workload.
+Lua heap stayed61028–61108B in samples; sampled output queues were empty and no
+resource callback errors occurred. This is not64 native renderers/voice decoders,
+server-only RSS or WAN capacity. See [bounded production validation](production-validation.md)
+for the exact profile, acceptance gates and memory method.
+
+Two diagnostic runs failed newly added methodology assertions:15s warmup was
+insufficient for capped far-player histories; a later assumption that optional
+POSE history must fill was also incorrect. The final method measures actual
+priority BODY occupancy and separately reports POSE. The64MiB growth threshold
+was unchanged. All diagnostic logs remain local alongside the passing final run:
+`capacity-baseline.log`, `capacity-soak60.log`, `capacity-soak120-final.log`,
+`capacity-soak120-green.log` beneath `/tmp/skate-platform-followup-20261004/`.
+The final filename does not substitute for its actual exit0/test result.
+
+Actual SQLite child-process kill during an uncommitted, writer-locked transaction
+preserves committed100, permits a later107 write, then restores an offline backup
+independently after the source changes to900; restored107 accepts108. Integrity,
+foreign-key and migration checks pass. SQL views/triggers cannot read or change
+protected migration metadata, and denied statements roll back their outer write.
+Eleven service parent tests pass plus the normal restart helper; the deliberately
+killed recovery child is not counted as passed. This is process-crash/offline
+backup evidence, not power-failure or live-backup validation.
+
+Fresh broad validation after integration:
+
+- Core command listed above:298 parent tests plus3 successful child helpers,
+  all pass (`core-final.log`); includes11 competition tests and synthetic ALSA
+  capture/playback/cleanup. The private Skyline suite was not substituted.
+- Fixture-free mod/runtime targets:113 parent tests plus2 successful child
+  helpers, all pass (`runtime-final.log`). Real isolated .NET:4 pass
+  (`managed-final.log`) with the existing local runtime/worker.
+- Actual Linux browser:3 pass, including IPC/network denial, runaway timeout and
+  enforced renderer process-tree memory limit (`browser-native-final.log`). A
+  first fresh build failed because PKG_CONFIG_PATH omitted existing locally
+  extracted development files (`browser-final.log`). Reusing the existing
+  `/tmp/skate-browser-dev-packages/sysroot/usr/lib/x86_64-linux-gnu/pkgconfig`
+  and its parent as LIBRARY_PATH fixes the prerequisite; no system package or
+  access-control changes were made.
+- Python tooling plus native harness parser:55 pass (`python-final.log`). Package
+  inventory tests independently pass6 with the three new guides included.
+
+Exact broad argv, durations and exit codes are in `fresh-results.json`; the later
+browser rerun is recorded separately above. Source-backed review and the validated
+native findings are described in [production validation](production-validation.md).
+
+## Remaining-gaps continuation: native input authority
+
+The opt-in [native-input-v1 contract](native-skating-authority.md) reuses the actual
+controls, native graphs, articulated solver, terrain/rail queries, landing
+classifier and scorer in a trusted headless game companion. The server accepts
+bounded controller channels, not client poses, animation events or score claims.
+It owns admission, world bytes, spawn, difficulty, epoch, generation and time.
+Regular skating remains predicted; this bounded competition mode requires a
+solitary instance without shared objects or resource-added rails. Course-v1's
+swept collision checks and 0.20 m terrain-reference accommodation are unchanged.
+
+Native finalized rewards now have attempt-wide `awarded` and `publications`
+observations outside the recovered score snapshot. They preserve the actual
+native multiplier/penalty calculation, count each final reward once, and include
+isolated tricks below the combo threshold. Expiring a line does not award again.
+Client prediction runs the same native pipeline. A mismatch reconstructs all
+hidden solver/graph/control/camera state from canonical initialization and the
+bounded input history; replay disagreement ends the connection. Physical SDK
+mutations, local marker/debug controls and difficulty/tuning edits are gated
+while an attempt owns physics. Resource retirement, travel, instance/world
+changes, co-occupants, new shared geometry and disconnect cancel the admission.
+
+Fresh native semantic evidence uses original authored box/rail worlds plus the
+user's prepared owned character/animation assets. No owned assets are committed:
+
+| Scenario | Actual native result | Evidence |
+| --- | --- | --- |
+| Ordinary heelflip | 22 awarded points, one landing, exact twin simulation and full reconstruction; 30 further ticks still match | `/tmp/skate-platform-followup-20261004/native-combo-owned.log` |
+| Grab off authored platform | 230.4112548828125 awarded, one clean landing, no bails, banked line; exact 900-tick replay | Same owned test log; `/tmp/skate-native-grab-awarded-final/results.json` |
+| Short static 50-50 rail | 55.07606506347656 awarded, one clean landing, no bails, grounded run-off, banked line; exact 900-tick replay | Same owned test log; `/tmp/skate-native-rail-awarded-final/results.json` |
+| Grab then heelflip combo | Two clean landings, no bails; heelflip adds 33 under native 1.5× multiplier; final 263.4112548828125, no double award on expiry; exact 900-tick replay | Same owned test log; `/tmp/skate-platform-followup-20261004/native-combo-tool/results.json` |
+| Actual trusted worker and forged score | Native 22 awarded despite a submitted million-point `Gameplay` score and forged landing counter; approved travel cancels and retains the new destination/epoch | `/tmp/skate-platform-followup-20261004/native-window-owned-green.log` |
+| Maximum 3,600-tick attempt | Completes in about 60 s modeled network time with 25–75 ms per-direction delay, seeded loss/reordering, bounded resend/prediction window and native 22-point result | Same log; in-process simulated-time delivery of real session datagrams, **not UDP/WAN timing** |
+| Two actual graphical Linux clients | Server derives 22-point heelflip at tick 300; 297 matching prediction acknowledgements; terminal reconciliation and public-instance return pass; both screenshots inspected | `/tmp/skate-native-authority-20261004-sdk-fixed/native-scoring/results.json` |
+
+The owned Rust command ran two tests, including all four semantic scenarios and
+full replay; both passed. The compact input protocol has seven tests, including
+exact analog roundtrip, framing/value/window rejection and epoch/history guards.
+Four fixture-free manager tests cover bounded workers/reaping, authority trust,
+retirement and deadlines. Both real-companion server tests pass separately.
+The fresh complete `skate-net`/`skate-server --lib --tests` run passes 177 parent
+tests plus two successful child helpers (`native-transport-final.log`).
+
+Integration caught and corrected three issues before acceptance:
+
+- A four-sample resend packet could not sustain 60 Hz under ordinary roundtrip
+  delay. Exact analog values and digital buttons now use a compact 32-sample
+  window (844-byte maximum), independently capped at four worker requests in
+  flight. Temporary pipe backpressure retains the bounded journal.
+- A stale worker-ready timestamp incorrectly consumed the progress timeout while
+  the client loaded. Newly pending work starts its own two-second deadline.
+  A separate absolute duration-plus-20-second deadline prevents slow-drip inputs
+  retaining a worker indefinitely. Both failures were reproduced before repair.
+- The first graphical attempt failed because Lua's competition operation
+  allowlist did not include the new commands. The corrected route has a real
+  Lua/JavaScript regression for both operations, owner/generation propagation,
+  client denial, missing-grant denial and rejection of arbitrary score submission.
+  The failed run remains `/tmp/skate-native-authority-20261004-final/`; the passing
+  rerun above used rebuilt matching binaries. A timeout is not reported as a pass.
+
+The short rail and compound combo are verified examples of the reused pipeline,
+not exhaustive stock trick-family coverage. A longer rail pilot produced repeated
+low-speed grind re-entry and was not accepted as clean run-off evidence; no
+unsupported native scoring fix was inferred from that pilot. Shared dynamic
+world interactions during native attempts, all stock variants, sustained
+multi-worker native load, Windows numerical parity and mixed-OS acceptance remain
+open. Physical devices and the private Skyline suite retain their concrete
+prerequisites in [native acceptance](native-acceptance.md).
+
+A follow-up review found that server-only C# resources still attempted to start an
+empty managed worker on clients. The host now skips worker creation only when
+the selected side has no sources, retaining activation and generation. The new
+nonignored regression exercises both empty-side directions in a child with
+explicitly unavailable .NET/worker paths, while a populated side still rejects
+missing prerequisites. It passes (`/tmp/skate-native-empty-side-green.log`); the
+pre-fix failure remains in `native-empty-side-red.log`. All four real isolated
+managed integrations pass again (`/tmp/skate-native-managed-active-final.log`).
+
+Final independent review traced actual resource command adapters, host startup,
+client snapshot lookup, fixed-update ordering, input overrides, prediction and
+retirement. Its empty-side finding and the earlier allowlist defect are fixed
+and regression tested; it reported no remaining critical or important finding
+in the inspected paths. This is a scoped source review, not a whole-repository
+security certification. New native Rust modules pass scoped rustfmt; the existing
+workspace-wide formatting baseline remains visible. The latest focused Python
+platform/native tooling command passes 44 tests (`python-complete-final.log`);
+this narrower selection does not replace the earlier 55-test tooling result.
+
+`cargo check --workspace --locked --all-targets` now passes (70 seconds;
+`/tmp/skate-platform-followup-20261004/workspace-all-targets-final.log`), including
+all data examples. Matching game/server binaries were rebuilt successfully
+(`final-integrated-build.log`). This build check does not execute the private
+Skyline integration test. Graphify's final AST update succeeds with 25,633 nodes
+and 56,157 edges (`graphify-final.log`); its skill/package version and 26 zero-node
+input warnings remain nonfatal. Graph output is ignored, and no semantic API or
+external publication was used.
+
+### Final graphical reruns
+
+Matching binaries on this Linux host produced fresh results:
+
+| Scenario | Result | Local evidence |
+| --- | --- | --- |
+| Native input with real UDP impairment | Passed: 22 awarded, one heelflip landing, 98 matching acknowledgements, terminal tick 300; prediction lead p95 10 ticks/max 11; private admission and public return both confirmed by server | `/tmp/skate-final-native-impaired-ready-20261004/native-scoring/results.json` |
+| Existing course-v1 | Passed: 175 server-derived points, 2475 ms, three checkpoints, one pickup, ten on-board observations over 5.447 m, zero extra resets | `/tmp/skate-final-course-20261004/native-course/results.json` |
+| Resource/world lifecycle | Passed: two actual clients survive presentation stop/start and park→base→park, with resource counts/colliders/rails and unpaused state checked | `/tmp/skate-final-lifecycle-20261004/lifecycle/results.json` |
+| Imported presentation | Passed: all three diagnostic hat axes, two distinct held poses on both clients, stock restoration after stop | `/tmp/skate-final-presentation-20261004/presentation-poses/results.json` |
+
+The native proxies delayed each direction 25–75 ms and applied seeded 1% loss.
+They forwarded 14,833 datagrams / 5,568,218 bytes, deliberately dropped 158 and
+observed 6,327 reordered deliveries. The larger individual peak was 35 datagrams
+/ 11,595 bytes. Both ended with zero queued packets/bytes, no capacity drops, no
+error and stopped threads. HTTP downloads remained direct loopback. These are
+actual two-client UDP/renderer results, not WAN or physical-audio acceptance.
+Native and course final screenshots, lifecycle stop/base/restored captures and
+both clients' held-pose/stock-restoration captures were visually inspected.
+
+The first impaired attempt correctly failed the server's admission guard: the
+harness had mistaken local resource activation for delivery of the client's
+delayed admission ACK. It now waits for a fresh server-filtered player/instance/
+epoch proof and rechecks it before start; its guards and assertions remain
+unchanged. The failed evidence is retained under
+`/tmp/skate-final-native-impaired-20261004/`. The harness also now selects `.exe`
+on Windows; that path regression passes, but is not native Windows execution.
+
+Final ordinary game suite: **364 passed, 107 ignored**, zero failures
+(`game-integrated-final.log`). The fresh fixture-free mod selection including
+the empty-side C# test passes **115 parent tests**, with two resource helpers and
+one isolated empty-side helper also executing successfully
+(`runtime-integrated-final.log`). The separate four managed tests exercise the
+actual .NET worker. The private Skyline fixture was never substituted.
+
+### Shared-contact correction and final matching binaries
+
+The first current-floor interaction rerun produced an actual contact but only
+9.27 mm displacement, failing the unchanged 3 cm gate. A controlled diagnostic
+pair then passed on the current floor and failed on the historical coplanar
+floor (7.40 mm). This ruled out a deterministic floor-only regression. Bounded
+telemetry showed an inbound BODY root paired with an already rebounding first
+wheel velocity. The transport regression reproduced that inconsistency before
+repair (`/tmp/skate-entity-root-velocity-red.log`).
+
+Coarse shared-contact velocity now follows recent accepted root motion, using
+conservative clock intervals, freshness, reset/discontinuity rejection and rig/
+200 m/s speed caps. It remains an approximation from owner observations; it does
+not change BODY admission, course-v1 sweeps/support policy or native companion
+physics. Four new tests cover the mismatch, eleven timing/discontinuity cases,
+teleports, instance changes, stale history, disconnect and resource readmission.
+All 38 dedicated tests pass. Independent review found no blocking source issue.
+
+After rebuilding both binaries, two independent native interaction runs pass the
+same geometry, approach, timeout and assertions: actual crate displacement at
+acceptance is 0.327/0.340 m and 0.315/0.220 m for the two players. Both runs verify
+native contact frames, private instance removal of peer/objects/colliders and
+public restoration. Their contact/private/restored screenshots were inspected:
+
+- `/tmp/skate-final-interaction-root-a-20261004/interaction/results.json`
+- `/tmp/skate-final-interaction-root-b-20261004/interaction/results.json`
+
+The final matching binaries also pass impaired graphical native scoring again:
+22 points, one heelflip landing, 100 matching acknowledgements, lead p95 9/max 11
+ticks and terminal reconciliation. Both proxies clean up with empty queues, no
+capacity drop and no surviving thread. They forward 14,940 datagrams / 5,570,485
+bytes, drop 160 deliberately and observe 6,495 reordered deliveries; largest
+individual peaks are 35 datagrams / 9,221 bytes. Both screenshots were inspected.
+Evidence: `/tmp/skate-final-native-root-impaired-20261004/native-scoring/results.json`.
+The final complete network/server suite passes **181 parent tests plus two
+successful helpers** (`net-server-proxy-final.log`); matching build is recorded in
+`proxy-integrated-build.log`. Exact graphical argv/exit/timings are retained in
+`graphical-proxy-final-results.json`. The initial failures and diagnostic pair
+remain local, with no assertion reduction or replacement production map.
+
+### Integrated soak and continuation state
+
+The unchanged 120-second, 64-owner impaired workload passed again after the
+shared-contact correction (`capacity-soak120-integrated.log`): duration 122.193 s
+including drain; 7,430 echoes, 114–117 per owner; echo p95 2,198/max 2,708 ms;
+867,536 movement samples p95 255 ms; observer p95 991/max 1,965 ms; 1,999,044 encoded
+voice receives p95 192 ms. TX 241,357,253 B / RX 916,846,411 B; 41,167 seeded and
+53,373 sparse drops; 3,068,942 reordered datagrams. Largest individual delayed
+queue: 102 packets/32,961 B. Combined RSS: 590,144→623,664 KiB after measured
+warmup, growth 33,520 KiB. BODY histories reached 258,048; optional POSE retained
+160. Sampled output queues stayed empty with no callback error. Voice router:
+33,701 accepted, 2,369 rejected, 47,229 queued recipient drops. This remains
+bounded loopback/simulated-owner evidence, not physical audio or WAN acceptance.
+
+The [continuation plan](../superpowers/plans/2026-10-04-platform-gaps.md#precise-continuation)
+records the exact Windows, mixed-OS, physical-audio and private-fixture
+prerequisites, plus remaining native-mode coverage and broader operational
+acceptance. No full-platform completion or production-readiness claim is made.
+
+
+### Final build, formatting and review readback
+
+The final integrated `cargo check --workspace --locked --all-targets` passes
+(10.56 seconds, `workspace-integrated-final.log`). The final platform/native
+Python selection passes 46 tests (`python-release-check.log`), including server
+admission readiness and platform-specific executable paths. These checks retain
+the separate owned-asset, private-fixture and native-device requirements above.
+
+The final workspace formatting command still exits 1 for the existing baseline.
+After formatting only seven affected, previously clean source files, it reports
+510 textual paths versus the initial 512, with **no newly affected path**. Two
+original paths were resolved during their scoped implementation work. Included
+example-module aliases can name the same actual source twice; these are not a
+count of distinct files. Evidence: `workspace-format-scoped-final.log` and
+`format-comparison-final.json`. `git diff --check` passes. No repository-wide
+formatting rewrite was performed.
+
+The post-format Graphify AST update succeeds with 25,650 nodes, 56,212 edges and
+1,240 communities (`graphify-scoped-format-final.log`). Its version mismatch and
+26 zero-node input warnings remain nonfatal; generated output stays ignored and
+local. The final scoped Rust formatting check passes, as do all 15 native-tool
+and package-inventory tests, including deterministic authored fixture encoding.
+Independent closeout review found no blocking issue in the inspected scope and
+confirmed the final results and explicit acceptance limits. These are local
+checks; nothing was pushed, published or deployed.

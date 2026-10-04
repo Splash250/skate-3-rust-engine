@@ -61,7 +61,8 @@ impl Plugin for SessionMarkerPlugin {
                 update
                     .after(SimulationSet::Input)
                     .before(SimulationSet::Controls)
-                    .run_if(crate::graphics_menu::gameplay_active),
+                    .run_if(crate::graphics_menu::gameplay_active)
+                    .run_if(crate::multiplayer::native_authority::ordinary),
             )
             .add_systems(Update, publish_teleport_effect.before(crate::ui_audio::UiAudioSet));
         hud::install(app);
@@ -75,6 +76,7 @@ fn suspend(
     menu: Res<crate::graphics_menu::Menu>,
     replay: Res<crate::replay::Replay>,
     time: Res<Time<Real>>,
+    native: Option<Res<crate::multiplayer::native_authority::Prediction>>,
 ) {
     if marker.generation != map.generation {
         *marker = SessionMarker {
@@ -83,7 +85,10 @@ fn suspend(
             ..default()
         };
     }
-    if !crate::graphics_menu::gameplay_active(Some(menu)) || replay.active {
+    if !crate::graphics_menu::gameplay_active(Some(menu))
+        || replay.active
+        || !crate::multiplayer::native_authority::ordinary(native)
+    {
         marker.hold.cancel();
         marker.visible = false;
         marker.progress = 0.;
@@ -221,5 +226,50 @@ fn update(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn authority_cancels_a_pending_marker_hold_until_controls_are_released() {
+        let mut world = World::new();
+        let mut marker = SessionMarker {
+            visible: true,
+            progress: 0.9,
+            ui_time: 0.1,
+            ..default()
+        };
+        // The next ordinary UI tick would fire this previously held return.
+        for _ in 0..12 {
+            assert!(!marker.hold.update(true, true, 20., true).relocate);
+        }
+        let mut menu = crate::graphics_menu::Menu::transition_test_menu();
+        menu.open = false;
+        world.insert_resource(marker);
+        world.insert_resource(menu);
+        world.insert_resource(CurrentMap {
+            path: None,
+            name: "test".into(),
+            spawn: [0.; 3],
+            heading: 0.,
+            generation: 0,
+        });
+        world.insert_resource(crate::replay::Replay::default());
+        world.insert_resource(Time::<Real>::default());
+        world.insert_resource(crate::multiplayer::native_authority::active_prediction());
+        world.run_system_once(suspend).unwrap();
+        let mut marker = world.resource_mut::<SessionMarker>();
+        assert!(!marker.visible);
+        assert_eq!(marker.progress, 0.);
+        assert_eq!(marker.ui_time, 0.);
+        assert!(marker.blocked_until_release);
+        assert!(!marker.hold.update(true, true, 20., true).relocate);
+        world.remove_resource::<crate::multiplayer::native_authority::Prediction>();
+        world.run_system_once(suspend).unwrap();
+        assert!(world.resource::<SessionMarker>().blocked_until_release);
     }
 }

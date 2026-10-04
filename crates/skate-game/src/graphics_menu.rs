@@ -104,6 +104,9 @@ pub(crate) struct Menu {
     pending_travel: Option<(Option<PathBuf>, [[f32; 4]; 4])>,
 }
 impl Menu {
+    pub(crate) fn native_movement_blocked(&mut self) {
+        self.status = "Cancel or finish the native attempt before teleporting.".into();
+    }
     #[cfg(test)]
     pub(crate) fn transition_test_menu() -> Self {
         Self {
@@ -384,8 +387,10 @@ pub(crate) fn interact(
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
     (mut updater, mut audio, mut camera_angle): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>),
     travel: Res<crate::teleport_menu::Travel>,
-    mut mods: ResMut<crate::modding::ModMenu>,
+    (mut mods, native): (ResMut<crate::modding::ModMenu>,
+        Option<Res<crate::multiplayer::native_authority::Prediction>>),
 ) {
+    let native_active = !crate::multiplayer::native_authority::ordinary(native);
     if transition.busy() {
         menu.open = true;
         time.pause();
@@ -490,6 +495,8 @@ pub(crate) fn interact(
                 let matrix = row.checked_sub(1_000_000).and_then(|i| menu.destinations.get(i)).and_then(|d| d.matrix);
                 if net.active() && entry.path != config.map_path {
                     menu.status = "Leave multiplayer before switching maps".into();
+                } else if native_active && matrix.is_some() {
+                    menu.native_movement_blocked();
                 } else if let Some(matrix) = matrix {
                     menu.pending_travel = Some((entry.path.clone(), matrix));
                     if entry.path != config.map_path { transition.request(entry); }
@@ -588,6 +595,9 @@ pub(crate) fn interact(
                 }
                 1 => menu.settings.scale = cycle(SCALES, menu.settings.scale, direction),
                 2 => menu.settings.fps = cycle(LIMITS, menu.settings.fps, direction),
+                3 if native_active => {
+                    menu.status = "The server fixes difficulty during a native attempt.".into();
+                }
                 3 => {
                     menu.difficulty = cycle(&Difficulty::ALL, menu.difficulty, direction);
                     physics.set_difficulty(menu.difficulty);
@@ -926,9 +936,14 @@ fn finish_menu_travel(
     mut menu: ResMut<Menu>, transition: Res<crate::map_transition::MapTransition>,
     current: Res<crate::map_transition::CurrentMap>, mut skater: ResMut<crate::physics::SkaterRuntime>,
     mut time: ResMut<Time<Virtual>>,
+    native: Option<Res<crate::multiplayer::native_authority::Prediction>>,
 ) {
     if transition.busy() { return; }
     let Some((path, matrix)) = menu.pending_travel.take() else { return; };
+    if !crate::multiplayer::native_authority::ordinary(native) {
+        menu.native_movement_blocked();
+        return;
+    }
     // A failed map transaction retains the previous world: never apply another map's coordinates there.
     if current.path != path { return; }
     match skater.travel_to(matrix) {
@@ -1165,8 +1180,13 @@ fn custom_sliders(mut menu: ResMut<Menu>, mouse: Res<ButtonInput<MouseButton>>,
     for (fill,mut node) in &mut fills {node.width=percent(menu.custom.value(fill.0)/OPTIONS[fill.0].max*100.);}
 }
 fn apply_custom_difficulty(mut menu: ResMut<Menu>, config: Res<crate::config::Config>,
-    mut skater: ResMut<crate::physics::SkaterRuntime>) {
+    mut skater: ResMut<crate::physics::SkaterRuntime>,
+    native: Option<Res<crate::multiplayer::native_authority::Prediction>>) {
     if !std::mem::take(&mut menu.custom_apply) {return;}
+    if !crate::multiplayer::native_authority::ordinary(native) {
+        menu.status = "The server fixes difficulty during a native attempt.".into();
+        return;
+    }
     let result=(|| -> Result<(),String> {
         let mut data=skate_data::collections::Collections::load(&config.asset_root)?;
         menu.custom.overlay(&mut data)?;

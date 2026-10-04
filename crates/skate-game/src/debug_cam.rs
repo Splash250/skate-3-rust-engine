@@ -47,7 +47,8 @@ impl Plugin for DebugCamPlugin {
                 FixedUpdate,
                 on_camera_input
                     .in_set(SimulationSet::Input)
-                    .before(crate::input::publish_actions),
+                    .before(crate::input::publish_actions)
+                    .run_if(crate::multiplayer::native_authority::ordinary),
             )
             .add_systems(Startup, setup_overlay)
             .add_systems(Update, update_overlay);

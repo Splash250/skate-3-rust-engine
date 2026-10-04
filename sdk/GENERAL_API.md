@@ -103,6 +103,15 @@ not rollback transactions. Ordinary wrappers remain fire-and-forget, with their
 existing error behavior. Skyline uses a receipt for chassis creation before
 binding graphics, audio and driving state to that body.
 
+During a dedicated `native-input-v1` attempt, local physics, player teleport,
+suspension, attachment, rig and graph mutations are rejected with an actionable
+host error. Use a command request to receive that error without disabling the
+resource. Input overrides still enter the recorded controller stream; cosmetic
+presentation, read-only observations and cleanup remain available. Clear existing
+physical bodies and native overrides before admission. The attempt uses the
+server's stock simulation settings; local skater preferences resume afterward.
+See [native authority](../docs/multiplayer/native-skating-authority.md).
+
 ## Native bodies and constraints
 
 All native IDs are **zero-based**; Lua arrays are one-based. Discover IDs from

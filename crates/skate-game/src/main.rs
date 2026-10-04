@@ -60,6 +60,7 @@ pub(crate) mod ui_audio;
 mod trigger_volumes;
 
 fn main() -> bevy::app::AppExit {
+    if let Some(code) = physics::native_authority::entry() { std::process::exit(code); }
     match updater::recover() {
         Ok(true) => return bevy::app::AppExit::Success,
         Err(error) => { eprintln!("{error}"); return bevy::app::AppExit::Success; },

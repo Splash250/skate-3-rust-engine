@@ -94,7 +94,7 @@ See [backend services](backend-services.md) for cancellation and commit ambiguit
 
 ## Linux continuation measurements, 2026-10-04
 
-The final 120-second run passed with 64 simulated owners, two moving objects,
+The first completed 120-second run passed with 64 simulated owners, two moving objects,
 eight encoded-voice talkers and sustained resource traffic. The full workload
 including resource drain lasted 122.078 seconds. This is the combined process,
 not an isolated measurement of dedicated-server memory.
@@ -166,8 +166,63 @@ Two native-authority issues were identified:
   scoring path. The regression passes in the fresh 364-test game suite.
 
 A separate actual native-worker integration passes a 300-tick heelflip outcome
-with native sequence score 22 while ignoring a forged million-point client
+with native finalized award 22 while ignoring a forged million-point client
 `Gameplay` score, then verifies approved-teleport cancellation. This supports that
 specific authoritative input path; exhaustive trick-family, native Windows and
 cross-platform numerical acceptance remain open in the
 [native authority contract](native-skating-authority.md).
+
+End-to-end integration also exposed two routing defects: the common Lua operation
+allowlist rejected native start/cancel before the server, and a C# resource with
+no selected-side source unnecessarily started an empty worker. Both are fixed
+with regressions covering active owner/generation, grants and absent runtime
+prerequisites. Real Lua/JavaScript routing and four actual isolated managed-worker
+integrations pass. These were availability/reachability defects; review did not
+establish an authority bypass through either path. The final independent review
+found no further concrete defect in the inspected routing, prediction and
+retirement paths. See the evidence ledger for exact runs and remaining scope.
+
+## Shared-contact sampling regression
+
+A fresh two-client crate approach sometimes produced a real contact but less
+than the unchanged 3 cm displacement gate. A diagnostic pair passed with the
+current floor and failed with the historical floor, ruling out a deterministic
+floor-only regression. Bounded samples showed the server pairing an inbound
+animation-root position with a wheel velocity that had already reversed during
+impact. A transport regression reproduced this independently: the accepted root
+advanced while the returned proxy velocity pointed away.
+
+The scoped repair derives coarse proxy velocity from consecutive accepted root
+observations within the current epoch. It uses the larger source/arrival interval,
+requires fresh nonzero-time samples, rejects reset baselines and discontinuities,
+and caps speed by the observed rig and existing 200 m/s shared-object bound.
+Approved teleport placement still replaces the old proxy without sweeping its
+old path. BODY admission, course-v1 collision validation and the articulated
+native authority companion are unchanged. This improves coherence of an existing
+coarse shared-contact approximation; it is not full-rig authority. The ledger
+records focused regressions and actual reruns separately from the initial failure.
+
+## Integrated rerun after the contact correction
+
+The same 120-second profile passed again after the final network change, with
+matching binaries and no concurrent builds or graphical runs. It lasted
+122.193 seconds including drain. The acceptance bounds and memory methodology
+were unchanged. Local log: `/tmp/skate-platform-followup-20261004/capacity-soak120-integrated.log`.
+
+| Measurement | Integrated result |
+| --- | --- |
+| Resource echoes | 7,430; 114–117 per owner; p95 2,198 ms; maximum 2,708 ms |
+| Movement | 867,536 samples; p95 source age 255 ms |
+| End observer age | p95 991 ms; maximum 1,965 ms |
+| Encoded voice receives | 1,999,044; p95 age 192 ms |
+| Client socket bytes | TX 241,357,253; RX 916,846,411 |
+| Controlled impairment | 41,167 seeded drops; 53,373 sparse drops; 3,068,942 reordered datagrams |
+| Largest individual delayed queue | 102 datagrams; 32,961 bytes |
+| Combined RSS | 590,144 KiB at measured warmup; 623,664 KiB at 120 s; growth 33,520 KiB |
+| History | 258,048 BODY revisions; 160 optional POSE revisions |
+| Voice router | 33,701 accepted; 2,369 rejected; 47,229 queued recipient copies dropped |
+
+Sampled runtime output queues were empty and no callback errors occurred. These
+figures retain the same combined-process, simulated-owner, encoded-packet and
+loopback limits above. Two minutes of bounded operation does not establish
+long-duration or WAN production readiness.

@@ -291,7 +291,12 @@ impl Vm {
         if args.len() > 256 {
             return Err("APT argument limit".into());
         }
-        let kind = self.objects.get(class).ok_or("Invalid APT class")?.kind.clone();
+        let kind = self
+            .objects
+            .get(class)
+            .ok_or("Invalid APT class")?
+            .kind
+            .clone();
         if self.remaining == 0 || self.objects.len() > 4096 {
             return Err("APT execution/object budget exceeded".into());
         }

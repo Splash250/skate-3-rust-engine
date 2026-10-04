@@ -121,8 +121,14 @@ pub(crate) fn dynamics_to_board(
     mods: Option<Res<Mods>>, mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>, replay: Res<crate::replay::Replay>,
     shared: Res<crate::multiplayer::entities::SharedObjects>,
+    native: Option<Res<crate::multiplayer::native_authority::Prediction>>,
 ) {
     if replay.active { return; }
+    if !crate::multiplayer::native_authority::ordinary(native) {
+        physics.set_external_queries(None);
+        physics.network_proxies = Default::default();
+        return;
+    }
     // Both islands contribute walking/board ray queries; native shared-object
     // solids were already appended by the multiplayer fixed-update adapter.
     if let Some(mods)=mods {push_dynamics_into_boardworld(&mods,&mut physics,&skater,shared.solids());}

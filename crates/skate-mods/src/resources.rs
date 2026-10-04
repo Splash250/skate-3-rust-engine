@@ -658,7 +658,7 @@ impl Bootstrap {
         api.set("voice",voice)?;
         for (name,cap,limit,field,operations) in [
             ("world","resource.world",64*1024,"op",&["rail_upsert","rail_remove"][..]),
-            ("competition","resource.competition",16*1024,"kind",&["define","start","cancel","remove"][..]),
+            ("competition","resource.competition",16*1024,"kind",&["define","start","cancel","remove","native_start","native_cancel"][..]),
         ] {
             let table=lua.create_table()?;let ctx=self.clone();
             table.set(if name=="world" {"command"} else {"submit"},lua.create_function(move |lua,value:mlua::Value| {

@@ -112,7 +112,7 @@ resource.world = {}
 ---@param operation table Server-only resource.world; rail_upsert/rail_remove,64KiB.
 function resource.world.command(operation) end
 resource.competition = {}
----@param operation table Server-only resource.competition; define/start/cancel/remove,16KiB.
+---@param operation table Server-only resource.competition; define/start/cancel/remove/native_start/native_cancel,16KiB; native requires configured companion.
 function resource.competition.submit(operation) end
 resource.transfer = {}
 ---@param key string

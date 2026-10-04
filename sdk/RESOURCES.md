@@ -29,7 +29,9 @@ native DLL/SO resource plugins are not supported.
 Dependencies use exact versions. Shared scripts execute first, followed by the
 current side's scripts, in manifest order. Each resource gets an isolated script
 VM on each side; JavaScript uses a resource-private QuickJS runtime and C# a
-private managed worker process. Lua scripts can register handlers at top level and return the
+private managed worker process on each side that has selected C# sources. An
+empty side retains its resource generation without requiring a managed runtime.
+Lua scripts can register handlers at top level and return the
 existing callback table (`on_load`, `on_update`, `on_fixed_update`,
 `on_ui_update`, `on_event`, `on_unload`). Use local variables where possible;
 globals deliberately shared between a resource's files remain within that VM.
@@ -563,7 +565,11 @@ Server-only `resource.world.command(operation)` (C# `World`) requires
 `resource.world` and allows `op:"rail_upsert"`/`"rail_remove"`, bounded to 64 KiB.
 Server-only `resource.competition.submit(operation)` (C# `Competition`) requires
 `resource.competition` and allows `kind:"define"`, `"start"`, `"cancel"` or
-`"remove"`, bounded to 16 KiB. The dedicated host performs complete typed world/
+`"remove"`, plus `"native_start"`/`"native_cancel"` when the operator enables
+[native input authority](../docs/multiplayer/native-skating-authority.md), bounded
+to16KiB. Native start takes canonical decimal `player` and1–3600 `ticks`;
+completion carries the trusted native score ledger and `verified_rules:"native-input-v1"`.
+The dedicated host performs complete typed world/
 course validation. Neither operation accepts a resource owner/generation from
 the script, and competition has no client score-submission operation. Command
 completion and verified outcomes arrive through generation-checked local events.

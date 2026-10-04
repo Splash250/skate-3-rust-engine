@@ -75,7 +75,12 @@ inventory assembly and deletion. The native adapter is compile checked; these
 tests do not establish graphical two-player acceptance.
 
 Player contact proxies are upright capsules derived from recent, plausibility-
-checked owner observations. They are not an independent simulation of the
+checked owner observations. Proxy velocity follows consecutive accepted BODY
+root positions, using the larger source/arrival interval rather than a wheel
+velocity that may reverse during impact. Freshness, epoch/reset, discontinuity
+and rig-speed/200 m/s bounds apply; the first sample after reset supplies no
+inferred travel velocity. Placement still replaces the old proxy without sweeping
+the teleport path. These capsules are not an independent simulation of the
 recovered skateboard or articulated skater. Native clients retain their own
 collision response and reconcile the object shadow against server snapshots.
 Thus object-object simulation is server-owned, while player motion, tricks and

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(super) struct Client {
+    pub(super) native_active: bool,
     server: Option<(u64, u64)>,
     observed_travel: Option<u64>,
     awaiting_respawn: bool,
@@ -26,6 +27,21 @@ pub(super) struct Client {
     gameplay: BTreeMap<u64, Gameplay>,
 }
 impl Client {
+    pub(super) fn native_begin(&mut self, epoch: u64, travel: u64) {
+        self.native_active = true;
+        self.scheduled_reset = epoch;
+        self.observed_travel = Some(travel);
+        self.awaiting_respawn = false;
+        self.effects.consume(&EffectBatch {
+            epoch,
+            effects: vec![],
+        });
+    }
+    pub(super) fn native_end(&mut self, travel: u64) {
+        self.native_active = false;
+        self.observed_travel = Some(travel);
+        self.awaiting_respawn = false;
+    }
     fn observe_server(&mut self, server: u64, connection: u64) -> bool {
         if self.server == Some((server, connection)) {
             return false;
@@ -103,6 +119,9 @@ pub(super) fn fixed(
 ) {
     if !net.is_dedicated() {
         physics.network_delta_velocity = [0.; 3];
+        return;
+    }
+    if net.dedicated.native_active {
         return;
     }
     if physics.failed || physics.ticks == 0 {
@@ -245,12 +264,14 @@ pub(super) fn publish(net: &mut Multiplayer, skater: &SkaterRuntime) -> bool {
         lobby.movement_epoch(),
         lobby.pending_movement_reset().is_some(),
     );
-    if let Some(request) =
-        net.dedicated
-            .observe_travel(skater.travel_generation, epoch, reset_pending)
-    {
-        let bytes = serde_json::to_vec(&request).expect("Bounded respawn request");
-        net.publish_application(skate_net::dedicated::TELEPORT_KEY, bytes);
+    if !net.dedicated.native_active {
+        if let Some(request) =
+            net.dedicated
+                .observe_travel(skater.travel_generation, epoch, reset_pending)
+        {
+            let bytes = serde_json::to_vec(&request).expect("Bounded respawn request");
+            net.publish_application(skate_net::dedicated::TELEPORT_KEY, bytes);
+        }
     }
     if net.dedicated.awaiting_respawn {
         net.lobby.as_mut().unwrap().retry_owner_body();

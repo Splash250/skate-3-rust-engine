@@ -379,7 +379,7 @@ impl Session {
             actor.movement_epoch = link.incarnation;
             actor.admission_baseline = actor.body.latest().cloned().or_else(||actor.admission_baseline.take());
             actor.body = Stream::default(); actor.pose = Stream::default();
-            for key in [crate::dedicated::TELEPORT_KEY,crate::dedicated::SHOVE_KEY,crate::dedicated::EFFECT_ACK_KEY,crate::resources::CLIENT_KEY] { actor.application.remove(key); }
+            for key in [crate::dedicated::TELEPORT_KEY,crate::dedicated::SHOVE_KEY,crate::dedicated::EFFECT_ACK_KEY,crate::resources::CLIENT_KEY,crate::native_authority::INPUT_KEY] { actor.application.remove(key); }
         }
         self.last_roster = 0;
     }
@@ -642,6 +642,7 @@ impl Session {
                 local.application.remove(crate::dedicated::SHOVE_KEY);
                 local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
                 local.application.remove(crate::resources::CLIENT_KEY);
+                local.application.remove(crate::native_authority::INPUT_KEY);
                 if self.received_incarnation != 0 { local.body = Stream::default(); local.pose = Stream::default(); }
                 local.movement_epoch = 0;
                 local.reset_anchor = None;
@@ -921,6 +922,7 @@ impl Session {
                 local.application.remove(crate::dedicated::SHOVE_KEY);
                 local.application.remove(crate::dedicated::EFFECT_ACK_KEY);
                 local.application.remove(crate::resources::CLIENT_KEY);
+                local.application.remove(crate::native_authority::INPUT_KEY);
             }
             self.notice = "Host unavailable; waiting to reconnect".into();
         }
@@ -1161,7 +1163,7 @@ impl Session {
             let records: Vec<_> = self.actors.iter().filter(|(id, _)| **id != link.actor && (self.host.is_none() || **id == self.local))
                 .flat_map(|(&id, a)| a.application.iter().map(move |(key, record)| (id, key, record)))
                 .filter(|(id, key, _)| !self.dedicated || self.host.is_some()
-                    || (*id == self.local && (**key == crate::dedicated::effects_key(link.actor) || **key == crate::resources::server_key(link.actor)))
+                    || (*id == self.local && (**key == crate::dedicated::effects_key(link.actor) || **key == crate::resources::server_key(link.actor) || **key == crate::native_authority::state_key(link.actor)))
                     || (*id != self.local && self.actors[id].instance == self.actors[&link.actor].instance && (!self.resources_required || (self.resource_ready.contains(id) && self.resource_ready.contains(&link.actor))) && matches!(key.as_str(), crate::dedicated::GAMEPLAY_KEY | "mp:name" | "mp:ping")))
                 .collect();
             let count = records.len();

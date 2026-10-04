@@ -69,8 +69,38 @@ The parent owns integration, build scheduling, documentation and commit staging.
   but this session cannot open its control/capture/playback nodes (EACCES); ALSA
   reports no usable cards and PipeWire has Dummy Output only. The user is away
   from the machine, so physical/acoustic acceptance cannot proceed now.
-- [ ] Regression fixes tested and reviewed.
-- [ ] Supported authority implementation integrated and validated.
-- [ ] Impaired load/soak and persistence recovery exercised.
-- [ ] Matching native integrations and independent review completed.
-- [ ] Evidence, continuation record, Graphify and local commits finalized.
+- [x] Regression fixes tested and reviewed; local commit `6b0575b`.
+- [x] Native-input-v1 integrated: actual native flip/grab/grind/clean combo, full replay, forged input/score and lifecycle guards; two graphical clients pass baseline and impaired UDP. Full trick-family/dynamic-world acceptance remains open.
+- [x] Impaired load/120s soak and real process-kill/offline backup recovery exercised; local commit `2327ec3`.
+- [x] Matching Linux course, shared-contact/instance, world and presentation runs completed; independent review findings fixed and tested. Root-motion contact correction passes two independent native reruns.
+- [x] Evidence, continuation record, ignored Graphify AST output and tested local commits finalized. The remaining acceptance items below stay open.
+
+## Precise continuation
+
+- Native Windows and mixed-OS acceptance: provide an authorized interactive
+  Windows host with the toolchain, WebView2, .NET 10 trusted worker, matching
+  binaries and owned assets listed in [native acceptance](../../multiplayer/native-acceptance.md).
+  Run its native matrix before the Windows/Linux session. Linux runs and
+  Windows filename/cross-compilation checks cannot substitute.
+- Physical voice: the operator is away and the Linux session lacks device ACL
+  access. Resume with an active authorized desktop/audio session, two physical
+  endpoints and an operator to confirm sound. Follow proximity/radio/mute/PTT/
+  selection/isolation/restart/cleanup steps; keep captured audio local.
+- Broader mod suite: provide the correct owned `sdk/examples/skyline/skyline.glb`.
+  Preserve the existing test and keep the fixture outside commits/packages.
+- Native coverage: extend the current reusable authored-world/input fixtures to
+  remaining stock variants and characterize low-speed grind re-entry before
+  inferring a native engine defect. Keep exact replay and native reward-boundary
+  assertions. Native-input-v1 deliberately excludes co-occupants, shared dynamic
+  objects and resource-added rails; supporting them requires synchronized
+  authoritative external physics and prediction, not removal of admission guards.
+- Production acceptance: extend the bounded 120-second synthetic-owner workload
+  to longer durations, native multi-worker attempts and separate hosts/WAN with
+  explicit budgets and latency targets. Current RSS is combined server/simulated
+  clients; current voice measures encoded packet routing. Device, power-failure,
+  live/account-store backup and installed Windows packaging acceptance remain
+  separate from the tested service-store process-kill/offline backup contract.
+
+All local evidence stays under the recorded `/tmp` directories and may disappear
+on reboot. Preserve needed logs/captures outside Git before moving hosts. No
+credential, owned asset, private map or database belongs in the package inventory.

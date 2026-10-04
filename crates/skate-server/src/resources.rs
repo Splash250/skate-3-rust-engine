@@ -17,6 +17,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
+    pub native_authority: Option<crate::native_authority::Config>,
+    #[serde(default)]
     pub content_limits: skate_resources::Limits,
     #[serde(default)]
     pub network_budgets: skate_net::resources::Budgets,
@@ -37,6 +39,7 @@ pub struct Platform {
     rails: crate::world::Rails,
     transfers: skate_net::transfers::Transfers,
     competition: crate::competition::Competition,
+    native_authority: crate::native_authority::NativeAuthority,
     services: skate_services::Services,
     owners: BTreeMap<String, (u64, skate_services::Owner)>,
     requests: BTreeMap<u64, (String, u64, String)>,
@@ -49,6 +52,11 @@ pub struct Platform {
     published: PublishedSet,
 }
 impl Platform {
+    fn native_blocked_instances(&self) -> BTreeSet<u64> {
+        let mut blocked=self.rails.instances();
+        blocked.extend(self.entities.snapshot().into_iter().map(|entity|entity.instance));
+        blocked
+    }
     pub fn load(path: &Path, bind: SocketAddr, server: &mut Server) -> Result<Self, String> {
         use std::io::Read;
         let file = std::fs::File::open(path)
@@ -63,6 +71,7 @@ impl Platform {
         let mut config: Config =
             serde_json::from_slice(&bytes).map_err(|e| format!("Resource configuration: {e}"))?;
         let parent = path.parent().unwrap_or(Path::new("."));
+        if let Some(native) = &mut config.native_authority { native.resolve(parent)?; }
         config.root = parent.join(&config.root);
         config.storage = parent.join(&config.storage);
         config
@@ -105,6 +114,8 @@ impl Platform {
         let terrain = crate::world::Terrain::from_published(&published)?;
         let mut competition=crate::competition::Competition::default();
         competition.set_terrain(terrain.as_ref())?;
+        let mut native_authority=crate::native_authority::NativeAuthority::new(config.native_authority.clone());
+        native_authority.set_world(&published)?;
         let scope = std::fs::canonicalize(path)
             .map_err(|e| e.to_string())?
             .to_string_lossy()
@@ -139,6 +150,7 @@ impl Platform {
             rails: Default::default(),
             transfers: Default::default(),
             competition,
+            native_authority,
             services,
             owners: BTreeMap::new(),
             requests: BTreeMap::new(),
@@ -252,16 +264,19 @@ impl Platform {
         self.entities.contact_metrics()
     }
     pub fn shutdown(&mut self) {
+        self.native_authority.stop();
         self.lua.disconnect();
         self.sync_services();
     }
     fn sync_services(&mut self) {
         self.entities.sync_resources(self.lua.running_ids().into_iter().filter_map(|id| self.lua.generation(&id).map(|generation|(id,generation))).collect());
         self.rails.sync_resources(self.lua.running_ids().into_iter().filter_map(|id|self.lua.generation(&id).map(|generation|(id,generation))).collect());
-        self.competition.sync_resources(self.lua.running_ids().into_iter().filter(|id| {
+        let competition_owners: BTreeMap<_,_> = self.lua.running_ids().into_iter().filter(|id| {
             let entry=&self.lua.installed()[id];
             entry.grants.contains("resource.competition") && entry.manifest.capabilities.iter().any(|c|c=="resource.competition")
-        }).filter_map(|id|self.lua.generation(&id).map(|generation|(id,generation))).collect());
+        }).filter_map(|id|self.lua.generation(&id).map(|generation|(id,generation))).collect();
+        self.competition.sync_resources(competition_owners.clone());
+        self.native_authority.sync_resources(competition_owners);
         let stale: Vec<_> = self
             .owners
             .iter()
@@ -377,6 +392,10 @@ impl Platform {
         self.flush(server);
         self.entities.step(dt as f32, server);
         for event in self.competition.step(server,&self.entities.snapshot()) {
+            let _=self.lua.host_event(&event.resource,event.generation,"competition_result",event.value);
+        }
+        let blocked=self.native_blocked_instances();
+        for event in self.native_authority.step(server,&blocked) {
             let _=self.lua.host_event(&event.resource,event.generation,"competition_result",event.value);
         }
         let (players, entities) = server.resource_scope_targets();
@@ -517,7 +536,16 @@ impl Platform {
                     continue;
                 }
                 Output::Competition {resource,generation,operation} => {
-                    let result=self.competition.command(&resource,generation,operation.clone(),server);
+                    let native=operation.get("kind").and_then(|v|v.as_str()).is_some_and(|kind|kind.starts_with("native_"));
+                    let actor=operation.get("player").and_then(|v|v.as_str()).and_then(|v|v.parse::<u64>().ok());
+                    let result=if native {
+                        let blocked=self.native_blocked_instances();
+                        if actor.is_some_and(|actor|self.competition.active(actor)) {
+                            Err("Cancel the player's course attempt before native authority".into())
+                        } else {self.native_authority.command(&resource,generation,operation.clone(),server,&blocked)}
+                    } else if actor.is_some_and(|actor|self.native_authority.active(actor)) {
+                        Err("Cancel the player's native attempt before course operations".into())
+                    } else {self.competition.command(&resource,generation,operation.clone(),server)};
                     let value=match result {Ok(value)=>serde_json::json!({"operation":operation.get("kind"),"ok":true,"value":value}),
                         Err(error)=>serde_json::json!({"operation":operation.get("kind"),"ok":false,"error":error})};
                     let _=self.lua.host_event(&resource,generation,"competition_result",value);
@@ -715,6 +743,7 @@ impl Platform {
             PublishedSet::from_resources(resources, blobs).map_err(|e| e.to_string())?;
         let terrain = crate::world::Terrain::from_published(&published)?;
         self.competition.set_terrain(terrain.as_ref())?;
+        self.native_authority.set_world(&published)?;
         self.entities.set_terrain(terrain)?;
         self.http
             .replace(published.clone())
@@ -748,6 +777,7 @@ impl Platform {
         self.sync_services();
         let _ = self.entities.set_terrain(None);
         let _ = self.competition.set_terrain(None);
+        self.native_authority.stop();
         if let Ok(empty) = build_set(&self.config.root, &BTreeMap::new()) {
             if self.http.replace(empty.clone()).is_ok() {
                 let _ = self.advertise(server, &empty);

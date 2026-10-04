@@ -158,19 +158,13 @@ impl Host for Bindings {
             ("Tricks", "GetCurrentTrickStance") => array(vm, self.input.stance.map(Value::Bool)),
             ("Tricks", "GetCurrentTrickName") => Ok(Value::Text(format!(
                 "#{}",
-                localize_trick(
-                    &self.input.trick_name,
-                    Some(&self.movie.text_assets)
-                )
+                localize_trick(&self.input.trick_name, Some(&self.movie.text_assets))
             ))),
             ("Tricks", "GetCurrentTrickMetrics") => {
                 let mut metrics = self.input.trick_metrics.clone();
                 metrics[0] = Value::Text(format!(
                     "#{}",
-                    localize_trick(
-                        &self.input.trick_name,
-                        Some(&self.movie.text_assets)
-                    )
+                    localize_trick(&self.input.trick_name, Some(&self.movie.text_assets))
                 ));
                 array(vm, metrics)
             }

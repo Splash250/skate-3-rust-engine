@@ -4,6 +4,7 @@ mod base_world;
 mod voice;
 pub mod entities;
 pub mod competition;
+pub mod native_authority;
 pub mod world;
 pub mod resources;
 use std::{

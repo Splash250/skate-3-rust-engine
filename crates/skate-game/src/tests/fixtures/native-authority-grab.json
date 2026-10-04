@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "name": "Native authority action fixture",
+  "spawn": [
+    0,
+    0,
+    -10
+  ],
+  "heading": 0,
+  "objects": [
+    {
+      "id": "floor",
+      "kind": "box",
+      "position": [
+        0,
+        -6.25,
+        0
+      ],
+      "size": [
+        80,
+        0.5,
+        120
+      ]
+    },
+    {
+      "id": "runway",
+      "kind": "box",
+      "position": [
+        0,
+        -0.5,
+        -22
+      ],
+      "size": [
+        20,
+        1,
+        36
+      ]
+    }
+  ]
+}

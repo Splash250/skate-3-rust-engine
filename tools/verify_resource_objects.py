@@ -23,10 +23,25 @@ def prepare_fixture(root, selected):
     manifest = json.loads(manifest_path.read_text())
     manifest['client_scripts'] = ['verify.lua']
     manifest_path.write_text(json.dumps(manifest))
-    (package / 'verify.lua').write_text('return {on_load=function() sdk.log("OBJECT_VERIFY_LOCAL actor="..sdk.net.info().local_id) end}')
+    (package / 'verify.lua').write_text('''
+local samples,last_tick=0,nil
+local function vector(value) return table.concat(value or {},",") end
+return {on_load=function() sdk.log("OBJECT_VERIFY_LOCAL actor="..sdk.net.info().local_id) end,
+ on_fixed_update=function()
+  local proof=resource.state.get("object_verify")
+  if not proof or proof.actor~=sdk.net.info().local_id or samples>=150 then return end
+  local rig=sdk.rig.read({"tick","board"})
+  if rig.tick==last_tick then return end
+  last_tick=rig.tick;samples=samples+1
+  local first=(rig.board or {})[1]
+  if first then sdk.log("OBJECT_VERIFY_NATIVE actor="..proof.actor.." tick="..tostring(rig.tick)..
+   " root="..vector(sdk.player.read().position).." position="..vector(first.position)..
+   " velocity="..vector(first.velocity)) end
+ end}
+''')
     path = package / 'server.lua'
     path.write_text('local callbacks=(function()\n' + path.read_text() + '\nend)()\n' + '''
-local proof, elapsed, observed = nil, 0, 0
+local proof, elapsed, observed, diagnostic_samples = nil, 0, 0, 0
 local function crate()
  for _, object in ipairs(resource.entities.all()) do
   if object.resource=="shared-objects" and object.key=="crate_0" then return object end
@@ -45,7 +60,8 @@ resource.command("objects_verify_approach","objects.admin",function(args)
  local p=object.position
  resource.teleport(id,{position={p[1]+side*1.15,0.25,p[3]},
   heading=-side*math.pi/2,velocity={-side*4,0,0},instance=0})
- proof={actor=id,entity=object.id};elapsed=0;observed=0
+ proof={actor=id,entity=object.id};elapsed=0;observed=0;diagnostic_samples=0
+ resource.state.set("object_verify",{actor=id})
  sdk.log("OBJECT_VERIFY_APPROACH actor="..id.." entity="..object.id.." position="..position(p))
 end)
 resource.command("objects_verify_park","objects.admin",function(args)
@@ -74,12 +90,23 @@ callbacks.on_fixed_update=function(context,...)
  if update then update(context,...) end
  if not proof then return end
  elapsed=elapsed+context.dt
+ if diagnostic_samples<75 then
+  diagnostic_samples=diagnostic_samples+1
+  local object=crate()
+  for _, player in ipairs(resource.players()) do
+   if player.id==proof.actor and object then
+    sdk.log("OBJECT_VERIFY_PROXY actor="..proof.actor.." elapsed="..elapsed..
+     " epoch="..player.movement_epoch.." position="..position(player.position or {})..
+     " object_position="..position(object.position).." object_velocity="..position(object.velocity))
+   end
+  end
+ end
  if elapsed-observed>=0.1 then
   observed=elapsed
   local object=crate()
   if object then sdk.log("OBJECT_VERIFY_SAMPLE actor="..proof.actor.." entity="..proof.entity.." position="..position(object.position)) end
  end
- if elapsed>=2.5 then proof=nil end
+ if elapsed>=2.5 then proof=nil;resource.state.set("object_verify",{actor=""}) end
 end
 return callbacks
 ''')

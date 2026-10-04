@@ -64,7 +64,13 @@ dedicated sessions. Do not combine --connect with --net-host or --net-local.
 The owning client simulates detailed skating, articulated bodies, and map
 collisions. The server validates membership and compatible data, routes
 movement/pose/trick state, and authorizes coarse player collisions and
-shoves. Scores are presentation data, not a trusted leaderboard.
+shoves. These ordinary client-reported scores are presentation data. Resources
+can separately use course-v1 for verified checkpoints/pickups/contacts, or opt
+in to native-input-v1 for server-simulated native outcomes in a solitary static
+world. Native authority requires a separately supplied matching skate3rust.exe
+companion and the operator's prepared owned assets; neither is bundled here.
+See docs/multiplayer/native-skating-authority.md for its exact boundary and
+prerequisites. Windows runtime acceptance remains open.
 
 Optional local accounts and administration
 -----------------------------------------

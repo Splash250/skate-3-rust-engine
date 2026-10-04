@@ -106,4 +106,38 @@ mod tests {
         session.settle_line(false, false);
         assert_eq!(session.holder.repetition_count(trick), Some(0));
     }
+    #[test]
+    fn award_observation_uses_native_landing_multiplier_and_bail_publications() {
+        let rules = Rules {
+            combo_capacity: 801.0,
+            combo_levels: [(50.0, 1.5), (450.0, 2.0), (800.0, 3.0)],
+            combo_refresh_threshold: 799.0,
+            line_capacity: 400.0,
+            bail_factor: 0.0,
+        };
+        let trick = Scorable {
+            id: 96,
+            class: 3,
+            score_type: 2,
+        };
+        let mut session = Session::default();
+        for reward in [50., 10.] {
+            session.holder.end_trick(trick, reward);
+            session.holder.finish_collector();
+            session.publish_sequence(&rules, 1., false, true);
+        }
+        assert_eq!(session.holder.awarded_total(), 65.);
+        session.holder.end_trick(trick, 100.);
+        session.holder.finish_collector();
+        assert_eq!(session.publish_sequence(&rules, 1., true, true), 0.);
+        assert_eq!(session.holder.awarded_total(), 65.);
+        assert_eq!(session.publish_sequence(&rules, 1., false, true), 0.);
+        assert_eq!(
+            session.holder.awarded_total(),
+            65.,
+            "republication cannot re-award a consumed sequence"
+        );
+        session.settle_line(true, false);
+        assert_eq!(session.holder.awarded_total(), 65.);
+    }
 }

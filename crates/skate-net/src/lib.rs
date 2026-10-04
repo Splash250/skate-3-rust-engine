@@ -15,6 +15,7 @@ pub mod directory;
 pub mod packed;
 pub mod interpolation;
 pub mod prediction;
+pub mod native_authority;
 
 pub const MAGIC: &[u8; 8] = b"SK8NET01";
 pub const MAX_FRAME: usize = 48_000;

@@ -89,9 +89,10 @@ They cannot prove that a plausible trajectory came from an unmodified skating
 client. They do not derive flip/grab/grind trick identity, native contact state,
 combo multipliers, or the full articulated character simulation. The stock
 `Gameplay` trick/score fields remain owner-reported metadata and must not be used
-as verified rankings. Full server-derived native skating competition remains a
-separate unimplemented requirement; `course-v1` identifies this narrower verified
-rule set explicitly.
+as verified rankings. The opt-in [native-input-v1 companion](native-skating-authority.md) independently
+simulates bounded controller streams with the recovered engine in a solitary
+instance. Its guarantees and acceptance are separate; `course-v1` identifies this
+narrower trajectory rule set explicitly.
 
 ## Bounds and lifecycle
 

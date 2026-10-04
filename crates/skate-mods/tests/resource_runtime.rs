@@ -1250,6 +1250,51 @@ assert(not pcall(function()resource.competition.submit({kind='score',points=1000
 }
 
 #[test]
+fn resources_native_competition_routes_lua_and_javascript_and_preserves_authority_guards() {
+    let temp = Temp::new();
+    for javascript in [false, true] {
+        let mut package = if javascript {
+            installed_javascript(&temp, "native", r#"
+resource.competition.submit({kind:'native_start',player:'9',ticks:300});
+resource.competition.submit({kind:'native_cancel',player:'9'});
+let denied=false;try{resource.competition.submit({kind:'score',points:1000});}catch(error){denied=true;}
+if(!denied)throw Error('client score operation accepted');
+"#, &[], &["resource.competition"])
+        } else {
+            installed(&temp, "native", r#"
+resource.competition.submit({kind='native_start',player='9',ticks=300})
+resource.competition.submit({kind='native_cancel',player='9'})
+assert(not pcall(function()resource.competition.submit({kind='score',points=1000})end))
+"#, &[], &["resource.competition"])
+        };
+        package.generation = 17;
+        let mut server = host(&temp, Side::Server, "native-routing");
+        server.install(vec![package.clone()]).unwrap();
+        server.start_all().unwrap();
+        let outputs = server.drain_outputs();
+        assert_eq!(outputs.len(), 2);
+        for (output, expected) in outputs.iter().zip([
+            json!({"kind":"native_start","player":"9","ticks":300}),
+            json!({"kind":"native_cancel","player":"9"}),
+        ]) {
+            let Output::Competition { resource, generation, operation } = output else { panic!("not a competition operation"); };
+            assert_eq!(resource, "native");
+            assert_eq!(*generation, 17);
+            assert_eq!(*operation, expected);
+        }
+        let mut client = host(&temp, Side::Client, "native-client-denied");
+        client.install(vec![package.clone()]).unwrap();
+        assert!(client.start_all().is_err());
+        assert!(client.drain_outputs().is_empty());
+        package.grants.clear();
+        let mut ungranted = host(&temp, Side::Server, "native-ungranted");
+        ungranted.install(vec![package]).unwrap();
+        assert!(ungranted.start_all().is_err());
+        assert!(ungranted.drain_outputs().is_empty());
+    }
+}
+
+#[test]
 fn resources_bundled_presentation_replication_replays_authorized_selection_and_retires() {
     let temp=Temp::new();let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/presentation-demo");
     let manifest:Manifest=serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();

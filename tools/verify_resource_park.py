@@ -166,14 +166,16 @@ def run_scenario(args, scenario, *, prepare=None, drive=None):
     if prepare:
         prepare(root, selected)
     grants = {name: json.loads((root / name / 'resource.json').read_text()).get('capabilities', []) for name in selected}
-    (run / 'server.json').write_text(json.dumps({'root': str(root), 'storage': str(run / 'storage'),
-                                               'ensure': selected, 'grants': grants}))
+    server_config = {'root': str(root), 'storage': str(run / 'storage'),
+                     'ensure': selected, 'grants': grants}
+    server_config.update(getattr(args, 'server_config', {}))
+    (run / 'server.json').write_text(json.dumps(server_config))
     env = environment(args.bin_dir, args.seconds)
     env['SKATE_VERIFY_INTERVAL_SECONDS'] = str(args.interval)
     if scenario == 'interaction':
         env['SKATE_RESOURCE_DIAGNOSTICS'] = '1'
     suffix = '.exe' if os.name == 'nt' else ''
-    handles, processes, clients, phases = [], [], [], []
+    handles, processes, clients, phases, endpoints = [], [], [], [], []
     result = {'scenario': scenario, 'ok': False, 'phases': phases, 'clients': [],
               'visual_review_required': True}
     try:
@@ -216,13 +218,19 @@ def run_scenario(args, scenario, *, prepare=None, drive=None):
                     command('command objects_push 0')
             cache = run / f'cache{index}'
             cache.mkdir()
-            (cache / 'grants.json').write_text(json.dumps({f'udp://{endpoint}/{session}': grants}))
+            client_endpoint = endpoint
+            factory = getattr(args, 'endpoint_factory', None)
+            if factory:
+                forwarding = factory(endpoint, index)
+                endpoints.append(forwarding)
+                client_endpoint = forwarding.endpoint
+            (cache / 'grants.json').write_text(json.dumps({f'udp://{client_endpoint}/{session}': grants}))
             client_env = {**env, 'SKATE3_RESOURCE_CACHE': str(cache), 'SKATE3_MODS': str(run / f'mods{index}'),
                           'SKATE3_MOD_SETTINGS': str(run / f'settings{index}')}
             log = open(run / f'client{index}.log', 'w')
             handles.append(log)
             client = subprocess.Popen([str(args.bin_dir / ('skate3rust' + suffix)), '--assets', str(args.assets),
-                                       '--test-world', '--connect', endpoint, '--player-title', f'Park observer {index+1}',
+                                       '--test-world', '--connect', client_endpoint, '--player-title', f'Park observer {index+1}',
                                        '--verify', str(run / f'client{index}.png')],
                                       stdout=log, stderr=subprocess.STDOUT, env=client_env, cwd=REPO)
             processes.append(client)
@@ -308,6 +316,12 @@ def run_scenario(args, scenario, *, prepare=None, drive=None):
             stop(client)
         if processes:
             stop(processes[0], graceful=True)
+        if endpoints:
+            result['network_impairment'] = [endpoint.close() for endpoint in endpoints]
+            if any(report.get('error') or report.get('thread_alive') or report.get('capacity_drops')
+                   for report in result['network_impairment']):
+                result['ok'] = False
+                result['error'] = 'network impairment exceeded its bounds or failed cleanup'
         for handle in handles:
             handle.close()
         (run / 'results.json').write_text(json.dumps(result, indent=2))

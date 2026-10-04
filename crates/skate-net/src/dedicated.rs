@@ -29,7 +29,8 @@ pub fn effects_key(actor: u64) -> String {
     format!("{EFFECT_PREFIX}{actor}")
 }
 pub(crate) fn server_key(key: &str) -> bool {
-    crate::resources::is_server_key(key) || key.strip_prefix(EFFECT_PREFIX)
+    crate::resources::is_server_key(key) || key.strip_prefix(crate::native_authority::AUTHORITY_PREFIX)
+        .is_some_and(|id| id.parse::<u64>().is_ok_and(|id| id != 0)) || key.strip_prefix(EFFECT_PREFIX)
         .is_some_and(|id| id.parse::<u64>().is_ok_and(|id| id != 0))
 }
 
@@ -218,6 +219,7 @@ pub(crate) fn valid_client_application(key: &str, bytes: &[u8]) -> bool {
                 && (0..=i32::MAX as i64).contains(&state.sequence_score)
                 && (0..=i32::MAX as i64).contains(&state.line_score)
         }),
+        crate::native_authority::INPUT_KEY => crate::native_authority::InputPacket::decode(bytes).is_ok(),
         TELEPORT_KEY => serde_json::from_slice::<TeleportRequest>(bytes).is_ok_and(|request|
             request.epoch != 0 && request.id != 0 && !request.destination.is_empty() && label(&request.destination, 96)),
         SHOVE_KEY => serde_json::from_slice::<ShoveRequest>(bytes)
@@ -334,6 +336,29 @@ impl Server {
     pub fn instance_of(&self, actor: u64) -> Option<u64> { self.session.actors.get(&actor).map(|a| a.instance) }
     /// Trusted authority even while resource admission hides movement samples.
     pub fn movement_epoch_of(&self, actor: u64) -> Option<u64> { self.session.actors.get(&actor).map(|a| a.movement_epoch) }
+    pub fn native_input(&self, actor: u64) -> Option<crate::native_authority::InputPacket> {
+        if !self.resource_ready(actor) { return None; }
+        let record = self.session.actors.get(&actor)?.application.get(crate::native_authority::INPUT_KEY)?;
+        let packet = crate::native_authority::InputPacket::decode(&record.value).ok()?;
+        (packet.valid() && packet.inputs.iter().all(|i| Some(i.epoch) == self.movement_epoch_of(actor))).then_some(packet)
+    }
+    pub fn publish_native(&mut self, actor: u64, state: crate::native_authority::State) -> Result<(), String> {
+        if !self.players.contains_key(&actor) || Some(state.admission.epoch) != self.movement_epoch_of(actor)
+            || Some(state.admission.instance) != self.instance_of(actor) {
+            return Err("Native authority player epoch or instance changed".into());
+        }
+        let value = serde_json::to_vec(&state).map_err(|e| e.to_string())?;
+        if !self.session.publish_application(&crate::native_authority::state_key(actor), value, self.now_ms()) {
+            return Err("Native authority publication exceeds application bounds".into());
+        }
+        Ok(())
+    }
+    pub fn clear_native(&mut self, actor: u64) {
+        self.session.actors.get_mut(&self.session.local).unwrap().application.remove(&crate::native_authority::state_key(actor));
+    }
+    pub fn native_instance_solitary(&self, actor: u64, instance: u64) -> bool {
+        self.players.keys().all(|id| *id == actor || self.instance_of(*id) != Some(instance))
+    }
     /// Trusted host moderation. Revoke any account/session credential alongside
     /// this removal; the core backs off the current endpoint for five seconds.
     pub fn kick(&mut self, actor:u64, now:u64)->bool {
@@ -350,8 +375,41 @@ impl Server {
             let body=self.body(actor,self.session.service_clock())?;
             let state=&self.session.actors[&actor];
             Some(crate::entities::Player {actor,instance:state.instance,epoch:state.movement_epoch,
-                position:body.root.p,rotation:body.root.q,velocity:body.bodies.first().map_or([0.;3],|b|b.velocity)})
+                position:body.root.p,rotation:body.root.q,velocity:self.entity_root_velocity(actor,&body)})
         }).collect()
+    }
+    /// The coarse contact capsule follows the animation root, not an articulated
+    /// wheel that may already be bouncing in the opposite direction. This only
+    /// derives its bounded proxy velocity; it does not verify full-rig movement.
+    fn entity_root_velocity(&self, actor: u64, current: &BodyState) -> [f32;3] {
+        let history=&self.session.actors[&actor].body.history;
+        let mut recent=history.iter().rev();
+        let Some(latest)=recent.next() else {return [0.;3]};
+        let Some(previous)=recent.next() else {return [0.;3]};
+        // Epoch changes and readmission clear this history. A reset's synthetic
+        // seq=0 placement carries an old capture clock, never a motion baseline.
+        if latest.seq==0 || previous.seq==0 || self.now_ms().saturating_sub(previous.received)>FRESH_MS {
+            return [0.;3];
+        }
+        let Some(captured)=latest.state.captured.checked_sub(previous.state.captured) else {return [0.;3]};
+        let Some(received)=latest.received.checked_sub(previous.received) else {return [0.;3]};
+        if captured==0 || captured>FRESH_MS || received>FRESH_MS {return [0.;3];}
+        // Source time survives packet bunching; arrival time prevents a tiny
+        // client timestamp from amplifying the observed displacement.
+        let span=captured.max(received) as f32/1000.;
+        let Some(old)=previous.state.unpack_body() else {return [0.;3]};
+        let rig_speed=old.bodies.iter().chain(&current.bodies)
+            .map(|body|length(body.velocity)).fold(0.,f32::max);
+        let delta=sub(current.root.p,old.root.p);
+        let distance=length(delta);
+        // Match the conservative short-offset envelope used by player contact:
+        // a tolerated discontinuity does not imply motion through nearby objects.
+        if distance>1.+rig_speed*(span+0.02)*1.5 {return [0.;3];}
+        let speed=distance/span;
+        if !speed.is_finite() || speed==0. {return [0.;3];}
+        // An owner root remains an observation, not new authority to add energy.
+        // Do not exceed observed rig speed or the shared-object velocity bound.
+        scale(delta,rig_speed.min(200.).min(speed)/distance)
     }
     pub fn now_ms(&self)->u64 {self.session.service_clock()}
     pub fn competition_players(&self)->Vec<CompetitionPlayer> {
@@ -590,6 +648,7 @@ impl Server {
             .collect();
         for id in removed {
             self.players.remove(&id);
+            self.clear_native(id);
             self.session.actors.get_mut(&self.session.local).unwrap().application.remove(&crate::resources::server_key(id));
             self.session
                 .actors

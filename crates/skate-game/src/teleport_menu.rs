@@ -85,9 +85,18 @@ fn interact(
     buttons: Query<(&Interaction, &TravelRow), Changed<Interaction>>,
     mut scroll: Query<&mut ScrollPosition, With<TravelScroll>>,
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    native: Option<Res<crate::multiplayer::native_authority::Prediction>>,
 ) {
     travel.closed_this_frame = false;
     let wheel_delta: f32 = wheel.read().map(|e| e.y * if e.unit == bevy::input::mouse::MouseScrollUnit::Line { 36. } else { 1. }).sum();
+    if !crate::multiplayer::native_authority::ordinary(native) {
+        if travel.open { menu.native_movement_blocked(); }
+        travel.closed_this_frame = travel.open;
+        travel.open = false;
+        travel.shown = false;
+        for e in &roots { commands.entity(e).despawn(); }
+        return;
+    }
     if travel.generation != Some(map.generation) {
         travel.generation = Some(map.generation); travel.open = false; travel.shown = false;
         for e in &roots { commands.entity(e).despawn(); }

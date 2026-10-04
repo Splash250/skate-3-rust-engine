@@ -8,6 +8,9 @@ pub struct Rails {
     revision:u64,
 }
 impl Rails {
+    pub fn instances(&self) -> std::collections::BTreeSet<u64> {
+        self.sets.keys().map(|(_, instance)| *instance).collect()
+    }
     pub fn sync_resources(&mut self,generations:BTreeMap<String,u64>) {
         self.sets.retain(|(resource,_),_|self.generations.get(resource)==generations.get(resource));
         self.generations=generations;

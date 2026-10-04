@@ -18,6 +18,8 @@ mod participation;
 mod camera_stream;
 mod resources;
 mod resource_world;
+mod native_authority;
+pub(crate) use native_authority::ready as native_authority_ready;
 #[cfg(test)]
 mod retirement_tests;
 pub(crate) use participation::{player_suspended, peer_suspended};
@@ -1026,6 +1028,7 @@ fn apply_one(
     id: &str,
     command: Command,
 ) -> Result<(), String> {
+    native_authority::check(world, &command)?;
     match command {
         Command::RigPart {index,options} => player_physics::set_part(world,id,index,options)?,
         Command::GraphGate {graph,target,index,enabled} => engine_access::gate(world,mods,id,graph,target,index,enabled)?,
