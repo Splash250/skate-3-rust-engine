@@ -196,6 +196,7 @@ end)
         map: Map::TestWorld,
         resources: Some(temp.0.join("server.json")),
         accounts: Some(temp.0.join("accounts.json")),
+        operations: None,
     })
     .unwrap();
     let password = auth.join("password");

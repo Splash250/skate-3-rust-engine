@@ -75,10 +75,12 @@ function resource.export(name,callback) end
 ---@return any
 function resource.call(dependency,name,payload) end
 ---@class ResourceTeleport
----@field position number[]
+---@field position? number[] Required unless restore_previous=true.
 ---@field heading? number
 ---@field velocity? number[]
 ---@field instance? integer
+---@field restore_on_stop? boolean Host restores temporary travel on owner generation retirement.
+---@field restore_previous? boolean Return this owner generation's existing lease; omit all destination fields.
 ---@param player string
 ---@param destination ResourceTeleport
 function resource.teleport(player,destination) end
@@ -122,3 +124,11 @@ resource.transfer = {}
 function resource.transfer.start(key,name,payload,options) end
 ---@param key string
 function resource.transfer.cancel(key) end
+
+---Own typed operator settings. Requires resource.settings; no script mutation API.
+resource.settings = {}
+---@param key string
+---@return boolean|number|string
+function resource.settings.get(key) end
+---@return table<string, boolean|number|string>
+function resource.settings.all() end

@@ -163,7 +163,8 @@ impl Menu {
                 2 => vec![5,7,10],
                 3 => vec![0,1,10],
                 4 => (20..27).chain([10]).collect(),
-                _ => vec![2,6,13,14,15],
+                5 => (30..40).chain(400..400+self.browser_count.min(64)).chain([10]).collect(),
+                _ => vec![2,6,13,14,15,16],
             }};
         }
         match self.section {
@@ -312,7 +313,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain(30..40).chain(400..464).chain([10,FRAME_STATS_ROW]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -412,9 +413,15 @@ pub(crate) fn interact(
         if !menu.open
             || !menu.multiplayer
             || menu.browser
-            || !matches!(menu.selected, 3 | 7)
+            || !matches!(menu.selected, 3 | 7 | 30 | 31)
             || !event.state.is_pressed()
         {
+            continue;
+        }
+        if matches!(menu.selected,30|31) {
+            let field=if menu.selected==30 {&mut net.server_browser.endpoint} else {&mut net.server_browser.account_profile};
+            if event.key_code==KeyCode::Backspace {field.pop();}
+            if let Some(text)=&event.text {for ch in text.chars().filter(|c|!c.is_control()) {if field.len()<1024 {field.push(ch);}}}
             continue;
         }
         if menu.selected == 7 {
@@ -440,7 +447,7 @@ pub(crate) fn interact(
         }
     }
     if menu.open {
-        menu.browser_count = net.browser_rows.len();
+        menu.browser_count = if menu.network_page==5 {net.server_browser.entries.len()} else {net.browser_rows.len()};
         if keys.just_pressed(KeyCode::Tab) {
             let direction = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { SECTIONS.len()+menu.custom_sections.len()-1 } else { 1 };
             let section = (menu.section + direction) % (SECTIONS.len()+menu.custom_sections.len());
@@ -554,6 +561,14 @@ pub(crate) fn interact(
                 }
                 _ => {}
             }
+        } else if menu.multiplayer && menu.network_page==5 && row!=10 {
+            match row {
+                30|31=>{},32=>net.server_browser.save(),33=>net.server_browser.refresh(),34=>net.join_dedicated(),
+                35=>net.server_browser.favorite(),36=>net.server_browser.remove(),37=>net.cancel_dedicated(),
+                38=>{let i=net.server_browser.selected.saturating_sub(1);net.server_browser.select(i);},
+                39=>{let i=net.server_browser.selected+1;net.server_browser.select(i);},
+                400..464=>net.server_browser.select(row-400),_=>{}
+            }
         } else if menu.multiplayer {
             match row {
                 0 => net.local(true),
@@ -575,6 +590,7 @@ pub(crate) fn interact(
                 10 => {
                     if menu.network_page==1 {menu.browser=true;menu.network_page=0;menu.selected=8;} else {let from_debug=menu.network_page==4;menu.network_page = 0; menu.selected = if from_debug {15} else {2};}
                 }
+                16 => {menu.network_page=5;menu.selected=30;net.server_browser.refresh();}
                 13 => { menu.network_page = 2; menu.selected = 7; }
                 14 => { menu.network_page = 3; menu.selected = 0; }
                 15 => { menu.network_page = 4; menu.selected = 20; }
@@ -764,6 +780,7 @@ fn labels(
             match (menu.network_page, title) {
                 (1,true) => "JOIN A FRIEND", (1,false) => "Select the code field, type your friend's code, then choose Join session.",
                 (2,true) => "PLAYER & SESSION", (2,false) => "Select your name to edit it. Leave your current session here.",
+                (5,true)=>"DEDICATED SERVERS",(5,false)=>"Save an endpoint, refresh its content preview, then join. No Steam required.",
                 (4,true) => "MULTIPLAYER DEBUG", (4,false) => "Live network and mod diagnostics. Scroll or use Up/Down to inspect.",
                 (3,true) => "LOCAL TESTING", (_,false) => "Advanced: host or join a local test session without Steam.",
                 _ => "MULTIPLAYER",
@@ -794,6 +811,16 @@ fn labels(
             menu.maps.get(label.0 - 1000).map(|entry| format!("{}    /    VIEW SPOTS", entry.label)).unwrap_or_default()
         } else if menu.multiplayer && menu.network_page == 4 && (20..27).contains(&label.0) {
             debug_rows.get(label.0 - 20).cloned().unwrap_or_default()
+        } else if menu.multiplayer && menu.network_page==5 {
+            match label.0 {
+                30=>format!("Endpoint: {}{}",net.server_browser.endpoint,if menu.selected==30{"_"}else{""}),
+                31=>format!("Account profile file: {}{}",if net.server_browser.account_profile.is_empty(){"(anonymous)"}else{&net.server_browser.account_profile},if menu.selected==31{"_"}else{""}),
+                32=>"Save endpoint / profile".into(),33=>"Refresh saved servers".into(),34=>"Join selected server".into(),
+                35=>"Toggle favorite".into(),36=>"Remove selected endpoint".into(),37=>"Cancel join / disconnect".into(),
+                38=>"Previous saved server".into(),39=>"Next saved server".into(),
+                400..464=>net.server_browser.entries.get(label.0-400).map(|e|format!("{} {}  {}{}",if label.0-400==net.server_browser.selected{"▶"}else{" "},if e.favorite{"★"}else{" "},e.endpoint,if e.last_joined>0{" · Recent"}else{""})).unwrap_or_default(),
+                _=>"< Multiplayer".into()
+            }
         } else if menu.daylight {
             match label.0 {
                 0 => { let minutes = (s.hour * 60.).floor() as u32 % 1440; format!("Time of day          {:02}:{:02}", minutes / 60, minutes % 60) },
@@ -852,6 +879,7 @@ fn labels(
                 13 => "Player & session".into(),
                 14 => "Advanced / local testing".into(),
                 15 => "Debug".into(),
+                16 => "Dedicated servers".into(),
                 _ => "<  Multiplayer".into(),
             }
         } else {
@@ -891,6 +919,8 @@ fn labels(
     }
     ***status = if transition.busy() {
         format!("{} {}\nGameplay is paused. Please wait.", ["|", "/", "-", "\\"][(time.elapsed_secs() * 4.) as usize % 4], transition.label())
+    } else if menu.multiplayer && menu.network_page == 5 {
+        format!("{}\n{}\n{}",net.server_browser.preview(),net.server_browser.status,net.status)
     } else if menu.multiplayer && menu.network_page == 4 {
         "Diagnostics stay in this menu; gameplay shows names and ping only.".into()
     } else if menu.browser {
@@ -928,6 +958,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
     match std::env::var("SKATE_VERIFY_MENU").as_deref() {
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; },
         Ok("mods") if config.multiplayer.connect.is_none() => { menu.open = true; mods.begin(); }
+        Ok("dedicated") => {menu.open=true;menu.select_section(3);menu.network_page=5;menu.selected=30;},
         Ok("multiplayer") => { menu.open = true; menu.select_section(3); }
         _ => {}
     }
@@ -1087,8 +1118,7 @@ mod tests {
             let rows = menu.rows();
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
-            // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || (30..40).contains(id) || (400..464).contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
@@ -1111,7 +1141,10 @@ mod tests {
         assert!(menu.rows().is_empty());
         menu.select_section(3);
         assert!(menu.multiplayer);
-        assert_eq!(menu.rows(), vec![2,6,13,14,15]);
+        assert_eq!(menu.rows(), vec![2,6,13,14,15,16]);
+        menu.network_page = 5;
+        menu.browser_count = 2;
+        assert_eq!(menu.rows(), (30..40).chain(400..402).chain([10]).collect::<Vec<_>>());
         menu.network_page = 4;
         assert_eq!(menu.rows(), (20..27).chain([10]).collect::<Vec<_>>());
         menu.network_page = 1;

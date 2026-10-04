@@ -47,6 +47,8 @@ fn installed(
     std::fs::write(root.join(&file), source).unwrap();
     InstalledResource {
         manifest: Manifest {
+            settings: Default::default(),
+            requires_features: vec![],
             world: None,
             format: 1,
             api: 1,
@@ -407,4 +409,44 @@ fn csharp_runaway_and_memory_are_killed_and_registration_slots_released() {
     }
     assert!(h.running("slots"), "{:?}", h.diagnostics);
     assert_eq!(h.state("slots", "count"), Some(json!(200)));
+}
+
+#[test]
+#[ignore = "requires isolated .NET worker; run with SKATE_DOTNET_ROOT and SKATE_MANAGED_HOST"]
+fn csharp_typed_settings_and_profile_ipc_worker_cpu() {
+    prerequisites();let t=Temp::new();let mut h=host(&t,Side::Server);
+    let mut app=installed(&t,"profile_settings","csharp",r#"
+      using Skate.Managed;using System.Text.Json.Nodes;
+      public class Script:IResourceScript { public void Start(Resource r) {
+        r.StateSet("initial",r.SettingsGet("round"));
+        r.Lifecycle("on_settings",c=>r.StateSet("changed",r.SettingsAll()));
+        r.Lifecycle("on_update",_=>{long sum=0;for(int i=0;i<100000;i++)sum+=i;r.StateSet("work",JsonValue.Create(sum));});
+      }}
+    "#,&[],&["resource.settings","resource.state"]);
+    app.manifest.settings=serde_json::from_value(json!({"round":{"type":"integer","default":30,"min":1,"max":120,"visibility":"replicated"}})).unwrap();
+    h.install(vec![app]).unwrap();h.configure_settings("profile_settings",[("round".into(),json!(45))].into()).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("profile_settings","initial"),Some(json!(45)));
+    h.set_setting("profile_settings","round",json!(60)).unwrap();assert_eq!(h.state("profile_settings","changed").unwrap()["round"],60);
+    for _ in 0..10 {h.tick(0.01,json!({}));}
+    let profile=h.profile_snapshot();let ipc:Vec<_>=profile.spans.iter().filter(|s|s.phase=="ipc:invoke").collect();
+    assert!(!ipc.is_empty());assert!(ipc.iter().all(|s|s.ipc_receive_wait_us.is_some()));assert!(ipc.iter().all(|s|s.worker_cpu_time_us.is_some()),"trusted worker must measure actual worker CPU: {ipc:?}");
+    assert!(profile.spans.iter().any(|s|s.language=="csharp"&&s.resource=="profile_settings"));
+}
+
+#[test]
+#[ignore = "actual C# profiler overhead measurement; requires trusted isolated worker"]
+fn csharp_profile_instrumentation_overhead_measurement() {
+    prerequisites();let t=Temp::new();let mut h=host(&t,Side::Server);
+    let app=installed(&t,"profile_benchmark","csharp",r#"
+      using Skate.Managed;using System.Text.Json.Nodes;
+      public class Script:IResourceScript { public void Start(Resource r) {
+        r.Lifecycle("on_update",_=>{long sum=0;for(int i=0;i<10000;i++)sum+=i;});
+      }}
+    "#,&[],&[]);
+    h.install(vec![app]).unwrap();h.start_all().unwrap();for _ in 0..100 {h.tick(0.01,json!({}));}
+    let mut off=Vec::new();let mut on=Vec::new();
+    for round in 0..6 {let enabled=round%2!=0;h.configure_profiling(enabled,4096,60_000).unwrap();let start=std::time::Instant::now();for _ in 0..1000{h.tick(0.01,json!({}));}let ns=start.elapsed().as_nanos() as f64/1000.;if enabled{on.push(ns)}else{off.push(ns)}}
+    off.sort_by(f64::total_cmp);on.sort_by(f64::total_cmp);
+    eprintln!("PROFILE_CSHARP_OVERHEAD callbacks=6000 off_median_ns_per_dispatch={:.0} on_median_ns_per_dispatch={:.0} added_ns={:.0} ratio={:.3} retained={}",off[1],on[1],on[1]-off[1],on[1]/off[1],h.profile_snapshot().spans.len());
+    assert!(h.running("profile_benchmark"));assert!(h.profile_snapshot().spans.iter().any(|s|s.worker_cpu_time_us.is_some()));
 }

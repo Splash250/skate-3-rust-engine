@@ -1,0 +1,52 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-map-vote",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {
+    "platform-rounds": "1.0.0",
+    "platform-profiles": "1.0.0"
+  },
+  "exports": [
+    "options"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.exports",
+    "resource.state",
+    "resource.settings",
+    "resource.commands",
+    "resource.world",
+    "engine.ui"
+  ],
+  "settings": {
+    "rotation": {
+      "type": "string",
+      "default": "community-park,creator-park",
+      "max_bytes": 512,
+      "visibility": "public",
+      "change": "live"
+    },
+    "vote_seconds": {
+      "type": "integer",
+      "default": 20,
+      "min": 5,
+      "max": 120,
+      "visibility": "replicated",
+      "change": "live"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1"
+  ]
+}

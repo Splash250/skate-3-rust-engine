@@ -63,3 +63,11 @@ host; resource IPC never chooses them. C# implements `IResourceScript.Start(Reso
 and registers synchronous callbacks returning `JsonNode?`. No Tasks, unmanaged
 assemblies, assembly assets, arbitrary dependencies or async callback returns are
 accepted. Compile all manifest-selected `.cs` files together inside the worker.
+
+The parent includes a boolean `profile` in each init/invoke request. The trusted
+worker samples CPU only when enabled and adds `workerCpuUs` (integer or null) to `done` responses. It
+measures process CPU between receipt of `init`/`invoke` and completion, including
+managed runtime background threads. It excludes waiting with no CPU consumption
+and is never inferred from host wall time. Rust retains it only in bounded IPC
+profiling spans; absent measurements from an older worker remain null. Settings
+reads use the shared `resource.settings.get`/`resource.settings.all` allowlist.

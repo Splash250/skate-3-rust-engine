@@ -133,3 +133,38 @@ fn authored_world_lods_are_public_ordered_bounded_and_independent() {
         assert!(serde_json::from_value::<Manifest>(invalid).unwrap().validate().is_err());
     }
 }
+
+#[test]
+fn typed_settings_validate_values_and_strip_private_defaults() {
+    let value=serde_json::json!({"format":1,"api":1,"id":"settings","version":"1","language":"lua",
+      "requires_features":["resource.settings.v1"],"settings":{
+        "round":{"type":"integer","default":180,"min":10,"max":3600,"visibility":"replicated","change":"live"},
+        "private_token":{"type":"string","default":"test-only-private","visibility":"private","change":"restart"}}});
+    let manifest:Manifest=serde_json::from_value(value.clone()).expect("typed settings manifest must parse");
+    manifest.validate().unwrap();
+    let projection=serde_json::to_value(manifest.client_projection()).unwrap();
+    assert!(projection["settings"].get("private_token").is_none());
+    assert_eq!(projection["settings"]["round"]["default"],180);
+    let mut invalid=value;
+    invalid["settings"]["round"]["default"]=serde_json::json!(3601);
+    let manifest:Manifest=serde_json::from_value(invalid).unwrap();
+    assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn settings_unknown_features_types_bounds_duplicates_and_projection_are_rejected() {
+    let base=serde_json::json!({"format":1,"api":1,"id":"settings","version":"1","language":"lua"});
+    let definitions=[
+        serde_json::json!({"type":"integer","default":1.5}),
+        serde_json::json!({"type":"integer","default":9007199254740992u64}),
+        serde_json::json!({"type":"integer","default":1,"min":3,"max":2}),
+        serde_json::json!({"type":"string","default":"long","max_bytes":3}),
+        serde_json::json!({"type":"boolean","default":"false"}),
+        serde_json::json!({"type":"enum","default":"a","options":["a","a"]}),
+        serde_json::json!({"type":"enum","default":"x","options":["a"]}),
+        serde_json::json!({"type":"string","default":"x","min":0}),
+    ];
+    for definition in definitions {let mut value=base.clone();value["settings"]=serde_json::json!({"value":definition});let manifest:Manifest=serde_json::from_value(value).unwrap();assert!(manifest.validate().is_err(),"accepted {:?}",manifest.settings);}
+    let mut value=base.clone();value["requires_features"]=serde_json::json!(["future.unknown.v9"]);let manifest:Manifest=serde_json::from_value(value).unwrap();assert!(manifest.validate().unwrap_err().to_string().contains("feature unavailable"));
+    assert!(serde_json::from_str::<Manifest>(r#"{"format":1,"api":1,"id":"s","version":"1","language":"lua","settings":{"a":{"type":"boolean","default":true},"a":{"type":"boolean","default":false}}}"#).is_err());
+}

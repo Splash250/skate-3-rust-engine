@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-crews",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {
+    "platform-profiles": "1.0.0"
+  },
+  "exports": [
+    "crew"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.storage",
+    "resource.exports",
+    "resource.state",
+    "resource.settings",
+    "engine.ui"
+  ],
+  "settings": {
+    "max_members": {
+      "type": "integer",
+      "default": 8,
+      "min": 2,
+      "max": 16,
+      "visibility": "replicated",
+      "change": "live"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1"
+  ]
+}

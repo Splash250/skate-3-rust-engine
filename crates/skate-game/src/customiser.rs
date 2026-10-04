@@ -226,7 +226,7 @@ impl Plugin for CustomiserPlugin {
         crate::customiser_material::register(app);
         app.init_resource::<Navigation>()
             .add_systems(Startup, crate::customiser_parts::setup)
-            .add_systems(PreUpdate, navigation.before(crate::graphics_menu::MenuInput))
+            .add_systems(PreUpdate, navigation.after(bevy::input::InputSystems).before(crate::graphics_menu::MenuInput))
             .add_systems(PreUpdate, preferences.after(crate::map_transition::MapTransitionSet)
                 .before(crate::input::poll_controllers)
                 .run_if(crate::multiplayer::native_authority::ordinary))

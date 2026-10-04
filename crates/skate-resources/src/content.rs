@@ -140,6 +140,7 @@ impl ResourceSet {
             if resource.generation == 0 {
                 return Err(Error("resource generation must be nonzero".into()));
             }
+            if resource.manifest.settings.values().any(|s| s.visibility == crate::SettingVisibility::Private) { return Err(Error("downloadable manifest contains private settings".into())); }
             if !resource.manifest.server_scripts.is_empty() {
                 return Err(Error(
                     "downloadable manifest contains private server scripts".into(),

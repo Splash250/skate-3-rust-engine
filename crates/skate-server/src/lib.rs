@@ -1,5 +1,7 @@
 //! Headless dedicated-server options, resource runtime and UDP host.
 mod accounts;
+pub mod operations;
+pub mod supervision;
 mod base_world;
 mod voice;
 pub mod entities;
@@ -16,7 +18,8 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const USAGE: &str = "Usage: skate-server (--map MAP.skate | --test-world) [--bind IPv4:PORT] [--max-players 1..64] [--session NUMBER] [--resources server.json] [--accounts accounts.json]\n\
+pub const USAGE: &str = "Usage: skate-server (--map MAP.skate | --test-world) [--bind IPv4:PORT] [--max-players 1..64] [--session NUMBER] [--resources server.json] [--accounts accounts.json] [--operations operations.json]\n\
+Validate a resource configuration without starting scripts: skate-server --validate-resources server.json\n\
 Default bind: 0.0.0.0:31030; players: 16; session: 48031030.\n\
 Clients use: skate3rust --connect SERVER:31030 --map MAP.skate\n\
 Both sides need the same map. The server hashes the map; it does not load retail assets.";
@@ -35,6 +38,7 @@ pub struct Options {
     pub map: Map,
     pub resources: Option<PathBuf>,
     pub accounts: Option<PathBuf>,
+    pub operations: Option<PathBuf>,
 }
 
 impl Options {
@@ -46,6 +50,7 @@ impl Options {
         let mut map = None;
         let mut resources = None;
         let mut accounts = None;
+        let mut operations = None;
         let mut seen = BTreeSet::new();
         while let Some(arg) = args.next() {
             let key = arg.to_str().ok_or("Option name is not valid UTF-8")?;
@@ -64,6 +69,7 @@ impl Options {
                         return Err("Choose either --map or --test-world".into());
                     }
                 }
+                "--operations" => { operations = Some(PathBuf::from(args.next().ok_or("--operations requires a configuration file")?)); }
                 "--accounts" => {
                     accounts = Some(PathBuf::from(
                         args.next()
@@ -118,6 +124,7 @@ impl Options {
             map: map.ok_or("Select --map MAP.skate or --test-world")?,
             resources,
             accounts,
+            operations,
         }))
     }
 }
@@ -153,6 +160,7 @@ pub struct Host {
     map: u64,
     resources: Option<resources::Platform>,
     accounts: Option<accounts::Accounts>,
+    operations: operations::Operations,
     voice: skate_voice::Router,
     voice_egress:usize,
     last_resource_tick: Instant,
@@ -161,6 +169,7 @@ pub struct Host {
 impl Host {
     pub fn bind(options: Options) -> Result<Self, String> {
         let voice_egress=voice::egress_budget()?;
+        let operations = operations::Operations::new(options.operations.as_deref().map(operations::Config::load).transpose()?.unwrap_or_default(), options.max_players)?;
         // Validate before opening a listening socket, including direct library use.
         let SocketAddr::V4(bind) = options.bind else {
             return Err("Only IPv4 is supported".into());
@@ -212,6 +221,7 @@ impl Host {
             voice_egress,
             voice: skate_voice::Router::new(options.session, server_id)?,
             accounts,
+            operations,
             resources,
             last_resource_tick: Instant::now(),
             socket,
@@ -250,6 +260,7 @@ impl Host {
             .ok_or("Resources are not configured")?
             .command(command, &mut self.server)
     }
+    pub fn exit_requested(&self) -> Option<bool> { self.operations.exit_requested }
     pub fn shutdown(&mut self) {
         self.accounts.take();
         if let Some(resources) = &mut self.resources {
@@ -261,7 +272,7 @@ impl Host {
     pub fn step(&mut self) -> io::Result<()> {
         let now = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         if let Some(accounts) = &mut self.accounts {
-            accounts.step(&mut self.server, &mut self.resources, now);
+            accounts.step(&mut self.server, &mut self.resources, &mut self.operations, now);
         }
         if let Some(resources) = &mut self.resources {
             resources.sync_voice(&mut self.voice);
@@ -270,23 +281,32 @@ impl Host {
         // Large enough to distinguish an oversized datagram on Windows as well
         // as POSIX; only protocol-sized data ever reaches the decoder.
         let mut buffer = [0u8; 65_536];
+        let mut admission_packets = Vec::new();
         for _ in 0..512 {
             match self.socket.recv_from(&mut buffer) {
                 Ok((len, SocketAddr::V4(from))) if len <= skate_accounts::MAX_DATAGRAM => {
                     let peer = (u64::from(u32::from(*from.ip())) << 16) | u64::from(from.port());
+                    if let Some(nonce) = skate_net::discovery::query_nonce(&buffer[..len]) {
+                        if self.operations.allow_discovery(peer, now) {
+                            let preview = self.resources.as_ref().map(|p|p.discovery_preview()).unwrap_or(serde_json::Value::Null);
+                            let info = self.operations.info(&self.server, self.accounts.is_some(), preview);
+                            if let Some(reply) = skate_net::discovery::response(nonce, &info) { let _ = self.socket.send_to(&reply, from); }
+                        }
+                        continue;
+                    }
                     if let Some(accounts) = &mut self.accounts {
                         if let Some(packet) = accounts.decode(peer, &buffer[..len]) {
                             if skate_voice::wire::is_voice(&packet) {
                                 self.voice.receive(peer, &packet, now);
                             } else {
-                                self.server.receive(peer, &packet, now);
+                                if self.operations.receive(&self.server,peer,&packet,accounts.verified(peer),now,&mut admission_packets) {self.server.receive(peer, &packet, now);}
                             }
                         }
                     } else if len <= skate_net::packed::MTU {
                         if skate_voice::wire::is_voice(&buffer[..len]) {
                             self.voice.receive(peer, &buffer[..len], now);
                         } else {
-                            self.server.receive(peer, &buffer[..len], now);
+                            if self.operations.receive(&self.server,peer,&buffer[..len],None,now,&mut admission_packets) {self.server.receive(peer, &buffer[..len], now);}
                         }
                     }
                 }
@@ -300,7 +320,9 @@ impl Host {
                 Err(error) => return Err(error),
             }
         }
+        admission_packets.extend(self.operations.step(&mut self.server, now));
         let mut packets = self.server.service(now);
+        packets.extend(admission_packets);
         if let Some(accounts) = &mut self.accounts {
             accounts.sync_identity(&mut self.resources, &self.server);
         }

@@ -25,8 +25,10 @@ interface ResourceApi {
   competition: {submit(operation: ResourceJson): void};
   transfer: {start(key:string,name:string,payload:ResourceJson,options?:{recipient?:string,timeout_ms?:number}|null):void;cancel(key:string):void};
   entity(command: ResourceJson): void;
-  teleport(player: string, destination: {position: number[], heading?: number, velocity?: number[], instance?: number}): void;
+  teleport(player: string, destination: {position: number[], heading?: number, velocity?: number[], instance?: number, restore_on_stop?: boolean} | {restore_previous: true}): void;
   state: { get(key: string, scope?: ResourceScope | null): ResourceJson; set(key: string, value?: ResourceJson, scope?: ResourceScope | null): void };
+  /** Own typed operator settings. Requires resource.settings. Values are copies. */
+  settings: { get(key: string): boolean | number | string; all(): Record<string, boolean | number | string> };
   storage: { get(key: string): ResourceJson; set(key: string, value?: ResourceJson): void };
   services: { submit(key: string, operation: ResourceJson, timeoutMs: number): void; cancel(key: string): void };
 }

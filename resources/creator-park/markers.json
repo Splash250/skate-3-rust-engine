@@ -1,0 +1,38 @@
+[
+  {
+    "id": "welcome",
+    "position": [
+      -7,
+      1,
+      0
+    ],
+    "radius": 2,
+    "type": "interaction",
+    "order": 0,
+    "label": "Welcome to your park"
+  },
+  {
+    "id": "checkpoint-one",
+    "position": [
+      4,
+      1,
+      0
+    ],
+    "radius": 1.5,
+    "type": "checkpoint",
+    "order": 1,
+    "label": "Practice checkpoint 1"
+  },
+  {
+    "id": "checkpoint-two",
+    "position": [
+      9,
+      1,
+      -6
+    ],
+    "radius": 1.5,
+    "type": "checkpoint",
+    "order": 2,
+    "label": "Practice checkpoint 2"
+  }
+]

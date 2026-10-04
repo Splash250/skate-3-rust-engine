@@ -8,6 +8,8 @@ use std::{
 /// exports and IPC waits. Queue bytes use host accounting, not wire byte counts.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RuntimeMetrics {
+    #[serde(skip)]
+    pub(crate) profile: Option<crate::runtime_profile::Context>,
     pub generation: u64,
     pub language: String,
     pub running: bool,
@@ -60,16 +62,56 @@ pub(crate) fn bounded_error(value: impl std::fmt::Display) -> String {
 pub(crate) struct Timer {
     wall: Instant,
     cpu: Option<u64>,
+    profile: Option<crate::runtime_profile::SpanTimer>,
+    pub(crate) queue_wait_us: Option<u64>,
+    pub(crate) worker_cpu_us: Option<u64>,
+    pub(crate) ipc_receive_wait_us: Option<u64>,
 }
 impl Timer {
     pub(crate) fn start() -> Self {
         Self {
             wall: Instant::now(),
             cpu: thread_cpu_us(),
+            profile: None,
+            queue_wait_us: None,
+            worker_cpu_us: None,
+            ipc_receive_wait_us: None,
+        }
+    }
+    pub(crate) fn profiling(&self) -> bool {
+        self.profile.is_some()
+    }
+    pub(crate) fn start_for(counters: &Counters, phase: &str, source: Option<String>) -> Self {
+        let context = counters.lock().unwrap().profile.clone();
+        let mut timer = Self::start();
+        timer.profile =
+            context.and_then(|c| crate::runtime_profile::SpanTimer::start(c, phase, source));
+        timer
+    }
+    pub(crate) fn start_context(context: crate::runtime_profile::Context, phase: &str) -> Self {
+        let mut timer = Self::start();
+        timer.profile = crate::runtime_profile::SpanTimer::start(context, phase, None);
+        timer
+    }
+    pub(crate) fn finish_profile(mut self, failed: bool) {
+        let wall = self.wall.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        let cpu = self
+            .cpu
+            .zip(thread_cpu_us())
+            .map(|(a, b)| b.saturating_sub(a));
+        if let Some(profile) = self.profile.take() {
+            profile.finish(
+                wall,
+                cpu,
+                self.worker_cpu_us,
+                self.queue_wait_us,
+                self.ipc_receive_wait_us,
+                failed,
+            );
         }
     }
     pub(crate) fn record(
-        self,
+        mut self,
         counters: &Counters,
         phase: &str,
         budget_units: usize,
@@ -80,6 +122,16 @@ impl Timer {
             .cpu
             .zip(thread_cpu_us())
             .map(|(before, after)| after.saturating_sub(before));
+        if let Some(profile) = self.profile.take() {
+            profile.finish(
+                wall,
+                cpu,
+                self.worker_cpu_us,
+                self.queue_wait_us,
+                self.ipc_receive_wait_us,
+                error.is_some(),
+            );
+        }
         let mut metrics = counters.lock().unwrap();
         metrics.invocations = metrics.invocations.saturating_add(1);
         metrics.last_phase = phase.chars().take(128).collect();
@@ -157,4 +209,15 @@ fn thread_cpu_us() -> Option<u64> {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn thread_cpu_us() -> Option<u64> {
     None
+}
+
+pub(crate) fn function_source(function: &mlua::Function) -> Option<String> {
+    let info = function.info();
+    info.source.filter(|s| s.starts_with('@')).map(|source| {
+        format!(
+            "{}:{}",
+            source.trim_start_matches('@'),
+            info.line_defined.unwrap_or(0)
+        )
+    })
 }

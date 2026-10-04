@@ -61,3 +61,11 @@ function resource.command(name, permission, callback) end
 ---Server observations are owner reported under Hybrid Authority.
 ---@return table[]
 function resource.players() end
+
+---Own typed operator settings. Requires resource.settings; no script mutation API.
+resource.settings = {}
+---@param key string
+---@return boolean|number|string
+function resource.settings.get(key) end
+---@return table<string, boolean|number|string>
+function resource.settings.all() end

@@ -1,0 +1,67 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-tournaments",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {
+    "platform-profiles": "1.0.0",
+    "platform-crews": "1.0.0",
+    "platform-rounds": "1.0.0",
+    "platform-leaderboards": "1.0.0"
+  },
+  "exports": [
+    "inspect"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.storage",
+    "resource.exports",
+    "resource.state",
+    "resource.settings",
+    "resource.commands",
+    "resource.teleport",
+    "engine.ui"
+  ],
+  "settings": {
+    "rules": {
+      "type": "enum",
+      "default": "course-v1",
+      "options": [
+        "course-v1",
+        "native-input-v1"
+      ],
+      "visibility": "public",
+      "change": "restart"
+    },
+    "ticks": {
+      "type": "integer",
+      "default": 600,
+      "min": 60,
+      "max": 3600,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "max_entrants": {
+      "type": "integer",
+      "default": 16,
+      "min": 2,
+      "max": 64,
+      "visibility": "replicated",
+      "change": "live"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1",
+    "resource.teleport_leases.v1"
+  ]
+}

@@ -77,6 +77,7 @@ pub(crate) struct Managed {
     registrations: Mutex<BTreeMap<u32, (String, String)>>,
     limits: RuntimeLimits,
     budget: Arc<AtomicUsize>,
+    metrics: crate::runtime_metrics::Counters,
 }
 
 impl Managed {
@@ -92,6 +93,7 @@ impl Managed {
         limits: &RuntimeLimits,
         budget: Arc<AtomicUsize>,
         sources: Vec<(String, String)>,
+        metrics: crate::runtime_metrics::Counters,
     ) -> mlua::Result<Arc<Self>> {
         let dotnet = std::env::var_os("SKATE_DOTNET_ROOT")
             .map(PathBuf::from)
@@ -169,6 +171,7 @@ impl Managed {
             registrations: Mutex::new(BTreeMap::new()),
             limits: limits.clone(),
             budget,
+            metrics,
         });
         lua.globals().set("_managed_callbacks", callbacks.clone())?;
         let resource: Table = lua.globals().get("resource")?;
@@ -180,7 +183,7 @@ impl Managed {
         Ok(managed)
     }
 
-    fn execute(self: &Arc<Self>, request: Value, timeout: Duration) -> mlua::Result<Value> {
+    fn execute(self: &Arc<Self>, mut request: Value, timeout: Duration) -> mlua::Result<Value> {
         let mut process = self
             .process
             .try_lock()
@@ -188,7 +191,12 @@ impl Managed {
         if process.retired {
             return Err(error("C# resource worker retired"));
         }
-        let result = self.exchange(&mut process, request, timeout);
+        let phase=format!("ipc:{}",request.get("op").and_then(Value::as_str).unwrap_or("unknown"));
+        let mut timer=crate::runtime_metrics::Timer::start_for(&self.metrics,&phase,None);
+        request["profile"]=Value::Bool(timer.profiling());
+        timer.ipc_receive_wait_us=Some(0);
+        let result = self.exchange(&mut process, request, timeout,&mut timer);
+        timer.finish_profile(result.is_err());
         if result.is_err() {
             process.stop();
         }
@@ -210,6 +218,7 @@ impl Managed {
         process: &mut Process,
         request: Value,
         timeout: Duration,
+        timer: &mut crate::runtime_metrics::Timer,
     ) -> mlua::Result<Value> {
         Self::send(process, &request)?;
         let deadline = Instant::now() + timeout;
@@ -221,9 +230,12 @@ impl Managed {
             if linux::resident_bytes(process.child.id()) > self.limits.managed_memory_bytes {
                 return Err(error("C# resource process memory limit exceeded"));
             }
-            let frame = match process.incoming.recv_timeout(
+            let waiting=Instant::now();
+            let received=process.incoming.recv_timeout(
                 (deadline - Instant::now().min(deadline)).min(Duration::from_millis(10)),
-            ) {
+            );
+            timer.ipc_receive_wait_us=Some(timer.ipc_receive_wait_us.unwrap_or(0).saturating_add(waiting.elapsed().as_micros().min(u64::MAX as u128) as u64));
+            let frame = match received {
                 Ok(value) => value.map_err(error)?,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return Err(error("managed IPC disconnected")),
@@ -238,6 +250,7 @@ impl Managed {
             let message: Value = serde_json::from_slice(&frame).map_err(mlua::Error::external)?;
             match message.get("op").and_then(Value::as_str) {
                 Some("done") => {
+                    timer.worker_cpu_us=message.get("workerCpuUs").and_then(Value::as_u64).filter(|v|*v<=timeout.as_micros().min(u64::MAX as u128) as u64*256);
                     if message.get("ok").and_then(Value::as_bool) != Some(true) {
                         return Err(error(format!(
                             "C#: {}",
@@ -296,7 +309,9 @@ impl Managed {
                 | "resource.off"
                 | "resource.state.get"
                 | "resource.state.set"
-                | "resource.storage.get"
+                | "resource.settings.get"
+                                        | "resource.settings.all"
+                                        | "resource.storage.get"
                 | "resource.storage.set"
                 | "resource.call"
                 | "resource.players"

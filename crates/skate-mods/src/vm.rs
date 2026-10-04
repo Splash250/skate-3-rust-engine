@@ -1445,7 +1445,7 @@ impl Vm {
             }
             // Keep the empty-side resource instance and its generation alive,
             // without requiring a worker for scripts that run on the other side.
-            let managed=resource.filter(|r|r.language()=="csharp"&&!managed_sources.is_empty()).map(|r|crate::managed::Managed::new(&lua,&callbacks,&r.limits,budget.clone(),managed_sources)).transpose()?;
+            let managed=resource.filter(|r|r.language()=="csharp"&&!managed_sources.is_empty()).map(|r|crate::managed::Managed::new(&lua,&callbacks,&r.limits,budget.clone(),managed_sources,r.metrics.clone())).transpose()?;
             Ok(Self {
                 lua,
                 callbacks,
@@ -1464,8 +1464,9 @@ impl Vm {
         build().map_err(|e| e.to_string())
     }
 
-    pub(crate) fn resource_callbacks(&mut self, callbacks:Vec<mlua::Function>, payload:Value, sender:u64, snapshot:&Arc<Value>, fields:&crate::SnapshotFields) -> Result<Vec<Command>,String> {
-        let timer=crate::runtime_metrics::Timer::start();
+    pub(crate) fn resource_callbacks(&mut self, phase:&str,queue_wait_us:Option<u64>, callbacks:Vec<mlua::Function>, payload:Value, sender:u64, snapshot:&Arc<Value>, fields:&crate::SnapshotFields) -> Result<Vec<Command>,String> {
+        let mut timer=crate::runtime_metrics::Timer::start_for(&self.metrics,phase,callbacks.first().and_then(crate::runtime_metrics::function_source));
+        timer.queue_wait_us=queue_wait_us;
         self.budget.store(self.budget_units, Ordering::Relaxed);
         let invoke = || -> mlua::Result<()> {
             let sdk = self.lua.globals().get::<Table>("sdk")?;
@@ -1477,7 +1478,7 @@ impl Vm {
         // Events and commands may be delivered while another resource owns the
         // engine bridge. They never borrow that caller's native body namespace.
         let result = crate::query::without_host(invoke);
-        timer.record(&self.metrics,"event_or_command",self.budget_units.saturating_sub(self.budget.load(Ordering::Relaxed)),result.as_ref().err().map(ToString::to_string).as_deref());
+        timer.record(&self.metrics,phase,self.budget_units.saturating_sub(self.budget.load(Ordering::Relaxed)),result.as_ref().err().map(ToString::to_string).as_deref());
         let commands = std::mem::take(&mut *self.queue.lock().unwrap());
         result.map(|_|commands).map_err(|e|e.to_string())
     }
@@ -1501,7 +1502,7 @@ impl Vm {
     }
 
     pub fn call_shared(&mut self,name:&str,payload:Value,snapshot:&Arc<Value>,physics:Option<Value>,fields:&crate::SnapshotFields)->Result<Vec<Command>,String> {
-        let timer=crate::runtime_metrics::Timer::start();
+        let timer=crate::runtime_metrics::Timer::start_for(&self.metrics,name,self.callbacks.get::<Option<mlua::Function>>(name).ok().flatten().as_ref().and_then(crate::runtime_metrics::function_source));
         self.budget.store(self.budget_units, Ordering::Relaxed);
         let invoke = || -> mlua::Result<bool> {
             let callback=self.callbacks.get::<Option<mlua::Function>>(name)?;

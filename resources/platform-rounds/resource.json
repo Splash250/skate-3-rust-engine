@@ -1,0 +1,54 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-rounds",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {},
+  "exports": [
+    "begin",
+    "finish",
+    "inspect"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.storage",
+    "resource.exports",
+    "resource.state",
+    "resource.settings",
+    "resource.commands",
+    "engine.ui"
+  ],
+  "settings": {
+    "duration_seconds": {
+      "type": "integer",
+      "default": 180,
+      "min": 10,
+      "max": 3600,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "mode": {
+      "type": "enum",
+      "default": "free-skate",
+      "options": [
+        "free-skate",
+        "tournament"
+      ],
+      "visibility": "public",
+      "change": "restart"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1"
+  ]
+}

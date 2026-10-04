@@ -90,6 +90,7 @@ mod tests {
         let host = crate::Host::bind(crate::Options {
             bind: "127.0.0.1:0".parse().unwrap(), session: 91, max_players: 2,
             map, resources: None, accounts: None,
+        operations: None,
         });
         std::fs::remove_file(path).unwrap();
         assert!(host.is_ok());

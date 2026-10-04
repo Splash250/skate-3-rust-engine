@@ -26,6 +26,13 @@ struct Download {
     cancel: Arc<AtomicBool>,
     worker: JoinHandle<Result<DownloadReport, String>>,
 }
+struct Initializing {
+    host: Host,
+    report: DownloadReport,
+    granted: Grants,
+    needed: BTreeSet<String>,
+    started: std::time::Instant,
+}
 struct Active {
     set: ResourceSet,
     grants: Grants,
@@ -46,6 +53,8 @@ pub(super) struct ClientResources {
     pending: Option<Download>,
     mounting: Option<DownloadReport>,
     active: Option<Active>,
+    initializing: Option<Initializing>,
+    deferred: Vec<skate_net::resources::Message>,
     failure: Option<String>,
 }
 impl ClientResources {
@@ -74,6 +83,8 @@ impl ClientResources {
             pending: None,
             mounting: None,
             active: None,
+            initializing: None,
+            deferred: Vec::new(),
             failure: None,
         }
     }
@@ -168,6 +179,8 @@ fn retire(world: &mut World, mods: &mut Mods, client: &mut ClientResources, unpi
     client.cancel();
     if let Err(error)=super::resource_world::clear(world) {warn!("Resource native rail cleanup: {error}");}
     client.mounting=None;
+    client.initializing=None;
+    client.deferred.clear();
     crate::map_transition::unmount_resource(world);
     client.channel.set_ready(false);
     client.transfers=Default::default();
@@ -214,9 +227,15 @@ fn fail(world: &mut World, mods: &mut Mods, client: &mut ClientResources, error:
 
 pub(super) fn poll(world: &mut World) {
     world.resource_scope(|world, mut client: Mut<ClientResources>| {
-        if client.endpoint.is_none() {
-            return;
+        let net=world.resource::<crate::multiplayer::Multiplayer>();
+        let endpoint=net.dedicated_endpoint;
+        let session=net.session_identity().map(|identity|identity.0);
+        if endpoint!=client.endpoint {
+            world.resource_scope(|world, mut mods: Mut<Mods>| {retire(world,&mut mods,&mut client,true);});
+            client.identity=None;client.channel=Client::with_budgets(client.local_budgets).expect("validated budgets");
+            client.endpoint=endpoint;client.source=endpoint.map(|e|source(e,session.unwrap_or(48031030))).unwrap_or_default();
         }
+        if client.endpoint.is_none() {return;}
         world.resource_scope(|world, mut mods: Mut<Mods>| {
             if let Err(error) = poll_inner(world, &mut mods, &mut client) {
                 fail(world, &mut mods, &mut client, error);
@@ -290,6 +309,7 @@ fn poll_inner(
         retire(world, mods, client, true);
         client.channel = Client::with_budgets(client.local_budgets)?;
         client.identity = identity;
+        if let Some(endpoint)=client.endpoint {let session=world.resource::<crate::multiplayer::Multiplayer>().session_identity().map(|i|i.0).unwrap_or(48031030);client.source=source(endpoint,session);}
         // A new admitted connection may retry; an offline failure stays visible.
         if identity.is_some() {
             client.failure = None;
@@ -382,10 +402,25 @@ fn poll_inner(
             });
         }
     }
+    if let Some(mut initialization)=client.initializing.take() {
+        for message in client.channel.take_incoming() {
+            if message.kind==Kind::State && message.name=="__settings" && message.scope==Default::default() {
+                initialization.host.apply_scoped_state(&message.resource,message.generation,&message.name,message.value,serde_json::json!({"kind":"resource"}))?;
+                initialization.needed.remove(&message.resource);
+            } else {
+                client.deferred.push(message);
+                let bytes=serde_json::to_vec(&client.deferred).map_err(|e|e.to_string())?.len();
+                if client.deferred.len()>256 || bytes>client.local_budgets.queue_bytes {return Err("Initial resource messages exceeded bounded activation queue".into());}
+            }
+        }
+        if initialization.needed.is_empty() {finish_activation(world,mods,client,initialization)?;}
+        else if initialization.started.elapsed()>std::time::Duration::from_secs(15) {return Err("Server did not supply required resource settings before activation deadline".into());}
+        else {client.initializing=Some(initialization);}
+    }
     if let Some(host) = mods.manager.resources.as_mut() {
         let scopes:Vec<_>=visible_scopes.iter().filter_map(|scope|serde_json::to_value(scope).ok()).collect();
         host.retain_scoped_state(&scopes);
-        for message in client.channel.take_incoming() {
+        for message in std::mem::take(&mut client.deferred).into_iter().chain(client.channel.take_incoming()) {
             if !visible_scopes.contains(&message.scope) {continue;}
             if message.kind==Kind::State && message.name==skate_net::rails::STATE_KEY {
                 let allowed=client.active.as_ref().is_some_and(|active|active.grants.get(&message.resource)
@@ -455,10 +490,8 @@ fn activate(
     client: &mut ClientResources,
     report: DownloadReport,
 ) -> Result<(), String> {
-    let cache = Cache::open(&client.root, client.asset_limits.content).map_err(|e| e.to_string())?;
-    let mut granted = Grants::new();
-    let result = (|| {
-        granted = grants_for(&report.set, &client.source, &read_policy(&client.root)?)?;
+    let initialization=(||->Result<Initializing,String>{
+        let granted = grants_for(&report.set, &client.source, &read_policy(&client.root)?)?;
         let budgets=client.channel.budgets();
         let mut limits=skate_mods::resources::RuntimeLimits::default();
         limits.max_resources=budgets.resources;
@@ -489,6 +522,18 @@ fn activate(
                 })
                 .collect::<Result<Vec<_>, String>>()?,
         )?;
+        let needed=report.set.resources.iter().filter(|r|!r.manifest.settings.is_empty()).map(|r|r.manifest.id.clone()).collect();
+        Ok(Initializing{host,report,granted,needed,started:std::time::Instant::now()})
+    })()?;
+    // Transport acknowledgement permits reliable initial settings; callbacks wait.
+    client.channel.set_ready(true);
+    if initialization.needed.is_empty() {finish_activation(world,mods,client,initialization)}
+    else {client.initializing=Some(initialization);Ok(())}
+}
+fn finish_activation(world:&mut World,mods:&mut Mods,client:&mut ClientResources,initialization:Initializing)->Result<(),String> {
+    let Initializing{host,report,granted,..}=initialization;
+    let cache=Cache::open(&client.root,client.asset_limits.content).map_err(|e|e.to_string())?;
+    let result=(||->Result<(),String>{
         let camera = super::camera_position(world);
         mods.manager.snapshot = Arc::new(super::snapshot_ro(world, mods, camera));
         mods.manager.attach_resources(host)?;
@@ -509,25 +554,12 @@ fn activate(
                 resource.manifest.id
             ));
         }
-        cache
-            .record_activation(&report.set, &client.source, &granted, None)
-            .map_err(|e| e.to_string())?;
+        cache.record_activation(&report.set,&client.source,&granted,None).map_err(|e|e.to_string())?;
         Ok(())
     })();
-    if let Err(error) = result {
-        let _ = cache.record_activation(&report.set, &client.source, &granted, Some(&error));
-        return Err(error);
-    }
-    info!(
-        "RESOURCE_ACTIVATED source={} revision={} downloaded_bytes={} reused_bytes={}",
-        client.source, report.set.revision, report.downloaded_bytes, report.reused_bytes
-    );
-    client.active = Some(Active {
-        set: report.set,
-        grants: granted,
-    });
-    client.channel.set_ready(true);
-    Ok(())
+    if let Err(error)=result {let _=cache.record_activation(&report.set,&client.source,&granted,Some(&error));return Err(error);}
+    info!("RESOURCE_ACTIVATED source={} revision={} downloaded_bytes={} reused_bytes={}",client.source,report.set.revision,report.downloaded_bytes,report.reused_bytes);
+    client.active=Some(Active{set:report.set,grants:granted});Ok(())
 }
 
 fn publish(world: &mut World, client: &ClientResources) -> Result<(), String> {
@@ -539,7 +571,8 @@ fn publish(world: &mut World, client: &ClientResources) -> Result<(), String> {
     if !net.publish_application(CLIENT_KEY, bytes) {
         return Err("resource control record could not be published".into());
     }
-    if !client.channel.ready() {
+    if client.initializing.is_some() {net.status="Applying server settings before resource callbacks…".into();}
+    else if !client.channel.ready() {
         net.status = if client.mounting.is_some() {"Preparing required world and collision..."} else {"Downloading and verifying required server resources..."}.into();
     }
     Ok(())
@@ -547,7 +580,7 @@ fn publish(world: &mut World, client: &ClientResources) -> Result<(), String> {
 
 pub(super) fn flush(world: &mut World) {
     world.resource_scope(|world, mut client: Mut<ClientResources>| {
-        if client.endpoint.is_none() || !client.channel.ready() {
+        if client.endpoint.is_none() || !client.channel.ready() || client.initializing.is_some() {
             return;
         }
         world.resource_scope(|world, mut mods: Mut<Mods>| {

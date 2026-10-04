@@ -2,6 +2,10 @@
 //! connection identities; scripts can neither select their owner nor generation.
 use crate::{Command, SnapshotFields, vm::Vm};
 pub use crate::runtime_metrics::RuntimeMetrics;
+pub use crate::runtime_profile::{ProfileSnapshot,ProfileSpan,ProfileSummary,ProfileScope};
+#[path="resource_settings.rs"]
+mod settings;
+pub use settings::{SettingAudience, SettingStatus, SettingsChange};
 use crate::runtime_metrics::{Counters, Timer, bounded_error};
 use mlua::{Function, Lua, LuaSerdeExt, Table};
 use serde_json::Value;
@@ -153,6 +157,8 @@ pub enum Output {
         heading: Option<f32>,
         velocity: Option<[f32; 3]>,
         instance: Option<u32>,
+        restore_on_stop: bool,
+        restore_previous: bool,
     },
     Log {
         resource: String,
@@ -184,8 +190,9 @@ struct Shared {
     active: BTreeSet<String>,
     outputs: Vec<Output>,
     output_bytes: usize,
-    events: VecDeque<(String, u64, String, Value)>,
+    events: VecDeque<(String, u64, String, Value, std::time::Instant)>,
     states: BTreeMap<(String, String), BTreeMap<String, Value>>,
+    settings: BTreeMap<String, BTreeMap<String, Value>>,
     exports: BTreeMap<(String, String), Export>,
     commands: BTreeMap<String, RegisteredCommand>,
     export_depth: usize,
@@ -403,6 +410,7 @@ impl Bootstrap {
                     ctx.installed.generation,
                     name,
                     payload,
+                    std::time::Instant::now(),
                 ));
                 Ok(())
             })?,
@@ -460,6 +468,7 @@ impl Bootstrap {
         state.set("set",lua.create_function(move |lua,(key,value,scope):(String,mlua::Value,mlua::Value)| {
             if ctx.side!=Side::Server {return Err(lua_error("replicated state is owned by the server"));}
             ctx.require("resource.state")?;ctx.action()?;valid_name(&key).map_err(lua_error)?;
+            if key=="__settings" {return Err(lua_error("reserved host settings state key"));}
             let (scope_key,scope)=normalize_scope(bounded_value(lua,scope,128)?).map_err(lua_error)?;
             let value=bounded_value(lua,value,ctx.limits.max_payload_bytes)?;
             let output=Output::State{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,key:key.clone(),value:value.clone(),scope};
@@ -472,6 +481,21 @@ impl Bootstrap {
         })?)?;
         api.set("state", state)?;
         self.install_storage(lua, &api)?;
+        let settings=lua.create_table()?;
+        let ctx=self.clone();
+        settings.set("get",lua.create_function(move |lua,key:String| {
+            ctx.require("resource.settings")?;
+            if !ctx.installed.manifest.settings.contains_key(&key) {return Err(lua_error("unknown resource setting"));}
+            let value=ctx.shared.lock().unwrap().settings.get(&ctx.installed.manifest.id).and_then(|v|v.get(&key)).cloned().unwrap_or(Value::Null);
+            json_value(lua,&value)
+        })?)?;
+        let ctx=self.clone();
+        settings.set("all",lua.create_function(move |lua,()| {
+            ctx.require("resource.settings")?;
+            let values=ctx.shared.lock().unwrap().settings.get(&ctx.installed.manifest.id).cloned().unwrap_or_default();
+            json_value(lua,&serde_json::to_value(values).map_err(mlua::Error::external)?)
+        })?)?;
+        api.set("settings",settings)?;
         let ctx = self.clone();
         api.set(
             "export",
@@ -532,7 +556,8 @@ impl Bootstrap {
                     // The engine bridge is scoped to the *calling* resource.
                     // A callee may enqueue its own owned commands, but must not
                     // look up or mutate the caller's bodies through that bridge.
-                    let timer = Timer::start();
+                    let phase=format!("export:{name}");
+                    let timer = Timer::start_for(&export.metrics,&phase,crate::runtime_metrics::function_source(&export.function));
                     let result = crate::query::without_host(|| {
                         let argument = json_value(&export.lua, &value)?;
                         let result = export.function.call::<mlua::Value>(argument)?;
@@ -607,15 +632,22 @@ impl Bootstrap {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
             struct Destination {
-                position: [f32; 3], heading: Option<f32>, velocity: Option<[f32; 3]>, instance: Option<u32>,
+                position: Option<[f32; 3]>, heading: Option<f32>, velocity: Option<[f32; 3]>, instance: Option<u32>,
+                #[serde(default)] restore_on_stop: bool,
+                #[serde(default)] restore_previous: bool,
             }
             let dest: Destination = lua.from_value(value)?;
-            let validation = crate::vm::TeleportOptions { position: dest.position, heading: dest.heading, velocity: dest.velocity };
+            if dest.restore_previous && (dest.position.is_some() || dest.heading.is_some() || dest.velocity.is_some() || dest.instance.is_some() || dest.restore_on_stop) {
+                return Err(lua_error("restore_previous requires only its true flag"));
+            }
+            if !dest.restore_previous && dest.position.is_none() {return Err(lua_error("teleport requires position"));}
+            let position=dest.position.unwrap_or([0.;3]);
+            let validation = crate::vm::TeleportOptions { position, heading: dest.heading, velocity: dest.velocity };
             if !validation.validate() { return Err(lua_error("invalid teleport destination")); }
             let mut shared = ctx.shared.lock().unwrap();
             if shared.outputs.len() >= ctx.limits.max_queued_outputs { return Err(lua_error("resource output queue full")); }
             shared.push_output(Output::Teleport { resource: ctx.installed.manifest.id.clone(), generation: ctx.installed.generation,
-                player: id, position: dest.position, heading: dest.heading, velocity: dest.velocity, instance: dest.instance }, &ctx.limits)?;
+                player: id, position, heading: dest.heading, velocity: dest.velocity, instance: dest.instance, restore_on_stop: dest.restore_on_stop, restore_previous: dest.restore_previous }, &ctx.limits)?;
             Ok(())
         })?)?;
         let ctx = self.clone();
@@ -657,7 +689,7 @@ impl Bootstrap {
         })?)?;
         api.set("voice",voice)?;
         for (name,cap,limit,field,operations) in [
-            ("world","resource.world",64*1024,"op",&["rail_upsert","rail_remove"][..]),
+            ("world","resource.world",64*1024,"op",&["rail_upsert","rail_remove","select"][..]),
             ("competition","resource.competition",16*1024,"kind",&["define","start","cancel","remove","native_start","native_cancel"][..]),
         ] {
             let table=lua.create_table()?;let ctx=self.clone();
@@ -951,6 +983,10 @@ pub struct Host {
     order: Vec<String>,
     instances: BTreeMap<String, Instance>,
     metrics: BTreeMap<String, Counters>,
+    profile: crate::runtime_profile::Recorder,
+    settings_revision: u64,
+    settings_defaults: BTreeMap<String,BTreeMap<String,Value>>,
+    settings_desired: BTreeMap<String,BTreeMap<String,Value>>,
     started: BTreeSet<String>,
     shared: Arc<Mutex<Shared>>,
     commands: Vec<(String, Command)>,
@@ -979,6 +1015,10 @@ impl Host {
             order: vec![],
             instances: BTreeMap::new(),
             metrics: BTreeMap::new(),
+            profile: crate::runtime_profile::History::new(),
+            settings_revision: 0,
+            settings_defaults: BTreeMap::new(),
+            settings_desired: BTreeMap::new(),
             started: BTreeSet::new(),
             shared: Arc::new(Mutex::new(Shared::default())),
             commands: vec![],
@@ -988,6 +1028,9 @@ impl Host {
             diagnostics: vec![],
         })
     }
+    pub fn configure_profiling(&mut self,enabled:bool,capacity:usize,retention_ms:u64)->Result<(),String> {self.profile.lock().unwrap().configure(enabled,capacity,retention_ms)}
+    pub fn profile_snapshot(&self)->ProfileSnapshot {self.profile.lock().unwrap().snapshot()}
+    pub fn profile_scope(&self,phase:&str)->ProfileScope {ProfileScope::new(Timer::start_context(crate::runtime_profile::Context{recorder:self.profile.clone(),resource:"@host".into(),generation:0,language:"host".into(),source:None},phase))}
     pub fn side(&self) -> Side {
         self.side
     }
@@ -1047,6 +1090,7 @@ impl Host {
         let manifests: Vec<_> = resources.iter().map(|r| r.manifest.clone()).collect();
         let order = skate_resources::ordered_manifests(&manifests).map_err(|e| e.to_string())?;
         for r in &resources {
+            if self.side==Side::Client && r.manifest.settings.values().any(|d|d.visibility==skate_resources::SettingVisibility::Private) {return Err("client manifest contains private settings".into());}
             if r.generation == 0 {
                 return Err("resource generation must be positive".into());
             }
@@ -1066,6 +1110,10 @@ impl Host {
         self.order = order;
         self.started.clear();
         self.metrics.clear();
+        self.shared.lock().unwrap().settings.clear();
+        self.settings_defaults.clear();
+        self.settings_desired.clear();
+        for id in self.order.clone() {self.prepare_settings(&id)?;}
         Ok(())
     }
     /// Add stopped/new packages without disturbing live VMs. Running definitions
@@ -1073,6 +1121,7 @@ impl Host {
     pub fn register(&mut self, resources: Vec<InstalledResource>) -> Result<(), String> {
         let mut installed = self.installed.clone();
         for resource in resources {
+            if self.side==Side::Client && resource.manifest.settings.values().any(|d|d.visibility==skate_resources::SettingVisibility::Private) {return Err("client manifest contains private settings".into());}
             let id = &resource.manifest.id;
             if resource.generation == 0 {
                 return Err("resource generation must be positive".into());
@@ -1173,6 +1222,7 @@ impl Host {
             self.start(&dependency)
                 .map_err(|e| format!("{id} dependency {dependency}: {e}"))?;
         }
+        self.prepare_settings(id)?;
         let installed = self.installed.get_mut(id).unwrap();
         if self.started.contains(id) {
             installed.generation = installed
@@ -1181,7 +1231,7 @@ impl Host {
                 .ok_or("resource generation exhausted")?;
         }
         self.started.insert(id.to_string());
-        let metrics=Arc::new(Mutex::new(RuntimeMetrics {generation:installed.generation,language:installed.manifest.language.clone(),..RuntimeMetrics::default()}));
+        let metrics=Arc::new(Mutex::new(RuntimeMetrics {generation:installed.generation,language:installed.manifest.language.clone(),profile:Some(crate::runtime_profile::Context{recorder:self.profile.clone(),resource:id.into(),generation:installed.generation,language:installed.manifest.language.clone(),source:Some(installed.manifest.shared_scripts.iter().chain(if self.side==Side::Server{&installed.manifest.server_scripts}else{&installed.manifest.client_scripts}).map(String::as_str).collect::<Vec<_>>().join(",").chars().take(160).collect())}),..RuntimeMetrics::default()}));
         self.metrics.insert(id.to_string(),metrics.clone());
         let bootstrap = Bootstrap {
             installed: installed.clone(),
@@ -1193,7 +1243,7 @@ impl Host {
             limits: self.limits.clone(),
             metrics: metrics.clone(),
         };
-        let timer=Timer::start();
+        let timer=Timer::start_for(&metrics,"startup",None);
         let result = Vm::new_resource(
             &bootstrap.installed.root,
             &bootstrap.installed.manifest.id,
@@ -1310,7 +1360,7 @@ impl Host {
             .filter_map(|key| shared.commands.remove(&key))
             .collect::<Vec<_>>();
         shared.states.retain(|(owner,_),_|owner!=id);
-        shared.events.retain(|(owner, _, _, _)| owner != id);
+        shared.events.retain(|(owner, _, _, _, _)| owner != id);
         shared.outputs.retain(|output| match output {
             Output::Event { resource, .. }
             | Output::State { resource, .. }
@@ -1374,9 +1424,11 @@ impl Host {
         self.dispatch("on_update", serde_json::json!({"dt":dt}));
     }
     pub fn dispatch(&mut self, callback: &str, payload: Value) {
+        let timer=Timer::start_context(crate::runtime_profile::Context{recorder:self.profile.clone(),resource:"@host".into(),generation:0,language:"host".into(),source:None},&format!("dispatch:{callback}"));
         for id in self.running_ids() {
             self.call(&id, callback, payload.clone());
         }
+        timer.finish_profile(false);
     }
     pub fn call(&mut self, id: &str, callback: &str, payload: Value) {
         self.call_with_physics(id, callback, payload, None);
@@ -1433,11 +1485,11 @@ impl Host {
         self.retire_export_failures();
         for _ in 0..self.limits.max_actions {
             let event = self.shared.lock().unwrap().events.pop_front();
-            let Some((id, generation, name, payload)) = event else {
+            let Some((id, generation, name, payload,queued)) = event else {
                 return Ok(());
             };
             if self.generation(&id) == Some(generation) && self.running(&id) {
-                if let Err(error) = self.event(&id, &name, payload, 0, false) {
+                if let Err(error) = self.event_queued(&id, &name, payload, 0, false,Some(queued.elapsed().as_micros().min(u64::MAX as u128) as u64)) {
                     self.fail(&id, error.clone());
                     return Err(error);
                 }
@@ -1467,10 +1519,10 @@ impl Host {
         sender: u64,
         network: bool,
     ) -> Result<(), String> {
-        let instance = self
-            .instances
-            .get_mut(id)
-            .ok_or_else(|| format!("resource {id} is not running"))?;
+        self.event_queued(id,name,payload,sender,network,None)
+    }
+    fn event_queued(&mut self,id:&str,name:&str,payload:Value,sender:u64,network:bool,queue_wait_us:Option<u64>)->Result<(),String> {
+        let instance = self.instances.get_mut(id).ok_or_else(||format!("resource {id} is not running"))?;
         let handlers = instance
             .bootstrap
             .handlers
@@ -1487,6 +1539,7 @@ impl Host {
         }
         instance.bootstrap.reset_budget();
         let commands = instance.vm.resource_callbacks(
+            &format!("event:{name}"),queue_wait_us,
             handlers.iter().map(|h| h.function.clone()).collect(),
             payload,
             sender,
@@ -1561,6 +1614,11 @@ impl Host {
     }
     pub fn apply_scoped_state(&mut self,resource:&str,generation:u64,key:&str,value:Value,scope:Value)->Result<(),String> {
         if self.side!=Side::Client {return Err("only clients consume replicated server state".into());}
+        if key=="__settings" {
+            if normalize_scope(scope)?.0!="resource" {return Err("settings state requires resource scope".into());}
+            let values=serde_json::from_value(value).map_err(|_|"invalid settings snapshot")?;
+            return self.apply_settings(resource,generation,values);
+        }
         valid_name(key)?;validate_value(&value,self.limits.max_payload_bytes)?;
         let (scope,_)=normalize_scope(scope)?;
         if self.generation(resource)!=Some(generation)||!self.running(resource) {return Err("stale or stopped resource generation".into());}
@@ -1636,6 +1694,7 @@ impl Host {
         let _ = &command.lua;
         let payload = serde_json::to_value(args).map_err(|e| e.to_string())?;
         match instance.vm.resource_callbacks(
+            &format!("command:{name}"),None,
             vec![command.function],
             payload,
             actor,
@@ -1675,6 +1734,7 @@ fn supported_capability(cap: &str) -> bool {
         "resource.events"
             | "resource.network"
             | "resource.state"
+            | "resource.settings"
             | "resource.storage"
             | "resource.commands"
             | "resource.exports"

@@ -299,6 +299,26 @@ validates and applies the approval; enqueueing a command does not establish that
 the player exists or acknowledged it. Resource code must authorize gameplay
 policy before approving a destination.
 
+Optional `restore_on_stop=true` grants a temporary travel lease to this resource
+and generation. The dedicated host captures the current accepted position and
+instance (zero return velocity/heading) before moving the player. At owner stop,
+failure or replacement it restores that destination through normal teleport and
+resource readmission. At most 64 leases exist. Another owner cannot acquire a
+competing lease. An ordinary successful teleport consumes the lease; external
+movement epochs, instance changes and disconnects invalidate it. Changing the required-world identity/digest disconnects still-leased actors so reconnect can use the new approved spawn and public instance; saved old-world coordinates are never applied to the new map. Trusted course
+and native verifier baseline resets in the same instance retain the return
+point, as do controlled same-world resource readmission epochs. Restoration waits for content readiness rather than bypassing admission.
+An owner may call `resource.teleport(player,{restore_previous=true})` to return
+its existing lease. This variant accepts no destination fields, never touches
+another owner's lease, and may be queued while the actor is temporarily absent
+from admitted player snapshots. Return requests and retired-owner restoration
+wait up to 30 seconds for readiness, then disconnect that connection if it still
+cannot safely return. A missing or stale lease is a no-op.
+Lease ownership is host state, independent of `on_unload`; resources must never
+rely on queued unload teleports surviving cleanup. Process restart expires the
+connection and lease together. This field has the same meaning in Lua,
+JavaScript and C# destination objects.
+
 `resource.services.submit(key, operation, timeout_ms)` and `.cancel(key)` are
 server-only, asynchronous host requests. Keys contain 1..64 ASCII identifier
 characters; timeout is 1..120000 milliseconds. SQL operations (`kind="query"`,
@@ -563,6 +583,9 @@ error. A delivered transport acknowledgement does not prove callback success.
 
 Server-only `resource.world.command(operation)` (C# `World`) requires
 `resource.world` and allows `op:"rail_upsert"`/`"rail_remove"`, bounded to 64 KiB.
+`op:"select",resource:"map-resource-id"` requests an operator-allowlisted world
+rotation through the normal resource lifecycle; the host validates selection and
+reports a `world_result` event. It cannot install arbitrary map packages.
 Server-only `resource.competition.submit(operation)` (C# `Competition`) requires
 `resource.competition` and allows `kind:"define"`, `"start"`, `"cancel"` or
 `"remove"`, plus `"native_start"`/`"native_cancel"` when the operator enables
@@ -601,3 +624,54 @@ the local host queue, not sent traffic or exact allocator usage. Failure counter
 survive retirement; a new generation starts fresh, and replacing the installed
 set clears prior measurements. The host does not capture payloads or storage for
 metrics; error text can contain values included by the script itself.
+
+## Typed operator settings
+
+Declare `settings` and `requires_features:["resource.settings.v1"]` in a resource
+manifest. `resource.settings` must be requested and granted. Lua/JavaScript use
+`resource.settings.get(key)` and `.all()`; C# uses `SettingsGet(key)` and
+`SettingsAll()`. Reads are confined to the caller's resource and return copies.
+There is no script-side setter. The operator owns updates and persistence.
+
+For example, `"round_seconds":{"type":"integer","default":180,"min":10,
+"max":3600,"visibility":"replicated","change":"live"}` declares a bounded
+setting. Types are `boolean`, `integer`, `number`, `string`, and string `enum`
+(with `options`). Integer values stay within the exact JavaScript integer range.
+Strings have `max_bytes` (default256, maximum4096). At most64 keys,32KiB of
+schema and8KiB of effective values are allowed. A key uses lowercase letters,
+digits and underscores, up to64bytes. Unknown fields, keys and types fail closed.
+
+Visibility is `private` (default), `replicated`, or `public`. Private definitions
+and defaults are removed from downloadable manifests. Replicated values reach
+admitted clients; public values may also appear in discovery. Keep real secrets
+in private operator configuration, never in public defaults or scripts. Changes
+are `live` (default) or `restart`. A live change invokes `on_settings` with
+`{key,value}` after updating reads. A restart change is persisted as pending and
+applies on the next resource generation, including dependent restarts. A failing
+notification retires the resource, but the durable change remains saved.
+
+The authenticated host reserves resource-state key `__settings`; scripts cannot
+write it. The game waits for the complete current-generation settings snapshot
+before running client startup callbacks. See [operator settings](../docs/multiplayer/resource-settings.md)
+for host interfaces, authorization and persistence semantics.
+
+## Profiling history
+
+`Host::profile_snapshot()` retains metadata-only invocation spans across resource
+generations, with resource/generation, callback/event/export name, available
+source location, parent span, wall time and host-thread CPU. It also supplies
+retained-sample p50/p95/p99 summaries and portable Chrome/Perfetto trace JSON via
+`.chrome_trace()`. Defaults retain4096 completed spans for60seconds; maximums are
+8192spans and300seconds. Disable or tune using
+`Host::configure_profiling(enabled,capacity,retention_ms)`. Existing aggregate
+metrics continue while timeline capture is disabled.
+
+Only exclusive host-thread CPU may be added across nested spans. Managed worker
+process CPU is a separate measured field on IPC spans; it includes worker
+background threads and excludes the host. `ipc_receive_wait_us` is blocked receive
+time and includes worker execution; it is not pure queue wait. Local event
+`queue_wait_us` measures enqueue-to-dispatch time before the span. Unavailable
+measurements are null. `@host` dispatch spans correlate callback costs with
+resource dispatch stalls. Trace metadata contains no payloads, settings values,
+storage contents, full source or script error text. See
+[profiling](../docs/multiplayer/resource-profiling.md) for use and measurements.

@@ -33,6 +33,10 @@ pub struct Manifest {
     pub exports: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "unique_map")]
+    pub settings: BTreeMap<String, crate::SettingDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_features: Vec<String>,
 }
 /// One required server-selected world package. Geometry and all referenced
 /// textures are embedded in the validated SKATE file; resource dependencies
@@ -66,6 +70,9 @@ impl Manifest {
                 self.id, self.format, self.api, self.language
             )));
         }
+        crate::validate_settings(&self.settings)?;
+        if self.requires_features.len() > 32 || self.requires_features.iter().collect::<BTreeSet<_>>().len() != self.requires_features.len() { return Err(Error("too many or duplicate engine feature constraints".into())); }
+        for feature in &self.requires_features { if !crate::ENGINE_FEATURES.contains(&feature.as_str()) { return Err(Error(format!("{}: required engine feature unavailable: {feature}", self.id))); } }
         validate_id(&self.id)?;
         validate_version(&self.version)?;
         if self.dependencies.len() > 64 || self.exports.len() > 128 || self.capabilities.len() > 64
@@ -156,6 +163,7 @@ impl Manifest {
     pub fn client_projection(&self) -> Self {
         let mut m = self.clone();
         m.server_scripts.clear();
+        m.settings.retain(|_, setting| setting.visibility != crate::SettingVisibility::Private);
         m
     }
     pub fn public_paths(&self) -> impl Iterator<Item = &String> {

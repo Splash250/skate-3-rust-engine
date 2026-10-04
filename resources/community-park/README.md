@@ -34,10 +34,10 @@ bounded uploads, and admission waits for nearby required cells.
 
 Reload/restart the resource after exporting. Export rewrites `park.skate`,
 `markers.json`, `placements.json`, `resource.json`, and, with `--lod-scene`,
-`park-low.skate` and `placements-low.json`. The exporter does not preserve custom
-script/capability declarations. For this scripted example, copy generated
-world/files fields into the existing manifest or restore its client/server script
-and capability fields after exporting; keep the two scripts as separate files.
+`park-low.skate` and `placements-low.json`. The exporter preserves existing script/capability declarations and custom public
+files when the resource ID matches. Keep the two scripts as separate files;
+export does not change their gameplay logic. The [visual editor](../../docs/multiplayer/visual-authoring.md)
+uses the same deterministic pipeline.
 
 On first admission the server script allocates one of 64 predefined clear-floor
 spawn pads, two metres apart, so joins do not stack players on one spot. Slots

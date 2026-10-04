@@ -79,9 +79,60 @@ fn pump(
 }
 
 #[test]
+fn real_udp_discovery_queue_cancellation_and_next_waiter_admission() {
+    let mut host = Host::bind(Options {
+        accounts: None, operations: None, resources: None,
+        bind: "127.0.0.1:0".parse().unwrap(), session: dedicated::SESSION,
+        max_players: 1, map: Map::TestWorld,
+    }).unwrap();
+    let address = host.local_addr().unwrap();
+    let query = UdpSocket::bind("127.0.0.1:0").unwrap();
+    query.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    query.send_to(&skate_net::discovery::query(77), address).unwrap();
+    host.step().unwrap();
+    let mut bytes = [0;1500];
+    let (len,from) = query.recv_from(&mut bytes).unwrap();
+    assert_eq!(from,address);
+    let info = skate_net::discovery::parse_response(&bytes[..len],77).unwrap();
+    assert!(info.compatible());assert_eq!(info.session,dedicated::SESSION);
+    assert_eq!(info.map_fingerprint,host.map_fingerprint());assert_eq!(info.capacity,1);
+    assert_eq!(info.players,0);assert!(!info.accounts_required);
+
+    let started=Instant::now();let map=host.map_fingerprint();
+    let mut clients=vec![client(501,map)];
+    pump(&mut host,&mut clients,started,|clients|clients[0].session.connected());
+    clients.push(client(502,map));clients.push(client(503,map));
+    pump(&mut host,&mut clients,started,|clients|clients[2].session.join_status.as_ref().is_some_and(|s|s.state=="queued" && s.position==2));
+    assert_eq!(host.player_count(),1);
+    clients[1].session.cancel_join();
+    pump(&mut host,&mut clients,started,|clients|clients[2].session.join_status.as_ref().is_some_and(|s|s.state=="queued" && s.position==1));
+    clients[0].session.cancel_join();
+    pump(&mut host,&mut clients,started,|clients|clients[2].session.connected());
+    assert_eq!(host.player_count(),1);
+    assert!(!clients[1].session.connected());
+    assert!(clients[2].session.join_status.is_none());
+}
+
+#[test]
+fn real_udp_incompatible_physics_keeps_terminal_rejection_reason() {
+    let mut host=Host::bind(Options {accounts:None,operations:None,resources:None,
+        bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld}).unwrap();
+    let started=Instant::now();let map=host.map_fingerprint();let mut clients=vec![client(601,map)];
+    pump(&mut host,&mut clients,started,|clients|clients[0].session.connected());
+    let mut incompatible=client(602,map);
+    incompatible.session=Session::dedicated_client(dedicated::SESSION,Info{id:602,map,rig:999,physics:33,appearance:44},1);
+    clients.push(incompatible);
+    pump(&mut host,&mut clients,started,|clients|clients[1].session.join_status.as_ref().is_some_and(|s|s.terminal()&&s.reason.contains("Physics")));
+    assert!(!clients[1].session.connected());assert_eq!(host.player_count(),1);
+    let outgoing=clients[1].session.service(10_000);
+    assert!(!outgoing.iter().any(|p|packed::envelope(&p.data).is_some_and(|e|e.2==skate_net::lobby::DEDICATED_HELLO)));
+}
+
+#[test]
 fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_assets() {
     let mut host = Host::bind(Options {
         accounts: None,
+        operations: None,
         resources: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
@@ -186,6 +237,7 @@ fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_ass
 fn oversized_and_unknown_datagrams_do_not_prevent_valid_admission() {
     let mut host = Host::bind(Options {
         accounts: None,
+        operations: None,
         resources: None,
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         session: dedicated::SESSION,
@@ -245,6 +297,7 @@ fn publish_body(client: &mut Client, p: [f32; 3], velocity: [f32; 3], now: u64) 
 fn real_udp_shoves_and_collisions_are_delivered_as_server_effects() {
     let mut host = Host::bind(Options {
         accounts: None,
+        operations: None,
         resources: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,

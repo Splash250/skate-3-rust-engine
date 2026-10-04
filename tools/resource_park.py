@@ -23,6 +23,8 @@ def vector(value, length=3):
 
 
 def validate(scene):
+    if not isinstance(scene, dict):
+        raise ValueError("scene must be an object")
     if scene.get("format") != 1 or not isinstance(scene.get("name"), str) or not scene["name"]:
         raise ValueError("expected format 1 and a park name")
     vector(scene["spawn"])
@@ -33,8 +35,10 @@ def validate(scene):
         raise ValueError("park object budget exceeded")
     ids = set()
     for item in objects:
+        if not isinstance(item, dict):
+            raise ValueError("park objects must be objects")
         key = item.get("id", "")
-        if not key or len(key) > 64 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for c in key) or key in ids:
+        if not isinstance(key, str) or not key or len(key) > 64 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for c in key) or key in ids:
             raise ValueError("object IDs must be unique portable identifiers")
         ids.add(key)
         if item.get("kind") not in ("box", "ramp", "rail", "marker"):
@@ -45,13 +49,25 @@ def validate(scene):
             raise ValueError(f"{key}: sizes must be positive and at most 1000 metres")
         if any(x < 0 or x > 1 for x in vector(item.get("color", [.55, .6, .65]))):
             raise ValueError(f"{key}: colors must be in 0..1")
+        rotation = item.get("rotation", 0)
+        if not isinstance(rotation, (int, float)) or not math.isfinite(rotation) or abs(rotation) > 36000:
+            raise ValueError(f"{key}: rotation must be finite degrees within 36000")
+        if item["kind"] == "marker":
+            if item.get("marker_type", "interaction") not in ("interaction", "checkpoint", "spawn"):
+                raise ValueError(f"{key}: invalid marker type")
+            if type(item.get("order", 0)) is not int or not 0 <= item.get("order", 0) <= 2048:
+                raise ValueError(f"{key}: checkpoint order must be 0..2048")
+            if not isinstance(item.get("label", key), str) or len(item.get("label", key)) > 128:
+                raise ValueError(f"{key}: label must be at most 128 characters")
         if item["kind"] == "rail":
             points = item.get("points", [])
-            if not 2 <= len(points) <= 1024:
+            if not isinstance(points, list) or not 2 <= len(points) <= 1024:
                 raise ValueError(f"{key}: rails require 2..1024 local points")
             for point in points:
                 vector(point)
-            if any(a == b for a, b in zip(points, points[1:])):
+            pairs = list(zip(points, points[1:]))
+            if item.get("closed"): pairs.append((points[-1], points[0]))
+            if any(sum((float(x)-float(y))**2 for x,y in zip(a,b)) < 1e-10 for a, b in pairs):
                 raise ValueError(f"{key}: rail segments must have length")
     return scene
 
@@ -76,12 +92,28 @@ def make_scene(name):
                          "size": [50, .5, 50], "color": [.3, .34, .4]}]}
 
 
+def transform(item, point, scale=False):
+    """Yaw in degrees around +Y; shared by meshes and native rail metadata."""
+    x, y, z = vector(point)
+    if scale:
+        size = vector(item.get("size", [1, 1, 1]))
+        x, y, z = x * size[0], y * size[1], z * size[2]
+    angle = math.radians(item.get("rotation", 0))
+    c, s = math.cos(angle), math.sin(angle)
+    p = item["position"]
+    return vector([p[0] + x*c + z*s, p[1] + y, p[2] - x*s + z*c])
+
+
+def rail_points(item):
+    return [transform(item, point, scale=True) for point in item["points"]]
+
+
 def triangles(item):
     """World-space triangles with author winding and independent visual rails."""
     p = vector(item["position"])
     size = vector(item.get("size", [1, 1, 1]))
     if item["kind"] == "rail":
-        points = [[a+b for a, b in zip(p, vector(point))] for point in item["points"]]
+        points = rail_points(item)
         pairs = list(zip(points, points[1:]))
         if item.get("closed"):
             pairs.append((points[-1], points[0]))
@@ -114,7 +146,7 @@ def triangles(item):
         points = [(-x,-y,-z),(x,-y,-z),(x,-y,z),(-x,-y,z),(-x,y,-z),(x,y,-z),(x,y,z),(-x,y,z)]
         quads = [(0,3,2,1),(4,5,6,7),(0,1,5,4),(3,7,6,2),(0,4,7,3),(1,2,6,5)]
         sides = []
-    corners = [[v[i]+p[i] for i in range(3)] for v in points]
+    corners = [transform(item, v) for v in points]
     yield from faces(corners, quads)
     for face in sides:
         yield outward(corners, face)
@@ -169,7 +201,7 @@ def encode(scene, render_only=False):
         u(1,material)
     for item in rails:
         string(item["id"]);u(int(item.get("closed",False)));u(len(item["points"]))
-        for point in item["points"]:f(*[a+b for a,b in zip(item["position"],point)])
+        for point in rail_points(item):f(*point)
     return bytes(out)
 
 
@@ -177,6 +209,10 @@ def export(scene, root, resource_id, lod_scene=None, lod_distance=200):
     validate(scene)
     if not resource_id or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for c in resource_id):
         raise ValueError("resource ID must be portable lowercase ASCII")
+    manifest_path = root / "resource.json"
+    previous = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+    if previous is not None and previous.get("id") != resource_id:
+        raise ValueError("existing resource ID differs; export to another directory")
     payload = encode(scene)
     far_payload = None
     if lod_scene is not None:
@@ -185,11 +221,19 @@ def export(scene, root, resource_id, lod_scene=None, lod_distance=200):
         far_payload = encode(lod_scene,render_only=True)
     root.mkdir(parents=True, exist_ok=True)
     (root/"park.skate").write_bytes(payload)
-    markers = [{"id":o["id"],"position":o["position"],"radius":o.get("size",[1])[0]} for o in scene["objects"] if o["kind"]=="marker"]
+    markers = [{"id":o["id"],"position":o["position"],"radius":o.get("size",[1])[0],"type":o.get("marker_type","interaction"),"order":o.get("order",0),"label":o.get("label",o["id"])} for o in scene["objects"] if o["kind"]=="marker"]
     (root/"markers.json").write_text(json.dumps(markers,indent=2)+"\n")
     save(root/"placements.json",scene)
     manifest = {"format":1,"api":1,"id":resource_id,"version":"1.0.0","language":"lua",
                 "files":["park.skate","markers.json","placements.json"],"world":{"map":"park.skate","required":True}}
+    if previous is not None:
+        generated = {"park.skate", "markers.json", "placements.json", "park-low.skate", "placements-low.json"}
+        extras = [name for name in previous.get("files", []) if name not in generated]
+        old_world = previous.get("world", {})
+        manifest = dict(previous, files=extras + manifest["files"], world=manifest["world"])
+        if far_payload is None and old_world.get("lods"):
+            manifest["world"]["lods"] = old_world["lods"]
+            manifest["files"].extend(name for name in previous.get("files", []) if name in {"park-low.skate", "placements-low.json"})
     if far_payload is not None:
         (root/"park-low.skate").write_bytes(far_payload)
         save(root/"placements-low.json",lod_scene)
@@ -207,7 +251,7 @@ def main():
     for command in ("place","update"):
         p=sub.add_parser(command);p.add_argument("scene",type=Path);p.add_argument("--id",required=True)
         p.add_argument("--kind",choices=["box","ramp","rail","marker"]);p.add_argument("--position",nargs=3,type=float)
-        p.add_argument("--size",nargs=3,type=float);p.add_argument("--color",nargs=3,type=float)
+        p.add_argument("--rotation",type=float);p.add_argument("--marker-type",choices=["interaction","checkpoint","spawn"]);p.add_argument("--order",type=int);p.add_argument("--label");p.add_argument("--size",nargs=3,type=float);p.add_argument("--color",nargs=3,type=float)
         p.add_argument("--point",action="append",nargs=3,type=float);p.add_argument("--closed",action="store_true",default=None)
     remove=sub.add_parser("remove");remove.add_argument("scene",type=Path);remove.add_argument("--id",required=True)
     out=sub.add_parser("export");out.add_argument("scene",type=Path);out.add_argument("--root",type=Path,required=True);out.add_argument("--resource-id",required=True)
@@ -225,12 +269,12 @@ def main():
         else:
             if (args.command=="place") == (found is not None):raise ValueError("place requires a new ID; update requires an existing ID")
             item=dict(found or {"id":args.id,"kind":"box","position":[0,0,0]})
-            for field in ("kind","position","size","color","closed"):
+            for field in ("kind","position","size","color","closed","rotation","marker_type","order","label"):
                 if getattr(args,field) is not None:item[field]=getattr(args,field)
             if args.point is not None:item["points"]=args.point
             if found is not None:scene["objects"].remove(found)
             scene["objects"].append(item)
         save(args.scene,scene)
-    except (ValueError,OSError,KeyError) as error:parser.error(str(error))
+    except (ValueError,OSError,KeyError,TypeError) as error:parser.error(str(error))
 
 if __name__=="__main__":main()

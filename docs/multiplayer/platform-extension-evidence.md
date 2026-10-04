@@ -615,3 +615,11 @@ and package-inventory tests, including deterministic authored fixture encoding.
 Independent closeout review found no blocking issue in the inspected scope and
 confirmed the final results and explicit acceptance limits. These are local
 checks; nothing was pushed, published or deployed.
+
+## Subsequent platform capabilities
+
+The [2026-10-05 capabilities ledger](platform-capabilities-evidence.md) records
+the implemented profiling/settings, operational supervisor/admission/browser,
+server packs, Park Studio and reusable gameplay resources, with fresh tests,
+review fixes and the remaining native/platform prerequisites. Results above
+remain historical evidence for their original implementation.

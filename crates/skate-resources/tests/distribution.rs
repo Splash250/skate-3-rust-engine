@@ -652,3 +652,20 @@ fn configured_content_limits_exceed_old_caps_and_reject_invalid_budgets() {
     assert!(Cache::open(t.0.join("bad"),Limits {max_file_bytes:u64::MAX,..limits}).is_err());
     assert!(skate_resources::build_set_with_limits(&t.0.join("resources"),&selection(),Limits {max_file_bytes:1024,..limits}).is_err());
 }
+
+#[test]
+fn private_settings_never_change_or_enter_downloadable_content_identity() {
+    let t=Temp::new();fixture(&t,"return {}");
+    let path=t.0.join("resources/challenge/resource.json");
+    let mut manifest:serde_json::Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["settings"]=serde_json::json!({"public_round":{"type":"integer","default":30,"visibility":"replicated"},"private_note":{"type":"string","default":"synthetic-private-one","visibility":"private"}});
+    fs::write(&path,serde_json::to_vec(&manifest).unwrap()).unwrap();let first=build_set(&t.0.join("resources"),&selection()).unwrap();
+    assert!(!serde_json::to_string(&first.set).unwrap().contains("synthetic-private"));
+    manifest["settings"]["private_note"]["default"]=serde_json::json!("synthetic-private-two");fs::write(&path,serde_json::to_vec(&manifest).unwrap()).unwrap();let second=build_set(&t.0.join("resources"),&selection()).unwrap();
+    assert_eq!(first.set.revision,second.set.revision,"private changes must not poison immutable public identity");
+    let http=HttpServer::bind("127.0.0.1:0".parse().unwrap(),second).unwrap();let cache=Cache::open(&t.0.join("cache"),Limits::default()).unwrap();
+    let downloaded=download_set(http.local_addr(),&first.set.revision,&cache,"settings-test",&AtomicBool::new(false)).unwrap();
+    let manifest=skate_resources::Manifest::read(&downloaded.roots["challenge"]).unwrap();assert!(!manifest.settings.contains_key("private_note"));assert!(manifest.settings.contains_key("public_round"));
+    let mut poisoned=first.set;poisoned.resources[0].manifest.settings.insert("private_note".into(),serde_json::from_value(serde_json::json!({"type":"string","default":"synthetic-private"})).unwrap());
+    assert!(poisoned.validate(Limits::default()).unwrap_err().to_string().contains("private settings"));
+}

@@ -75,6 +75,7 @@ impl Fixture {
             map: Map::TestWorld,
             resources: Some(self.0.join("resources.json")),
             accounts: Some(self.0.join("accounts.json")),
+        operations: None,
         })
         .unwrap()
     }

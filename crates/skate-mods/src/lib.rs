@@ -18,6 +18,7 @@ mod schema;
 mod vm;
 mod lua_patterns;
 mod runtime_metrics;
+mod runtime_profile;
 pub mod extensions;
 pub mod resources;
 mod javascript;

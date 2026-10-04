@@ -62,6 +62,8 @@ public sealed class Resource
     public void Send(string name, JsonNode? value = null, string? recipient = null, JsonNode? scope = null) => Call("resource.send", JsonValue.Create(name), value, JsonValue.Create(recipient), scope);
     public JsonNode? StateGet(string key, JsonNode? scope = null) => Call("resource.state.get", JsonValue.Create(key), scope);
     public void StateSet(string key, JsonNode? value, JsonNode? scope = null) => Call("resource.state.set", JsonValue.Create(key), value, scope);
+    public JsonNode? SettingsGet(string key) => Call("resource.settings.get", JsonValue.Create(key));
+    public JsonNode? SettingsAll() => Call("resource.settings.all");
     public JsonNode? StorageGet(string key) => Call("resource.storage.get", JsonValue.Create(key));
     public void StorageSet(string key, JsonNode? value) => Call("resource.storage.set", JsonValue.Create(key), value);
     public JsonNode? Players() => Call("resource.players");
@@ -121,8 +123,12 @@ internal static class Wire
         if (reply["ok"]?.GetValue<bool>() != true) throw new InvalidOperationException(reply["error"]?.GetValue<string>() ?? "host error");
         return reply["value"]?.DeepClone();
     }
-    internal static void Done(JsonNode? value) => Write(new() { ["op"] = "done", ["ok"] = true, ["value"] = value?.DeepClone() });
-    internal static void Error(Exception error) => Write(new() { ["op"] = "done", ["ok"] = false, ["error"] = error.GetBaseException().Message[..Math.Min(error.GetBaseException().Message.Length, 2048)] });
+    private static long? cpuBefore;
+    private static long? CpuUs() { try { using var process = System.Diagnostics.Process.GetCurrentProcess(); return process.TotalProcessorTime.Ticks / 10; } catch { return null; } }
+    internal static void BeginMeasurement(bool enabled) => cpuBefore = enabled ? CpuUs() : null;
+    private static long? CpuDelta() { if (!cpuBefore.HasValue) return null; var after=CpuUs(); return cpuBefore.HasValue && after.HasValue ? Math.Max(0,after.Value-cpuBefore.Value) : null; }
+    internal static void Done(JsonNode? value) => Write(new() { ["op"] = "done", ["ok"] = true, ["value"] = value?.DeepClone(), ["workerCpuUs"] = CpuDelta() });
+    internal static void Error(Exception error) => Write(new() { ["op"] = "done", ["ok"] = false, ["workerCpuUs"] = CpuDelta(), ["error"] = error.GetBaseException().Message[..Math.Min(error.GetBaseException().Message.Length, 2048)] });
 }
 
 internal static class Compiler
@@ -240,6 +246,7 @@ internal static class EntryPoint
         {
             var init = Wire.Read();
             if (init["op"]?.GetValue<string>() != "init") throw new InvalidDataException("expected init");
+            Wire.BeginMeasurement(init["profile"]?.GetValue<bool>() == true);
             var resource = new Resource(init);
             var script = Compiler.Build(init["sources"]!.AsArray());
             script.Start(resource); Wire.Done(null);
@@ -247,6 +254,7 @@ internal static class EntryPoint
             {
                 var request = Wire.Read();
                 if (request["op"]?.GetValue<string>() != "invoke") throw new InvalidDataException("expected invoke");
+                Wire.BeginMeasurement(request["profile"]?.GetValue<bool>() == true);
                 try { Wire.Done(resource.Invoke(request["callback"]!.GetValue<uint>(), request["args"]!.AsArray())); }
                 catch (Exception error) { Wire.Error(error); }
             }

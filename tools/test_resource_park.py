@@ -44,6 +44,35 @@ class ParkTests(unittest.TestCase):
             self.assertIn("park-low.skate",manifest["files"])
             self.assertEqual((root/"park-low.skate").read_bytes(),park.encode(far,render_only=True))
 
+    def test_rotation_and_rail_scale_use_the_same_world_transform(self):
+        item = {"kind": "rail", "position": [10, 2, 3], "rotation": 90,
+                "size": [2, 1, 3], "points": [[0, 0, 0], [0, 0, 2]]}
+        points = park.rail_points(item)
+        self.assertEqual(points[0], [10.0, 2.0, 3.0])
+        self.assertAlmostEqual(points[1][0], 16)
+        self.assertAlmostEqual(points[1][2], 3)
+        vertices = [p for tri in park.triangles(item) for p in tri]
+        self.assertLess(max(p[2] for p in vertices) - min(p[2] for p in vertices), .2)
+
+    def test_export_preserves_scripts_and_emits_authoritative_marker_metadata(self):
+        scene = park.make_scene("Editable")
+        scene["objects"].append({"id":"finish", "kind":"marker", "position":[1, 2, 3],
+                                 "marker_type":"checkpoint", "order":2, "label":"Finish"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "resource.json").write_text(json.dumps({"format":1,"api":1,"id":"editable","version":"1.2.3", "language":"lua", "server_scripts":["server.lua"], "files":["extra.txt"], "capabilities":["resource.events"]}))
+            (root / "server.lua").write_text('return {}')
+            (root / "extra.txt").write_text('public')
+            park.export(scene, root, "editable")
+            manifest = json.loads((root / "resource.json").read_text())
+            self.assertEqual(manifest["server_scripts"], ["server.lua"])
+            self.assertEqual(manifest["version"], "1.2.3")
+            self.assertIn("extra.txt", manifest["files"])
+            marker = json.loads((root / "markers.json").read_text())[0]
+            self.assertEqual(marker["type"], "checkpoint")
+            self.assertEqual(marker["order"], 2)
+            self.assertEqual(marker["label"], "Finish")
+
     def test_invalid_ids_duplicate_points_nonfinite_and_budgets_fail(self):
         for bad in ["../escape","UpperCase","nul/room"]:
             scene=park.make_scene("Invalid");scene["objects"][0]["id"]=bad

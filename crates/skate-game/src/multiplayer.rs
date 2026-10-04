@@ -6,6 +6,7 @@ mod transport;
 mod nametags;
 mod hud;
 mod dedicated;
+mod dedicated_browser;
 mod dedicated_input;
 pub(crate) mod native_authority;
 pub(crate) mod entities;
@@ -109,6 +110,9 @@ pub(crate) struct Multiplayer {
     names: BTreeMap<u64, String>,
     dedicated: dedicated::Client,
     dedicated_launch: bool,
+    pub(crate) dedicated_endpoint: Option<SocketAddr>,
+    pub(crate) server_browser: dedicated_browser::Browser,
+    browser_recorded: bool,
 }
 impl Multiplayer {
     pub(crate) fn diagnostic_summary(&self) -> String {
@@ -215,6 +219,7 @@ impl Multiplayer {
         self.lobby.is_some()
     }
     pub fn leave(&mut self) {
+        self.server_browser.cancel_pending();
         if let (Some(lobby), Some(t)) = (&self.lobby, &mut self.transport) {
             for p in lobby.goodbye() {
                 let _ = t.send(p.peer, &p.data);
@@ -222,6 +227,9 @@ impl Multiplayer {
         }
         self.transport = None;
         self.lobby = None;
+        self.dedicated_endpoint=None;
+        self.dedicated_launch=false;
+        self.browser_recorded=false;
         self.remotes.clear();
         self.names.clear();
         self.dedicated = dedicated::Client::default();
@@ -443,6 +451,9 @@ impl Plugin for MultiplayerPlugin {
             names: BTreeMap::new(),
             dedicated: dedicated::Client::default(),
             dedicated_launch: config.multiplayer.connect.is_some(),
+            dedicated_endpoint: config.multiplayer.connect,
+            server_browser: dedicated_browser::Browser::new(std::env::var_os("SKATE3_DEDICATED_SERVERS").map(std::path::PathBuf::from).unwrap_or_else(||player_name_path(&config.asset_root).with_file_name("dedicated-servers.json"))),
+            browser_recorded: false,
         };
         if let Some(server) = config.multiplayer.connect {
             let connection: Result<Box<dyn transport::Transport>,String> = if let Some(path)=&config.multiplayer.account_config {
@@ -456,6 +467,10 @@ impl Plugin for MultiplayerPlugin {
                     net.lobby = Some(Session::dedicated_client(config.multiplayer.session, net.info, transport::endpoint(server).unwrap()));
                     net.loopback = server.ip().is_loopback();
                     net.lobby.as_mut().unwrap().set_loopback(net.loopback);
+                    net.dedicated_endpoint=Some(server);net.dedicated_launch=true;
+                    net.server_browser.endpoint=server.to_string();
+                    net.server_browser.account_profile=config.multiplayer.account_config.as_ref().map(|p|p.to_string_lossy().into_owned()).unwrap_or_default();
+                    net.server_browser.save();
                     net.status = format!("Connecting to dedicated server {server}...");
                 }
                 Err(e) => net.status = format!("Could not connect to dedicated server: {e}"),
@@ -538,6 +553,7 @@ fn world_changed(
     net.browser_status.clear();
 }
 pub(crate) fn receive(mut net: ResMut<Multiplayer>, mut voice: ResMut<voice::VoiceState>) {
+    net.poll_browser();
     let now = net.started.elapsed().as_millis() as u64;
     let net = &mut *net;
     let Some(t) = &mut net.transport else {
@@ -735,7 +751,9 @@ pub(crate) fn receive(mut net: ResMut<Multiplayer>, mut voice: ResMut<voice::Voi
             }
         }
     }
-    net.status = if !lobby.notice.is_empty() {
+    net.status = if let Some(status)=&lobby.join_status {
+        format!("{} | queue position {} | {:.0}s remaining | {}",status.state,status.position,status.expires_in_ms as f64/1000.,status.reason)
+    } else if !lobby.notice.is_empty() {
         lobby.notice.clone()
     } else if lobby.is_dedicated() {
         if lobby.connected() {

@@ -186,3 +186,7 @@ three objects and peer visibility. Server contact logs are opt-in through
 `SKATE_RESOURCE_DIAGNOSTICS=1`; candidate proximity alone is not counted as a
 solver contact. These checks exercise owner-reported player proxies against
 server-owned object physics, not server simulation of the full player rig.
+
+## Visual authoring
+
+[Park Studio](visual-authoring.md) adds selection, transforms, snapping, undo/redo, rail and gameplay-marker editing, deterministic export and immediate native playtest over this placement format. [Creator Courtyard](../../resources/creator-park/README.md) is an original redistributable authored example. Exporting is local authoring; operators publish changes through the existing world resource lifecycle.

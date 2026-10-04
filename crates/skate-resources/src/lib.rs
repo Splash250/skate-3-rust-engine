@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 mod manifest;
+mod settings;
+pub use settings::*;
 pub use manifest::*;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]

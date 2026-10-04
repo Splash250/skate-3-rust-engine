@@ -23,6 +23,7 @@ pub(crate) struct Accounts {
     transport: ServerTransport,
     listener: AdminServer,
     peers: BTreeMap<u64, VerifiedSession>,
+    peer_seen: BTreeMap<u64, Instant>,
     admitted: BTreeSet<u64>,
     completions: VecDeque<(u64, skate_accounts::Result<String>)>,
     last_status: Instant,
@@ -57,6 +58,7 @@ impl Accounts {
             transport,
             listener,
             peers: BTreeMap::new(),
+            peer_seen: BTreeMap::new(),
             admitted: BTreeSet::new(),
             completions: VecDeque::new(),
             last_status: Instant::now() - Duration::from_secs(1),
@@ -91,8 +93,10 @@ impl Accounts {
             return None;
         }
         self.peers.insert(peer, session);
+        self.peer_seen.insert(peer,Instant::now());
         Some(plain)
     }
+    pub fn verified(&self, peer:u64)->Option<VerifiedSession> {self.peers.get(&peer).filter(|s|s.is_active()).cloned()}
     pub fn encode(&mut self, peer: u64, payload: &[u8]) -> Option<Vec<u8>> {
         self.transport.encode(self.peers.get(&peer)?, payload).ok()
     }
@@ -120,10 +124,12 @@ impl Accounts {
         &mut self,
         server: &mut skate_net::dedicated::Server,
         resources: &mut Option<crate::resources::Platform>,
+        operations: &mut crate::operations::Operations,
         now: u64,
     ) {
         self.peers.retain(|peer, session| {
             if !session.is_active()
+                || (!self.admitted.contains(&session.actor()) && self.peer_seen.get(peer).is_some_and(|seen|seen.elapsed()>Duration::from_secs(15)))
                 || (self.admitted.contains(&session.actor())
                     && server.peer_for_actor(session.actor()) != Some(*peer))
             {
@@ -134,6 +140,7 @@ impl Accounts {
                 true
             }
         });
+        self.peer_seen.retain(|peer,_|self.peers.contains_key(peer));
         self.admitted
             .retain(|actor| self.peers.values().any(|session| session.actor() == *actor));
         // Retain a failed try-lock completion; execute each host action only once.
@@ -156,7 +163,39 @@ impl Accounts {
                     message: "session or permission revoked before execution".into(),
                 })
             } else {
+                let host_error = |message:String| skate_accounts::Error {code:"host".into(),message};
                 match command.action {
+                    HostAction::Maintenance {reason,delay_ms,restart} => {
+                        if crate::supervision::pending() {Err(host_error("A stopped-store operation is already draining".into()))}
+                        else if restart && !crate::supervision::available() {Err(host_error("Restart requires the external supervisor".into()))}
+                        else {
+                            let result=if crate::supervision::available() {crate::supervision::request(if restart {"restart"} else {"shutdown"},None).map(|_|())}else{Ok(())};
+                            result.and_then(|()|operations.begin_maintenance(reason,delay_ms,restart,now)).map_err(host_error)
+                        }
+                    },
+                    HostAction::Resume {} => {
+                        if crate::supervision::pending_store() {Err(host_error("A stopped-store operation is already draining".into()))}
+                        else {crate::supervision::cancel_restart();operations.resume(now).map_err(host_error)}
+                    },
+                    HostAction::Capacity {players} => {
+                        if players<=operations.config.reserved_slots {Err(host_error("Capacity must exceed reserved slots".into()))}
+                        else {server.set_capacity(players).map(|()|"Capacity updated without disconnecting existing sessions".into()).map_err(host_error)}
+                    }
+                    HostAction::Backup {snapshot} => {
+                        let kind = "backup";
+                        crate::supervision::request(kind,Some(&snapshot)).and_then(|message| {
+                            operations.begin_maintenance(format!("Server {kind}; reconnect after restart"),10_000,true,now)?; Ok(message)
+                        }).map_err(host_error)
+                    }
+                    HostAction::Restore {snapshot} => {
+                        crate::supervision::request("restore",Some(&snapshot)).and_then(|message| {
+                            operations.begin_maintenance("Server restore; reconnect after restart".into(),10_000,true,now)?; Ok(message)
+                        }).map_err(host_error)
+                    }
+                    HostAction::SettingsRead {resource} => resources.as_ref().ok_or_else(||"Resources are not configured".to_string()).and_then(|p|p.settings_read(&resource)).map_err(host_error),
+                    HostAction::SettingsSet {resource,key,value} => resources.as_mut().ok_or_else(||"Resources are not configured".to_string()).and_then(|p|p.settings_set(&resource,&key,value)).map_err(host_error),
+                    HostAction::ProfileRead {resource} => resources.as_ref().ok_or_else(||"Resources are not configured".to_string()).and_then(|p|p.profile_read(resource.as_deref())).map_err(host_error),
+                    HostAction::ProfileExport {} => resources.as_ref().ok_or_else(||"Resources are not configured".to_string()).and_then(|p|p.profile_export()).map_err(host_error),
                     HostAction::Kick { actor } => {
                         if server.kick(actor, now) {
                             for session in self.peers.values().filter(|s| s.actor() == actor) {
@@ -207,7 +246,7 @@ impl Accounts {
                 .as_ref()
                 .map(|p| p.admin_status())
                 .unwrap_or_else(|| serde_json::json!({"resources":[],"logs":[]}));
-            let status = bounded_status(serde_json::json!({"attached":true,"players":players,"resource_platform":resource_status}));
+            let status = bounded_status(serde_json::json!({"attached":true,"players":players,"resource_platform":resource_status,"operations":operations.status(server),"supervisor":crate::supervision::status()}));
             // Busy is retried on the next sampling tick; valid snapshots are
             // bounded before publication so they cannot leave stale status.
             let _ = self.bridge.set_status(status);

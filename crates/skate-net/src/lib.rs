@@ -12,6 +12,7 @@ pub mod transfers;
 pub mod blob;
 pub mod socket;
 pub mod directory;
+pub mod discovery;
 pub mod packed;
 pub mod interpolation;
 pub mod prediction;

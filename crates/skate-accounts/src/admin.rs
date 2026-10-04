@@ -39,6 +39,15 @@ pub struct ClientCredentials {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
+    Maintenance { reason: String, delay_ms: u64, restart: bool },
+    Resume {},
+    Capacity { players: usize },
+    Backup { snapshot: String },
+    Restore { snapshot: String },
+    SettingsRead { resource: String },
+    SettingsSet { resource: String, key: String, value: serde_json::Value },
+    ProfileRead { resource: Option<String> },
+    ProfileExport {},
     ResourceStart {
         resource: String,
     },
@@ -57,6 +66,11 @@ impl HostAction {
     pub fn permission(&self) -> &'static str {
         match self {
             Self::Kick { .. } => "players.kick",
+            Self::Maintenance { .. } | Self::Resume {} | Self::Capacity { .. } => "server.manage",
+            Self::Backup { .. } | Self::Restore { .. } => "server.backup",
+            Self::SettingsRead { .. } => "settings.read",
+            Self::SettingsSet { .. } => "settings.write",
+            Self::ProfileRead { .. } | Self::ProfileExport {} => "profile.read",
             _ => "resources.manage",
         }
     }
@@ -66,7 +80,21 @@ impl HostAction {
             | Self::ResourceStop { resource }
             | Self::ResourceRestart { resource } => resource.clone(),
             Self::Kick { actor } => actor.to_string(),
+            Self::SettingsRead { resource } => format!("settings/{resource}"),
+            Self::SettingsSet { resource, key, .. } => format!("settings/{resource}/{key}"),
+            Self::ProfileRead { resource } => format!("profile/{}", resource.as_deref().unwrap_or("all")),
+            Self::ProfileExport {} => "profile/export".into(),
+            Self::Maintenance { .. } => "server/maintenance".into(),
+            Self::Resume {} => "server/resume".into(),
+            Self::Capacity { players } => format!("server/capacity/{players}"),
+            Self::Backup { snapshot } => format!("server/backup/{snapshot}"),
+            Self::Restore { snapshot } => format!("server/restore/{snapshot}"),
         }
+    }
+    fn audit_summary(&self) -> String {
+        let mut value=serde_json::to_value(self).expect("host action");
+        if let Self::SettingsSet { .. }=self { value.as_object_mut().unwrap().remove("value"); }
+        serde_json::to_string(&value).unwrap()
     }
     fn validate(&self) -> Result<()> {
         match self {
@@ -74,6 +102,12 @@ impl HostAction {
             | Self::ResourceStop { resource }
             | Self::ResourceRestart { resource } => crate::store::valid_name(resource),
             Self::Kick { actor } if *actor == 0 => Err(error("invalid", "actor must be nonzero")),
+            Self::SettingsRead { resource } => crate::store::valid_name(resource),
+            Self::SettingsSet { resource, key, .. } => { crate::store::valid_name(resource)?; crate::store::valid_name(key) },
+            Self::ProfileRead { resource: Some(resource) } => crate::store::valid_name(resource),
+            Self::Maintenance { reason, delay_ms, .. } if reason.is_empty() || reason.len()>256 || reason.chars().any(char::is_control) || *delay_ms>86_400_000 => Err(error("invalid","Invalid maintenance reason or deadline")),
+            Self::Capacity { players } if !(1..=64).contains(players) => Err(error("invalid","Capacity must be 1..64")),
+            Self::Backup { snapshot } | Self::Restore { snapshot } => crate::store::valid_name(snapshot),
             _ => Ok(()),
         }
     }
@@ -121,15 +155,6 @@ impl AdminBridge {
     }
     /// A busy result is safe to retry; do not repeat the actual host action.
     pub fn complete(&self, ticket: u64, mut result: Result<String>) -> Result<()> {
-        if result
-            .as_ref()
-            .map_or_else(|e| e.message.len() + e.code.len(), |s| s.len())
-            > 4096
-        {
-            // Size failure is permanent. Store a bounded terminal failure so the
-            // host can advance its completion FIFO; only Busy needs retrying.
-            result = Err(error("limit", "host result exceeds 4096 bytes"));
-        }
         let mut state = self
             .state
             .try_lock()
@@ -138,6 +163,10 @@ impl AdminBridge {
             .tickets
             .get_mut(&ticket)
             .ok_or_else(|| error("missing", "unknown action ticket"))?;
+        let limit = match entry.action {HostAction::ProfileExport {}=>512*1024,HostAction::ProfileRead {..}=>128*1024,HostAction::SettingsRead {..}=>64*1024,_=>4096};
+        if result.as_ref().map_or_else(|e|e.message.len()+e.code.len(),|s|s.len()) > limit {
+            result=Err(error("limit", &format!("host result exceeds {limit} bytes")));
+        }
         if entry.result.is_some() {
             return Err(error("invalid", "action ticket already completed"));
         }
@@ -185,7 +214,7 @@ impl AdminBridge {
             &action.target(),
             &format!(
                 "ticket {ticket}: {}",
-                serde_json::to_string(&action).unwrap()
+                action.audit_summary()
             ),
         )?;
         state.tickets.insert(
@@ -211,6 +240,7 @@ impl AdminBridge {
             .tickets
             .get(&ticket)
             .ok_or_else(|| error("missing", "unknown action ticket"))?;
+        session.require(entry.action.permission())?;
         if entry.session.account_id() != session.account_id() && !session.permits("audit.read") {
             return Err(error("denied", "action belongs to another account"));
         }
@@ -238,7 +268,9 @@ impl AdminBridge {
                         *id,
                         t.session.clone(),
                         t.action.target(),
-                        serde_json::to_string(&t.result).unwrap(),
+                        if matches!(t.action, HostAction::SettingsRead { .. } | HostAction::SettingsSet { .. } | HostAction::ProfileExport {}) {
+                            if t.result.as_ref().is_some_and(|r|r.is_ok()) {"completed successfully (private result omitted)".into()} else {"failed (private result omitted)".into()}
+                        } else {serde_json::to_string(&t.result).unwrap()},
                     )
                 })
                 .collect::<Vec<_>>()

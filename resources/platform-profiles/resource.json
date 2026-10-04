@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-profiles",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {},
+  "exports": [
+    "identity",
+    "profile"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.database",
+    "resource.exports",
+    "resource.state",
+    "resource.settings",
+    "engine.ui"
+  ],
+  "settings": {
+    "welcome_name": {
+      "type": "string",
+      "default": "Skater",
+      "max_bytes": 24,
+      "visibility": "private",
+      "change": "live"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1"
+  ]
+}

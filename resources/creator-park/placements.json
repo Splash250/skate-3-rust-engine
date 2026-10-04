@@ -1,0 +1,198 @@
+{
+  "format": 1,
+  "name": "Creator Courtyard",
+  "spawn": [
+    -8,
+    1,
+    0
+  ],
+  "heading": 0,
+  "objects": [
+    {
+      "id": "floor",
+      "kind": "box",
+      "position": [
+        0,
+        -0.25,
+        0
+      ],
+      "size": [
+        60,
+        0.5,
+        40
+      ],
+      "color": [
+        0.3,
+        0.34,
+        0.4
+      ]
+    },
+    {
+      "id": "north-ramp",
+      "kind": "ramp",
+      "position": [
+        2,
+        1,
+        -6
+      ],
+      "size": [
+        5,
+        2,
+        7
+      ],
+      "rotation": 30,
+      "color": [
+        0.66,
+        0.46,
+        0.29
+      ]
+    },
+    {
+      "id": "south-ramp",
+      "kind": "ramp",
+      "position": [
+        7,
+        1,
+        7
+      ],
+      "size": [
+        4,
+        2,
+        6
+      ],
+      "rotation": 210,
+      "color": [
+        0.66,
+        0.46,
+        0.29
+      ]
+    },
+    {
+      "id": "ledge",
+      "kind": "box",
+      "position": [
+        13,
+        0.4,
+        0
+      ],
+      "size": [
+        2,
+        0.8,
+        8
+      ],
+      "rotation": -20,
+      "color": [
+        0.64,
+        0.68,
+        0.65
+      ]
+    },
+    {
+      "id": "curved-rail",
+      "kind": "rail",
+      "position": [
+        0,
+        0.8,
+        0
+      ],
+      "size": [
+        1,
+        1,
+        1
+      ],
+      "rotation": 15,
+      "points": [
+        [
+          0,
+          0,
+          -4
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          0,
+          3
+        ],
+        [
+          3,
+          0,
+          5
+        ]
+      ],
+      "color": [
+        0.75,
+        0.8,
+        0.82
+      ]
+    },
+    {
+      "id": "welcome",
+      "kind": "marker",
+      "position": [
+        -7,
+        1,
+        0
+      ],
+      "size": [
+        2,
+        1,
+        1
+      ],
+      "marker_type": "interaction",
+      "label": "Welcome to your park",
+      "color": [
+        0.25,
+        0.62,
+        0.4
+      ]
+    },
+    {
+      "id": "checkpoint-one",
+      "kind": "marker",
+      "position": [
+        4,
+        1,
+        0
+      ],
+      "size": [
+        1.5,
+        1,
+        1
+      ],
+      "marker_type": "checkpoint",
+      "order": 1,
+      "label": "Practice checkpoint 1",
+      "color": [
+        0.88,
+        0.43,
+        0.2
+      ]
+    },
+    {
+      "id": "checkpoint-two",
+      "kind": "marker",
+      "position": [
+        9,
+        1,
+        -6
+      ],
+      "size": [
+        1.5,
+        1,
+        1
+      ],
+      "marker_type": "checkpoint",
+      "order": 2,
+      "label": "Practice checkpoint 2",
+      "color": [
+        0.88,
+        0.43,
+        0.2
+      ]
+    }
+  ]
+}

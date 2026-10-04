@@ -321,6 +321,7 @@ pub struct Server {
     destinations: BTreeMap<String, TeleportDestination>,
     base_world_spawn: Option<TeleportDestination>,
     world_spawn: Option<TeleportDestination>,
+    resource_readmission_resets: BTreeMap<u64, (u64, u64)>,
 }
 impl Server {
     /// Explicitly permit player requests to this destination. No destinations
@@ -531,6 +532,11 @@ impl Server {
         self.overlaps.clear(); self.last_contact.clear();
         Ok(())
     }
+    /// Trusted host-only epoch transitions caused by required-world readiness.
+    /// Bounded by server capacity; never populated by client movement/reset ACKs.
+    pub fn drain_resource_readmission_resets(&mut self)->BTreeMap<u64,(u64,u64)> {
+        std::mem::take(&mut self.resource_readmission_resets)
+    }
     pub fn resource_ready(&self, actor:u64)->bool {self.resources.ready(actor)}
     pub fn drain_resource_events(&mut self)->Vec<crate::resources::Incoming>{self.resources.drain()}
     pub fn send_resource(&mut self, recipient:Option<u64>, message:crate::resources::Message)->Result<(),String>{self.resources.send(recipient,message)}
@@ -560,7 +566,15 @@ impl Server {
             if ready && self.players[&id].world_spawn_pending {
                 if let Some(mut destination)=self.world_spawn.or(self.base_world_spawn) {
                     destination.instance=self.instance_of(id).unwrap_or(0);
-                    if self.teleport(id,destination,now).is_ok() {self.players.get_mut(&id).unwrap().world_spawn_pending=false;}
+                    let previous=self.movement_epoch_of(id).unwrap();
+                    if let Ok(epoch)=self.teleport(id,destination,now) {
+                        self.players.get_mut(&id).unwrap().world_spawn_pending=false;
+                        self.resource_readmission_resets.retain(|actor,_|self.players.contains_key(actor));
+                        if self.resource_readmission_resets.len()<MAX_PLAYERS || self.resource_readmission_resets.contains_key(&id) {
+                            let original=self.resource_readmission_resets.get(&id).filter(|(_,latest)|*latest==previous).map_or(previous,|(first,_)|*first);
+                            self.resource_readmission_resets.insert(id,(original,epoch));
+                        }
+                    }
                 }
             }
             if let Some(bytes)=self.resources.record(id){self.session.publish_application(&crate::resources::server_key(id),bytes,now);}
@@ -604,11 +618,22 @@ impl Server {
             destinations: BTreeMap::new(),
             base_world_spawn: None,
             world_spawn: None,
+            resource_readmission_resets: BTreeMap::new(),
         })
     }
     pub fn player_count(&self) -> usize {
         self.session.player_ids().iter().filter(|id|self.resource_ready(**id)).count()
     }
+    /// Includes connections still downloading content, which occupy real slots.
+    pub fn connection_count(&self) -> usize { self.session.connection_count() }
+    pub fn capacity(&self) -> usize { self.session.capacity() }
+    pub fn set_capacity(&mut self, capacity: usize) -> Result<(), String> {
+        if !(1..=MAX_PLAYERS).contains(&capacity) { return Err("Capacity must be 1..64".into()); }
+        self.session.set_capacity(capacity); Ok(())
+    }
+    pub fn map_fingerprint(&self) -> u64 { self.session.actors[&self.session.local].info.map }
+    pub fn server_id(&self) -> u64 { self.session.local }
+    pub fn session_id(&self) -> u64 { self.session.session }
     pub fn stats(&self) -> &Stats {
         &self.session.stats
     }

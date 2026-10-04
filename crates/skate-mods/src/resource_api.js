@@ -78,7 +78,9 @@
         export(name, fn) { register('export', name, fn); },
         call(dependency, name, payload) { return call('resource.call', dependency, name, payload === undefined ? null : payload); },
         command(name, permission, fn) { register('command', name, fn, permission); },
-        players() { return call('resource.players'); },
+        // Lua's empty sequence crosses the shared adapter as an empty object.
+        // Preserve the public list contract before the first player joins too.
+        players() { const value=call('resource.players'); return isArray(value) ? value : []; },
         lifecycle(handlers) { for (const name of Object.keys(handlers)) register('lifecycle', name, handlers[name]); },
         entities: { command(value) { return call('resource.entities.command', value); }, all() { return call('resource.entities.all'); } },
         entity(value) { return call('resource.entities.command', value); },
@@ -88,6 +90,7 @@
         transfer: { start(key,name,payload,options=null) { return call('resource.transfer.start',key,name,payload,options); }, cancel(key) { return call('resource.transfer.cancel',key); } },
         teleport(player, destination) { return call('resource.teleport', player, destination); },
         state: {get(key, scope = null) { return call('resource.state.get', key, scope); }, set(key, value, scope = null) { return call('resource.state.set', key, value === undefined ? null : value, scope); }},
+        settings: {get(key) { return call('resource.settings.get', key); }, all() { return call('resource.settings.all'); }},
         storage: {get(key) { return call('resource.storage.get', key); }, set(key, value) { return call('resource.storage.set', key, value === undefined ? null : value); }},
         services: {
             submit(key, operation, timeoutMs) { return call('resource.services.submit', key, operation, timeoutMs); },

@@ -191,6 +191,8 @@ pub struct Session {
     pub actors: BTreeMap<u64, Actor>,
     pub stats: Stats,
     pub notice: String,
+    pub join_status: Option<crate::discovery::JoinStatus>,
+    join_cancelled: bool,
     host: Option<u64>,
     dedicated: bool,
     resources_required: bool,
@@ -239,6 +241,8 @@ impl Session {
             links,
             stats: Stats::default(),
             notice: String::new(),
+            join_status: None,
+            join_cancelled: false,
             pending: vec![],
             last_hello: 0,
             last_roster: 0,
@@ -281,6 +285,19 @@ impl Session {
         result.next_incarnation = incarnation;
         result
     }
+    /// Cancel queued admission; a fresh Session is required to join again.
+    pub fn cancel_join(&mut self) {
+        self.join_cancelled = true;
+        self.received_roster = 0;
+        if let Some(peer) = self.host {
+            self.queue(peer, packed::header(self.session, self.local, GOODBYE, 0));
+        }
+        self.join_status = None;
+        self.notice = "Connection cancelled".into();
+    }
+    pub(crate) fn set_capacity(&mut self, capacity: usize) { self.max_players = capacity; }
+    pub(crate) fn capacity(&self) -> usize { self.max_players }
+    pub(crate) fn connection_count(&self) -> usize { self.links.len() }
     pub fn pending_movement_reset(&self) -> Option<crate::dedicated::MovementReset> { self.local_reset }
     /// Call only after the owner's simulation has accepted the travel command.
     pub fn complete_movement_reset(&mut self, epoch: u64) {
@@ -520,6 +537,7 @@ impl Session {
         if session != self.session || actor == 0 {
             return;
         }
+        if self.dedicated && !self.is_host() && self.join_cancelled { return; }
         let mut r = Reader(&data[HEADER..]);
         let hello = if self.dedicated { DEDICATED_HELLO } else { HELLO };
         let roster = if self.dedicated { DEDICATED_ROSTER } else { ROSTER };
@@ -540,6 +558,7 @@ impl Session {
             if error != 0 {
                 let mut b = packed::header(self.session, self.local, REJECT, 0);
                 b.push(error);
+                if self.dedicated { b.extend(actor.to_le_bytes()); }
                 self.queue(peer, b);
                 return;
             }
@@ -664,16 +683,39 @@ impl Session {
                 }
             }
             self.notice.clear();
+            self.join_status = None;
+            return;
+        }
+        if kind == crate::discovery::JOIN_STATUS && self.dedicated && self.host == Some(peer) {
+            if r.u64()!=Some(self.local) {return;}
+            if let Ok(status) = serde_json::from_slice::<crate::discovery::JoinStatus>(r.0) {
+                if status.valid() {
+                    // UDP may deliver a pre-admission reply after the roster.
+                    // Established membership wins over stale queue/rejection data;
+                    // maintenance of live players uses warning/clear instead.
+                    if self.connected() && !matches!(status.state.as_str(),"warning"|"clear") {return;}
+                    self.join_cancelled |= status.terminal();
+                    self.notice = status.reason.clone();
+                    self.join_status = if status.state=="clear" {None}else{Some(status)};
+                    self.links.get_mut(&peer).unwrap().seen = now;
+                }
+            }
             return;
         }
         if kind == REJECT && self.host == Some(peer) {
-            self.notice = match r.byte() {
+            let reason=r.byte();
+            if self.dedicated && (self.connected() || r.u64()!=Some(self.local) || !r.0.is_empty()) {return;}
+            self.notice = match reason {
                 Some(1) => "Map mismatch",
                 Some(2) => "Physics definition mismatch",
                 Some(3) => if self.dedicated { "Dedicated server full" } else { "Lobby full (10 players)" },
                 _ => "Lobby rejected connection",
             }
             .into();
+            if self.dedicated {
+                self.join_cancelled=true;
+                self.join_status=Some(crate::discovery::JoinStatus {state:"rejected".into(),position:0,expires_in_ms:0,reason:self.notice.clone()});
+            }
             return;
         }
         if matches!(kind, crate::blob::META | crate::blob::DATA | crate::blob::ACK) {
@@ -773,6 +815,7 @@ impl Session {
         }
         if kind == GOODBYE {
             if self.is_host() {
+                if self.links[&peer].actor != actor { return; }
                 self.links.remove(&peer);
                 self.actors.remove(&actor);
                 self.last_roster = 0;
@@ -893,6 +936,7 @@ impl Session {
             .collect()
     }
     pub(crate) fn expire_connections(&mut self, now: u64) {
+        if self.dedicated && !self.is_host() && self.join_cancelled {return;}
         if self.is_host() {
             let expired: Vec<_> = self
                 .links
@@ -953,7 +997,7 @@ impl Session {
         self.expire_connections(now);
         self.prune_links();
         if let Some(peer) = self.host {
-            if now.saturating_sub(self.last_hello) >= 500 || self.last_hello == 0 {
+            if !self.join_cancelled && (now.saturating_sub(self.last_hello) >= 500 || self.last_hello == 0) {
                 let mut b = packed::header(self.session, self.local, if self.dedicated { DEDICATED_HELLO } else { HELLO }, 0);
                 write_info(&mut b, self.local_info());
                 self.queue(peer, b);

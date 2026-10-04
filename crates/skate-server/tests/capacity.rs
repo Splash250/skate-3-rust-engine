@@ -358,6 +358,7 @@ fn sixty_four_real_udp_owners_exchange_movement_shared_state_and_large_resource_
     let before = rss_kib("VmRSS:");
     let mut host = Host::bind(Options {
         accounts: None,
+        operations: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: PLAYERS,
@@ -596,6 +597,7 @@ fn impaired_workload(players: usize, seconds: u64) {
     let fixture = Fixture::new(players);
     let mut host = Host::bind(Options {
         accounts: None,
+        operations: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: players,

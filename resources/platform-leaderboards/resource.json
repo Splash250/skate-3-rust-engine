@@ -1,0 +1,47 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "platform-leaderboards",
+  "version": "1.0.0",
+  "language": "lua",
+  "shared_scripts": [],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [],
+  "dependencies": {
+    "platform-profiles": "1.0.0"
+  },
+  "exports": [
+    "start",
+    "cancel",
+    "result",
+    "top"
+  ],
+  "capabilities": [
+    "resource.events",
+    "resource.network",
+    "resource.database",
+    "resource.storage",
+    "resource.exports",
+    "resource.state",
+    "resource.competition",
+    "resource.settings",
+    "engine.ui"
+  ],
+  "settings": {
+    "season": {
+      "type": "string",
+      "default": "local-1",
+      "max_bytes": 32,
+      "visibility": "public",
+      "change": "restart"
+    }
+  },
+  "requires_features": [
+    "resource.settings.v1"
+  ]
+}

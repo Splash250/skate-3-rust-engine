@@ -87,6 +87,7 @@ fn verified_identity_is_required_and_real_admin_kick_revokes_live_udp() {
         map: Map::TestWorld,
         resources: None,
         accounts: Some(config_file),
+        operations: None,
     })
     .unwrap();
     let password = auth.join("password");
@@ -244,4 +245,45 @@ fn verified_identity_is_required_and_real_admin_kick_revokes_live_udp() {
             .iter()
             .any(|row| row["action"] == "host.queued")
     );
+}
+
+#[test]
+fn private_settings_actions_are_authorized_redacted_and_rechecked_over_tls() {
+    let temp=Temp(std::env::temp_dir().join(format!("skate-settings-admin-{}",std::process::id())));fs::create_dir(&temp.0).unwrap();
+    let auth=temp.0.join("auth");initialize(&auth,"administrator","test-password-12345").unwrap();
+    let config_file=temp.0.join("accounts.json");
+    fs::write(&config_file,serde_json::to_vec(&json!({"database":"auth/accounts.sqlite3","bind":"127.0.0.1:0","certificate":"auth/certificate.pem","key":"auth/private-key.pem"})).unwrap()).unwrap();
+    let resource=temp.0.join("resources/settings");fs::create_dir_all(&resource).unwrap();
+    fs::write(resource.join("resource.json"),serde_json::to_vec(&json!({"format":1,"api":1,"id":"settings","version":"1.0.0","language":"lua","server_scripts":["main.lua"],"settings":{"private_note":{"type":"string","default":"synthetic-private-default","max_bytes":128,"visibility":"private"}}})).unwrap()).unwrap();
+    fs::write(resource.join("main.lua"),"return {}").unwrap();
+    let resources=temp.0.join("server.json");fs::write(&resources,serde_json::to_vec(&json!({"root":"resources","storage":"store","ensure":["settings"]})).unwrap()).unwrap();
+    let mut host=Host::bind(Options {bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld,resources:Some(resources),accounts:Some(config_file),operations:None}).unwrap();
+    let password=auth.join("password");fs::write(&password,"test-password-12345").unwrap();
+    #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(&password,fs::Permissions::from_mode(0o600)).unwrap();}
+    let mut config=ClientCredentials {endpoint:format!("https://localhost:{}",host.account_address().unwrap().port()),ca_certificate:auth.join("certificate.pem"),username:"administrator".into(),password_file:password};
+    let (administrator,_)=login_client(&config,Duration::from_secs(5)).unwrap();
+    let call=|token:&str,path:&str,value:Option<serde_json::Value>|admin_request(&config,token,path,value,Duration::from_secs(5));
+    let audit_account=call(&administrator.token,"/v1/admin/accounts",Some(json!({"username":"auditor","password":"test-password-12345"}))).unwrap();
+    call(&administrator.token,"/v1/admin/roles",Some(json!({"role":"viewer"}))).unwrap();
+    for permission in ["status.read","audit.read"] {call(&administrator.token,"/v1/admin/role-permission",Some(json!({"role":"viewer","permission":permission,"grant":true}))).unwrap();}
+    call(&administrator.token,"/v1/admin/account-role",Some(json!({"account":audit_account["id"],"role":"viewer","grant":true}))).unwrap();
+    let ticket=call(&administrator.token,"/v1/admin/actions",Some(json!({"kind":"settings_read","resource":"settings"}))).unwrap()["ticket"].as_u64().unwrap();
+    for _ in 0..3{host.step().unwrap();}
+    let result=call(&administrator.token,&format!("/v1/admin/actions/{ticket}"),None).unwrap();
+    assert!(result["value"].as_str().unwrap().contains("synthetic-private-default"));
+    let set=call(&administrator.token,"/v1/admin/actions",Some(json!({"kind":"settings_set","resource":"settings","key":"private_note","value":"synthetic-updated-secret"}))).unwrap()["ticket"].as_u64().unwrap();
+    for _ in 0..3{host.step().unwrap();}
+    assert_eq!(call(&administrator.token,&format!("/v1/admin/actions/{set}"),None).unwrap()["ok"],true);
+    config.username="auditor".into();let (auditor,_)=login_client(&config,Duration::from_secs(5)).unwrap();
+    assert!(admin_request(&config,&auditor.token,&format!("/v1/admin/actions/{ticket}"),None,Duration::from_secs(5)).is_err(),"audit.read alone cannot read private action results");
+    assert!(admin_request(&config,&auditor.token,"/v1/admin/actions",Some(json!({"kind":"settings_set","resource":"settings","key":"private_note","value":"unauthorized"})),Duration::from_secs(5)).is_err());
+    let status=admin_request(&config,&auditor.token,"/v1/admin/status",None,Duration::from_secs(5)).unwrap().to_string();
+    let audit=admin_request(&config,&auditor.token,"/v1/admin/audit",None,Duration::from_secs(5)).unwrap().to_string();
+    for secret in ["synthetic-private-default","synthetic-updated-secret"] {assert!(!status.contains(secret));assert!(!audit.contains(secret));}
+    // Permission is rechecked at execution, not only when a ticket was issued.
+    admin_request(&config,&administrator.token,"/v1/admin/role-permission",Some(json!({"role":"viewer","permission":"server.manage","grant":true})),Duration::from_secs(5)).unwrap();
+    let denied=admin_request(&config,&auditor.token,"/v1/admin/actions",Some(json!({"kind":"capacity","players":4})),Duration::from_secs(5)).unwrap()["ticket"].as_u64().unwrap();
+    admin_request(&config,&administrator.token,"/v1/admin/role-permission",Some(json!({"role":"viewer","permission":"server.manage","grant":false})),Duration::from_secs(5)).unwrap();
+    for _ in 0..3{host.step().unwrap();}
+    assert_eq!(admin_request(&config,&administrator.token,&format!("/v1/admin/actions/{denied}"),None,Duration::from_secs(5)).unwrap()["ok"],false);
 }

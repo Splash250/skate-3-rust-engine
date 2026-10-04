@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "creator-park",
+  "version": "1.0.0",
+  "language": "javascript",
+  "server_scripts": [
+    "server.js"
+  ],
+  "client_scripts": [
+    "client.js"
+  ],
+  "files": [
+    "park.skate",
+    "markers.json",
+    "placements.json"
+  ],
+  "capabilities": [
+    "resource.state",
+    "resource.teleport",
+    "engine.ui"
+  ],
+  "world": {
+    "map": "park.skate",
+    "required": true
+  }
+}

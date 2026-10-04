@@ -1,0 +1,281 @@
+{
+  "format": 1,
+  "id": "free-skate",
+  "version": "1.0.0",
+  "accounts_required": false,
+  "resources": [
+    {
+      "id": "platform-profiles",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/platform-profiles",
+      "files": [
+        {
+          "path": "client.lua",
+          "source": "platform-profiles/client.lua",
+          "sha256": "81cd179ca9e40af2aaf4fe33db5a5266933e79f940d027fe0ce0ede312fc8e42",
+          "bytes": 881
+        },
+        {
+          "path": "resource.json",
+          "source": "platform-profiles/resource.json",
+          "sha256": "b23f8ffe8a5c64c1ec52d51243c991b4ea7b2f5270d7a51c5858b8678e8d7bc8",
+          "bytes": 719
+        },
+        {
+          "path": "server.lua",
+          "source": "platform-profiles/server.lua",
+          "sha256": "bc9644a2dcb35e8b21e30340b7a22d08ef4fde10a68069086e55e521d537f7dd",
+          "bytes": 3226
+        }
+      ]
+    },
+    {
+      "id": "platform-crews",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/platform-crews",
+      "files": [
+        {
+          "path": "client.lua",
+          "source": "platform-crews/client.lua",
+          "sha256": "f6e9c77526bf200a0230560a64053190dce30435fcc56943c9bb49260aa547d2",
+          "bytes": 1578
+        },
+        {
+          "path": "resource.json",
+          "source": "platform-crews/resource.json",
+          "sha256": "d4c191536909338174a7f0ded335d1a9b20f7a8330b2fc10abec8be18bbee29f",
+          "bytes": 738
+        },
+        {
+          "path": "server.lua",
+          "source": "platform-crews/server.lua",
+          "sha256": "501f0017e384a68da070ca804d84ae94ebcaf1b03c18850c4c55d10c1ce5928c",
+          "bytes": 2839
+        }
+      ]
+    },
+    {
+      "id": "platform-rounds",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/platform-rounds",
+      "files": [
+        {
+          "path": "client.lua",
+          "source": "platform-rounds/client.lua",
+          "sha256": "6f7da82d329c545137101e5588d7aadc8707a6927f3f3caabb846bbe25011d10",
+          "bytes": 518
+        },
+        {
+          "path": "resource.json",
+          "source": "platform-rounds/resource.json",
+          "sha256": "370111e3038eb47c65688abbfabf5c4a3725ae00210825ab586e3a5e620f9c06",
+          "bytes": 969
+        },
+        {
+          "path": "server.lua",
+          "source": "platform-rounds/server.lua",
+          "sha256": "516e017626b4fb94555043020f43c1431adffd1437d0823468043174e5f2278a",
+          "bytes": 2264
+        }
+      ]
+    },
+    {
+      "id": "platform-map-vote",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/platform-map-vote",
+      "files": [
+        {
+          "path": "client.lua",
+          "source": "platform-map-vote/client.lua",
+          "sha256": "f1bbdd9af820e423a2ca9872deaf1232a2ab4fe799f5deb4920f69469b459100",
+          "bytes": 766
+        },
+        {
+          "path": "resource.json",
+          "source": "platform-map-vote/resource.json",
+          "sha256": "52e62278e948c05b48331f59268c8d208958ed1aaae56f170cf7b9bcd7ef84f0",
+          "bytes": 976
+        },
+        {
+          "path": "server.lua",
+          "source": "platform-map-vote/server.lua",
+          "sha256": "1abc91ea634c4bdeb538237260df53445f7ef59a415c9481cf30c2310c50b9a3",
+          "bytes": 2361
+        }
+      ]
+    },
+    {
+      "id": "community-park",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/community-park",
+      "files": [
+        {
+          "path": "client.lua",
+          "source": "community-park/client.lua",
+          "sha256": "f5e8563da59470580c04e11b3d78855e5c2718e11c9ab814201379d314bdd4fd",
+          "bytes": 394
+        },
+        {
+          "path": "markers.json",
+          "source": "community-park/markers.json",
+          "sha256": "6382ddad5fecd67c970334395ca50d973ca69279c570daf63747918720448f9e",
+          "bytes": 197
+        },
+        {
+          "path": "park-low.skate",
+          "source": "community-park/park-low.skate",
+          "sha256": "0c0674f28dd88a9730af1b08b011dc423dc28381d338b8f7c2ad0e49bf026131",
+          "bytes": 3930
+        },
+        {
+          "path": "park.skate",
+          "source": "community-park/park.skate",
+          "sha256": "9fcf10092786b713bb1ab7b2881e127e791e907704d5f404210e6949e913ed54",
+          "bytes": 9055
+        },
+        {
+          "path": "placements-low.json",
+          "source": "community-park/placements-low.json",
+          "sha256": "92df55d003521c183bc220efcaf32f32dd1a6f03ddf60b6a6aaa955cdc529ff5",
+          "bytes": 649
+        },
+        {
+          "path": "placements.json",
+          "source": "community-park/placements.json",
+          "sha256": "007dde0ba21e80abe7f7653a6a760205dcfe64b9d32bac95e17443b3936f03de",
+          "bytes": 1370
+        },
+        {
+          "path": "resource.json",
+          "source": "community-park/resource.json",
+          "sha256": "6572b375a38d11f647c48e1a3b0af8c56a6b8928df8b3388ebbfb801e8acc183",
+          "bytes": 607
+        },
+        {
+          "path": "server.lua",
+          "source": "community-park/server.lua",
+          "sha256": "9694ab8b1dd0560f777564b85cee07c6794fff4b4a618c36d1d4c73f52cead99",
+          "bytes": 2776
+        }
+      ]
+    },
+    {
+      "id": "creator-park",
+      "version": "1.0.0",
+      "provenance": "Original Skate engine project resource; repository license and resources/creator-park",
+      "files": [
+        {
+          "path": "client.js",
+          "source": "creator-park/client.js",
+          "sha256": "80ab1f4a5d84808726014844144f91bb901cd0bed2799525a7081f41a7b797bb",
+          "bytes": 414
+        },
+        {
+          "path": "markers.json",
+          "source": "creator-park/markers.json",
+          "sha256": "f87cc7b47f5e0888d70bed931dca84a0fc2e1b6d8694638ab1739b2ee2c09e34",
+          "bytes": 554
+        },
+        {
+          "path": "park.skate",
+          "source": "creator-park/park.skate",
+          "sha256": "de4108eac405a942d10f3635c6d8338118c21304ed0ab8f8b716c405799cc0e2",
+          "bytes": 18796
+        },
+        {
+          "path": "placements.json",
+          "source": "creator-park/placements.json",
+          "sha256": "a1e01ff3f6bfe32494ed548a1099527df58ca68c777865b6f96766971544edbe",
+          "bytes": 2713
+        },
+        {
+          "path": "resource.json",
+          "source": "creator-park/resource.json",
+          "sha256": "bbe677f11a536a191d8f6867fb91636ce715a6acd8ae69bd8e1c92a4b87048c6",
+          "bytes": 420
+        },
+        {
+          "path": "server.js",
+          "source": "creator-park/server.js",
+          "sha256": "f27c84cff393bf1d9f234303d58abc8c85ab030c78ed945d01359f895d38dffa",
+          "bytes": 1477
+        }
+      ]
+    }
+  ],
+  "server": {
+    "ensure": [
+      "platform-profiles",
+      "platform-crews",
+      "platform-rounds",
+      "platform-map-vote",
+      "community-park"
+    ],
+    "grants": {
+      "platform-profiles": [
+        "resource.events",
+        "resource.network",
+        "resource.database",
+        "resource.exports",
+        "resource.state",
+        "resource.settings",
+        "engine.ui"
+      ],
+      "platform-crews": [
+        "resource.events",
+        "resource.network",
+        "resource.storage",
+        "resource.exports",
+        "resource.state",
+        "resource.settings",
+        "engine.ui"
+      ],
+      "platform-rounds": [
+        "resource.events",
+        "resource.network",
+        "resource.storage",
+        "resource.exports",
+        "resource.state",
+        "resource.settings",
+        "resource.commands",
+        "engine.ui"
+      ],
+      "platform-map-vote": [
+        "resource.events",
+        "resource.network",
+        "resource.exports",
+        "resource.state",
+        "resource.settings",
+        "resource.commands",
+        "resource.world",
+        "engine.ui"
+      ],
+      "community-park": [
+        "resource.state",
+        "resource.commands",
+        "resource.world",
+        "resource.teleport",
+        "engine.ui"
+      ],
+      "creator-park": [
+        "resource.state",
+        "resource.teleport",
+        "engine.ui"
+      ]
+    },
+    "settings": {
+      "platform-rounds": {
+        "duration_seconds": 180,
+        "mode": "free-skate"
+      },
+      "platform-map-vote": {
+        "rotation": "community-park,creator-park",
+        "vote_seconds": 20
+      }
+    },
+    "world_rotation": [
+      "community-park",
+      "creator-park"
+    ]
+  }
+}

@@ -54,6 +54,13 @@ The existing graphics, audio, UI, settings, assets and timer interfaces remain
 available. Menus can create a named pause-menu section and nested pages using
 `sdk.ui.menu(key, {section=..., title=..., items=...})`.
 
+`sdk.ui.text(key, text)` creates a simple stacked overlay using 19 px text and
+28 px line spacing. Hard line breaks reserve their own rows, including blank
+lines; CRLF and LFCR count as single breaks. Text does not automatically wrap to
+the viewport width, so keep lines short or insert breaks explicitly. Updating
+or removing an overlay reflows the following overlays immediately. Use a canvas
+or browser UI when content needs a richer layout.
+
 Catalogs are larger and requested explicitly:
 
 ```lua

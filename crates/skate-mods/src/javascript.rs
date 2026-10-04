@@ -121,6 +121,8 @@ impl JavaScript {
                                         | "resource.off"
                                         | "resource.state.get"
                                         | "resource.state.set"
+                                        | "resource.settings.get"
+                                        | "resource.settings.all"
                                         | "resource.storage.get"
                                         | "resource.storage.set"
                                         | "resource.call"

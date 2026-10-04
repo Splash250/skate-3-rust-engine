@@ -36,6 +36,8 @@ fn installed(
     std::fs::write(root.join("main.lua"), code).unwrap();
     InstalledResource {
         manifest: Manifest {
+            settings: Default::default(),
+            requires_features: vec![],
             world: None,
             format: 1,
             api: 1,
@@ -925,11 +927,19 @@ fn resources_configured_limits_reject_overflows_without_persisting_partial_write
 #[test]
 fn resources_teleport_is_server_granted_and_generation_scoped() {
     let temp=Temp::new();
-    let app=installed(&temp,"app",r#"resource.teleport('42',{position={1,2,3},instance=7})"#,&[],&["resource.teleport"]);
+    let app=installed(&temp,"app",r#"
+        assert(not pcall(function()resource.teleport('42',{restore_previous=true,position={1,2,3}})end))
+        assert(not pcall(function()resource.teleport('42',{})end))
+        resource.teleport('42',{position={1,2,3},instance=7,restore_on_stop=true})
+        resource.teleport('42',{restore_previous=true})
+    "#,&[],&["resource.teleport"]);
     let mut h=host(&temp,Side::Server,"teleport");
     h.install(vec![app.clone()]).unwrap();
     h.start_all().unwrap();
-    assert!(matches!(h.drain_outputs().as_slice(),[Output::Teleport{resource,generation:1,player:42,position:[1.0,2.0,3.0],instance:Some(7),..}] if resource=="app"));
+    assert!(matches!(h.drain_outputs().as_slice(),[
+        Output::Teleport{resource,generation:1,player:42,position:[1.0,2.0,3.0],instance:Some(7),restore_on_stop:true,restore_previous:false,..},
+        Output::Teleport{player:42,restore_previous:true,restore_on_stop:false,..}
+    ] if resource=="app"));
     let mut h=host(&temp,Side::Client,"teleport");
     h.install(vec![app.clone()]).unwrap();
     assert!(h.start_all().unwrap_err().contains("server-only"));
@@ -975,6 +985,25 @@ fn installed_javascript(temp:&Temp,id:&str,code:&str,deps:&[&str],caps:&[&str])-
     app.manifest.language="javascript".into();
     app.manifest.shared_scripts=vec!["main.js".into()];
     app
+}
+
+#[test]
+fn resources_javascript_players_are_an_array_before_join_and_after_disconnect() {
+    let temp=Temp::new();let mut runtime=host(&temp,Side::Server,"js-empty-players");
+    runtime.install(vec![installed_javascript(&temp,"observer",r#"
+resource.lifecycle({on_load(){
+    const ids=resource.players().map(p=>p.id);
+    if(ids.length!==0)throw Error('startup must have an empty player array');
+},on_update(){
+    resource.state.set('ids',resource.players().map(p=>p.id).join(','));
+}});
+"#,&[],&["resource.state"])]).unwrap();
+    runtime.start_all().unwrap();
+    runtime.tick(0.01,json!({"players":[{"id":"42"}]}));
+    assert_eq!(runtime.state("observer","ids"),Some(json!("42")));
+    runtime.tick(0.01,json!({"players":[]}));
+    assert!(runtime.running("observer"),"disconnect leaves array operations usable");
+    assert_eq!(runtime.state("observer","ids"),Some(json!("")));
 }
 
 #[test]
@@ -1434,4 +1463,108 @@ resource.state.set('c',3,{kind='instance',id='0'})
     h.prune_scoped_targets(&[],&[("scope".into(),4,generation+1)]);assert_eq!(h.scoped_states().len(),2);
     assert!(!h.drain_outputs().iter().any(|o|matches!(o,Output::State{scope,..} if scope["kind"]=="player"||scope["kind"]=="entity")));
     h.prune_resource_scope("scope",&json!({"kind":"instance","id":"0"})).unwrap();assert_eq!(h.scoped_states().len(),1);
+}
+
+fn with_settings(mut resource: InstalledResource) -> InstalledResource {
+    resource.manifest.settings=serde_json::from_value(json!({
+        "round":{"type":"integer","default":30,"min":10,"max":120,"visibility":"replicated","change":"live"},
+        "map":{"type":"enum","default":"park","options":["park","street"],"visibility":"public","change":"restart"},
+        "private_note":{"type":"string","default":"private-default","max_bytes":32,"visibility":"private"}
+    })).unwrap();
+    resource
+}
+#[test]
+fn resource_settings_live_restart_persistence_and_private_projection() {
+    use skate_mods::resources::SettingAudience;
+    let temp=Temp::new();
+    let app=with_settings(installed(&temp,"settings",r#"
+        assert(resource.settings.get('round')>=10)
+        return {on_load=function()resource.state.set('loaded',resource.settings.all())end,
+        on_settings=function(change)resource.state.set('changed',change);resource.state.set('current',resource.settings.all())end}
+    "#,&[],&["resource.settings","resource.state"]));
+    let mut h=host(&temp,Side::Server,"settings");h.install(vec![app.clone()]).unwrap();
+    h.configure_settings("settings",[("round".into(),json!(45))].into()).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("settings","loaded").unwrap()["round"],45);
+    assert!(h.set_setting("settings","round",json!(121)).is_err());
+    assert!(h.set_setting("settings","round",json!(true)).is_err());
+    assert!(h.set_setting("settings","undeclared",json!(1)).is_err());
+    assert!(h.set_setting("settings","round",json!(60)).unwrap().applied);
+    assert_eq!(h.state("settings","changed").unwrap(),json!({"key":"round","value":60}));
+    assert!(h.set_setting("settings","map",json!("street")).unwrap().restart_required);
+    assert_eq!(h.settings_values("settings",SettingAudience::Public).unwrap(),[("map".into(),json!("park"))].into());
+    assert_eq!(h.settings_snapshot("settings").unwrap()["map"].pending,Some(json!("street")));
+    assert!(!h.settings_values("settings",SettingAudience::Client).unwrap().contains_key("private_note"));
+    h.restart("settings").unwrap();assert_eq!(h.state("settings","loaded").unwrap()["map"],"street");
+    h.disconnect();drop(h);
+    let mut h=host(&temp,Side::Server,"settings");h.install(vec![app]).unwrap();
+    h.configure_settings("settings",[("round".into(),json!(40))].into()).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("settings","loaded").unwrap()["round"],60,"persisted override wins startup defaults");
+    let mut client_app=h.installed()["settings"].clone();client_app.manifest=client_app.manifest.client_projection();
+    std::fs::write(client_app.root.join("main.lua"),r#"return {on_load=function()assert(resource.settings.get('round')==75);assert(resource.settings.all().private_note==nil)end}"#).unwrap();
+    let mut client=host(&temp,Side::Client,"settings");client.install(vec![client_app]).unwrap();
+    let generation=client.generation("settings").unwrap();
+    assert!(client.set_setting("settings","round",json!(75)).is_err());
+    assert!(client.apply_settings("settings",generation+1,[("round".into(),json!(75)),("map".into(),json!("park"))].into()).is_err());
+    assert!(client.apply_settings("settings",generation,[("round".into(),json!(75)),("private_note".into(),json!("leak"))].into()).is_err());
+    client.apply_state("settings",generation,"__settings",json!({"round":75,"map":"park"})).unwrap();
+    client.start_all().unwrap();
+}
+#[test]
+fn resource_settings_javascript_and_reserved_host_state() {
+    let temp=Temp::new();
+    let mut app=with_settings(installed(&temp,"settings_js","",&[],&["resource.settings","resource.state"]));
+    app.manifest.language="javascript".into();app.manifest.shared_scripts=vec!["main.js".into()];
+    std::fs::write(app.root.join("main.js"),r#"
+      resource.lifecycle({on_load(){resource.state.set('round',resource.settings.get('round'));},on_settings(c){resource.state.set('changed',c.value);}});
+      let denied=false;try{resource.state.set('__settings',{round:120});}catch(e){denied=true;}if(!denied)throw Error('reserved state write accepted');
+    "#).unwrap();
+    let mut h=host(&temp,Side::Server,"settings-js");h.install(vec![app]).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("settings_js","round"),Some(json!(30)));
+    h.set_setting("settings_js","round",json!(99)).unwrap();assert_eq!(h.state("settings_js","changed"),Some(json!(99)));
+}
+
+#[test]
+fn resource_profile_records_nested_calls_queue_sources_and_generations_with_bounds() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"profile");
+    let dep=installed(&temp,"callee",r#"resource.export('value',function(n)local a=0;for i=1,1000 do a=a+i end;return n+a end)"#,&[],&["resource.exports"]);
+    let app=installed(&temp,"caller",r#"resource.on('later',function()resource.call('callee','value',1)end);return{on_update=function()resource.emit('later',{token='synthetic-private-event-value'})end}"#,&["callee"],&["resource.events","resource.exports"]);
+    h.install(vec![dep,app]).unwrap();h.start_all().unwrap();h.tick(0.01,json!({}));
+    let profile=h.profile_snapshot();
+    let event=profile.spans.iter().find(|s|s.phase=="event:later").unwrap();
+    assert!(event.queue_wait_us.is_some());assert!(event.source.as_ref().unwrap().contains("caller/main.lua"));
+    let exported=profile.spans.iter().find(|s|s.phase=="export:value").unwrap();assert_eq!(exported.resource,"callee");assert_eq!(exported.parent,Some(event.id));
+    assert!(profile.spans.iter().any(|s|s.phase=="dispatch:on_update"&&s.resource=="@host"));
+    assert!(profile.spans.iter().all(|s|s.exclusive_host_cpu_time_us.zip(s.host_cpu_time_us).is_none_or(|(exclusive,inclusive)|exclusive<=inclusive)));
+    assert!(profile.summaries.iter().all(|s|s.p50_wall_time_us<=s.p95_wall_time_us&&s.p95_wall_time_us<=s.p99_wall_time_us));
+    h.restart("callee").unwrap();h.tick(0.01,json!({}));
+    let profile=h.profile_snapshot();assert!(profile.spans.iter().any(|s|s.resource=="callee"&&s.generation==1));assert!(profile.spans.iter().any(|s|s.resource=="callee"&&s.generation==2));
+    h.configure_profiling(true,64,60_000).unwrap();for _ in 0..100 {h.tick(0.01,json!({}));}
+    let profile=h.profile_snapshot();assert_eq!(profile.spans.len(),64);assert!(profile.evicted>0);
+    let trace=profile.chrome_trace();assert_eq!(trace["traceEvents"].as_array().unwrap().len(),64);assert!(!trace.to_string().contains("payload"));assert!(!trace.to_string().contains("synthetic-private-event-value"));
+    h.configure_profiling(false,64,60_000).unwrap();let before=h.profile_snapshot().spans.len();h.tick(0.01,json!({}));assert_eq!(h.profile_snapshot().spans.len(),before);
+}
+
+#[test]
+#[ignore = "measurement workload; run explicitly with --nocapture --test-threads=1"]
+fn resource_profile_instrumentation_overhead_measurement() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"profile-overhead");
+    let mut resources=Vec::new();
+    for i in 0..8 {let mut app=installed(&temp,&format!("benchmark_{i}"),"return{on_update=function()local total=0;for i=1,100 do total=total+i end end}",&[],&[]);
+        if i%2==1 {app.manifest.language="javascript".into();app.manifest.shared_scripts=vec!["main.js".into()];std::fs::write(app.root.join("main.js"),"resource.lifecycle({on_update(){let total=0;for(let i=1;i<=100;i++)total+=i;}})").unwrap();}resources.push(app);}
+    h.install(resources).unwrap();h.start_all().unwrap();
+    for _ in 0..1000 {h.tick(0.01,json!({}));}
+    let mut off=Vec::new();let mut on=Vec::new();
+    for round in 0..6 {let enabled=round%2!=0;h.configure_profiling(enabled,4096,60_000).unwrap();let start=std::time::Instant::now();for _ in 0..5000 {h.tick(0.01,json!({}));}let ns=start.elapsed().as_nanos() as f64/5000.;if enabled{on.push(ns)}else{off.push(ns)}}
+    off.sort_by(f64::total_cmp);on.sort_by(f64::total_cmp);
+    eprintln!("PROFILE_OVERHEAD resources=8 (4 Lua/4 JS) callbacks=240000 off_median_ns_per_dispatch={:.0} on_median_ns_per_dispatch={:.0} added_ns_per_resource={:.0} ratio={:.3} retained={} capacity=4096",off[1],on[1],(on[1]-off[1])/8.,on[1]/off[1],h.profile_snapshot().spans.len());
+    assert!(h.running_ids().len()==8);assert_eq!(h.profile_snapshot().spans.len(),4096);
+}
+
+#[test]
+fn resource_settings_failure_preserves_durable_update_and_grants_are_enforced() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"settings-failure");
+    let mut denied=with_settings(installed(&temp,"denied","resource.settings.all()",&[],&["resource.settings"]));denied.grants.clear();h.install(vec![denied]).unwrap();assert!(h.start_all().unwrap_err().contains("capability"));
+    let app=with_settings(installed(&temp,"notify_fail","return {on_settings=function()error('callback rejected')end}",&[],&["resource.settings"]));h.install(vec![app.clone()]).unwrap();h.start_all().unwrap();
+    let result=h.set_setting("notify_fail","round",json!(77)).unwrap();assert!(result.applied);assert!(result.notification_error.is_some());assert!(!h.running("notify_fail"));
+    let mut restart=host(&temp,Side::Server,"settings-failure");restart.install(vec![app]).unwrap();assert_eq!(restart.settings_snapshot("notify_fail").unwrap()["round"].value,json!(77));
 }

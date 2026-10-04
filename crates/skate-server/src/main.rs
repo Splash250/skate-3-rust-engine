@@ -4,10 +4,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn run() -> Result<(), String> {
-    let Some(options) = Options::parse(std::env::args_os().skip(1))? else {
+fn run() -> Result<i32, String> {
+    let args:Vec<_>=std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg|arg=="--validate-resources") {
+        if args.len()!=2 {return Err("--validate-resources requires exactly one configuration path".into());}
+        println!("{}",skate_server::resources::validate_configuration(std::path::Path::new(&args[1]))?);
+        return Ok(0);
+    }
+    let Some(options) = Options::parse(args)? else {
         println!("{USAGE}");
-        return Ok(());
+        return Ok(0);
     };
     let session = options.session;
     let max_players = options.max_players;
@@ -64,15 +70,19 @@ fn run() -> Result<(), String> {
             input.consume(length);
         }
     });
+    let supervised=std::env::var_os("SKATE_SUPERVISOR_CONTROL").is_some();
+    let mut heartbeat=Instant::now()-Duration::from_secs(1);
     let mut players = 0;
     let mut last_status = Instant::now();
     loop {
         let before = Instant::now();
         for _ in 0..8 {
             let Ok(line) = receive.try_recv() else { break };
+            if supervised && line.trim() == "supervisor-stop" {host.shutdown();return Ok(2);}
             if line.trim() == "quit" {
+                if supervised {skate_server::supervision::shutdown_intent()?;}
                 host.shutdown();
-                return Ok(());
+                return Ok(0);
             }
             if line.trim().is_empty() {
                 continue;
@@ -83,6 +93,14 @@ fn run() -> Result<(), String> {
             }
         }
         host.step().map_err(|e| format!("UDP service: {e}"))?;
+        if supervised && heartbeat.elapsed()>=Duration::from_millis(250) {
+            skate_server::supervision::heartbeat()?;
+            heartbeat=Instant::now();
+        }
+        if let Some(restart)=host.exit_requested() {
+            host.shutdown();
+            return Ok(if restart {75}else{0});
+        }
         let current = host.player_count();
         if current != players || last_status.elapsed() >= Duration::from_secs(30) {
             println!("Players: {current}/{max_players}");
@@ -95,8 +113,8 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("skate-server: {error}\n{USAGE}");
-        std::process::exit(2);
+    match run() {
+        Ok(code)=>std::process::exit(code),
+        Err(error)=>{eprintln!("skate-server: {error}\n{USAGE}");std::process::exit(2);}
     }
 }

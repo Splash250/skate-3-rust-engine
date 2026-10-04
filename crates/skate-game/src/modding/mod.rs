@@ -35,6 +35,7 @@ pub(crate) use menu::ModMenu;
 use bevy::{
     asset::io::{AssetSourceBuilder, file::FileAssetReader},
     prelude::*,
+    text::LineHeight,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1005,13 +1006,102 @@ fn apply(world: &mut World, mods: &mut Mods) {
         }
     }
     sync_audio_content(world, mods);
+    layout_overlays(world, mods.overlays.values().copied());
+}
+
+fn layout_overlays(world: &mut World, entities: impl Iterator<Item = Entity>) {
     let mut row = 0;
-    for entity in mods.overlays.values() {
-        if let Some(mut node) = world.get_mut::<Node>(*entity) {
-            let top=px(16. + row as f32 * 28.);
-            if node.top!=top {node.top=top;}
-            row += 1;
+    for entity in entities {
+        // These overlays use hard breaks, not width-dependent wrapping. Read
+        // current text so new commands reflow before the renderer measures it.
+        let lines = world.get::<Text>(entity).map_or(1, |text| {
+            let mut lines = 1;
+            let mut bytes = text.0.bytes().peekable();
+            while let Some(byte) = bytes.next() {
+                if matches!(byte, b'\r' | b'\n') {
+                    lines += 1;
+                    // Match the renderer's paired CRLF / LFCR line endings.
+                    if bytes.peek().is_some_and(|next| {
+                        matches!((byte, *next), (b'\r', b'\n') | (b'\n', b'\r'))
+                    }) {
+                        bytes.next();
+                    }
+                }
+            }
+            lines
+        });
+        if let Some(mut node) = world.get_mut::<Node>(entity) {
+            let top = px(16. + row as f32 * 28.);
+            if node.top != top {
+                node.top = top;
+            }
+            row += lines;
         }
+    }
+}
+
+fn spawn_overlay(world: &mut World, text: String) -> Entity {
+    world
+        .spawn((
+            Text::new(text),
+            TextFont {
+                font_size: 19.,
+                ..default()
+            },
+            LineHeight::Px(28.),
+            TextLayout::new_with_no_wrap(),
+            TextColor(Color::WHITE),
+            GlobalZIndex(3),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(16.),
+                ..default()
+            },
+        ))
+        .id()
+}
+
+#[cfg(test)]
+mod overlay_layout_tests {
+    use super::*;
+
+    #[test]
+    fn hard_breaks_reserve_space_before_the_next_resources_overlay() {
+        let mut world = World::new();
+        let standings = spawn_overlay(&mut world, "Standings\n\nThird line\n".into());
+        let profile = spawn_overlay(&mut world, "Profile".into());
+        layout_overlays(&mut world, [standings, profile].into_iter());
+        assert_eq!(world.get::<Node>(standings).unwrap().top, px(16.));
+        assert_eq!(world.get::<Node>(profile).unwrap().top, px(128.));
+        assert_eq!(
+            world.get::<LineHeight>(standings),
+            Some(&LineHeight::Px(28.))
+        );
+        assert_eq!(
+            world.get::<TextLayout>(standings).unwrap().linebreak,
+            bevy::text::LineBreak::NoWrap
+        );
+    }
+
+    #[test]
+    fn changed_text_and_removed_rows_reflow_without_stale_render_measurements() {
+        let mut world = World::new();
+        let standings = spawn_overlay(&mut world, "Standings".into());
+        let profile = spawn_overlay(&mut world, "Profile".into());
+        let tournament = spawn_overlay(&mut world, "Tournament".into());
+        let entities = [standings, profile, tournament];
+        layout_overlays(&mut world, entities.into_iter());
+        assert_eq!(world.get::<Node>(tournament).unwrap().top, px(72.));
+        world.get_mut::<Text>(standings).unwrap().0 = "Standings\r\nCourse\rNative".into();
+        layout_overlays(&mut world, entities.into_iter());
+        assert_eq!(world.get::<Node>(profile).unwrap().top, px(100.));
+        assert_eq!(world.get::<Node>(tournament).unwrap().top, px(128.));
+        world.despawn(profile);
+        layout_overlays(&mut world, entities.into_iter());
+        assert_eq!(world.get::<Node>(tournament).unwrap().top, px(100.));
+        world.get_mut::<Text>(standings).unwrap().0 = "Standings".into();
+        layout_overlays(&mut world, entities.into_iter());
+        assert_eq!(world.get::<Node>(tournament).unwrap().top, px(44.));
     }
 }
 
@@ -1161,22 +1251,7 @@ fn apply_one(
             if let Some(e) = mods.overlays.remove(&k) {
                 world.despawn(e);
             }
-            let entity = world
-                .spawn((
-                    Text::new(text),
-                    TextFont {
-                        font_size: 19.,
-                        ..default()
-                    },
-                    TextColor(Color::WHITE),
-                    GlobalZIndex(3),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(16.),
-                        ..default()
-                    },
-                ))
-                .id();
+            let entity = spawn_overlay(world, text);
             mods.overlays.insert(k, entity);
         }
         Command::PhysicsSpawn { key, body } => {

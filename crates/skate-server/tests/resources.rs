@@ -51,6 +51,7 @@ fn fixture(t: &Temp) -> PathBuf {
 fn host(config: PathBuf) -> Host {
     Host::bind(Options {
         accounts: None,
+        operations: None,
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: 16,
