@@ -1,0 +1,47 @@
+name: Linux checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          pkg-config clang libclang-dev libudev-dev libasound2-dev libx11-dev
+          libxcursor-dev libxi-dev libxrandr-dev libwayland-dev
+          libxkbcommon-dev libvulkan-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-checks
+      - name: Rust formatting
+        run: >-
+          rustfmt --edition 2024 --check
+          crates/skate-platform/src/lib.rs crates/skate-platform/src/exe.rs
+          crates/skate-platform/src/process.rs crates/skate-platform/src/crash.rs
+          crates/skate-platform/src/input/mod.rs crates/skate-platform/src/input/xinput.rs
+          crates/skate-platform/src/input/gilrs_raw.rs crates/skate-xiso/src/lib.rs
+          crates/skate-xiso/src/main.rs
+      - name: Focused Rust tests
+        run: cargo test --locked -p skate-platform -p skate-xiso
+      - name: Setup and shell behavior tests
+        run: python -m unittest tools.test_setup_linux tools.test_setup_refresh tools.test_setup_assets tools.test_linux_scripts -v
+      - name: Workspace check
+        run: cargo check --workspace --locked
+      - name: Optional Steam transport and direct UDP regression tests
+        run: cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic multiplayer::transport::tests
+      - name: Resource grants, asset validation and engine ownership cleanup
+        run: cargo test --locked -p skate-game --bin skate3rust --features dev-dynamic dedicated_resource
+      - name: POSIX shell syntax
+        run: sh -n BUILD.sh PLAY.sh

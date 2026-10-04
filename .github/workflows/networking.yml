@@ -1,0 +1,86 @@
+name: Networking and dedicated server
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  networking:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: networking-${{ runner.os }}
+      - name: Shared protocol and dedicated UDP tests
+        run: cargo test --locked -p skate-net -p skate-server -p skate-resources
+      - name: Lua runtime, resource examples and redistributable physics fixtures
+        run: cargo test --locked -p skate-mods --lib --test resource_runtime --test physics_api --test validate_example
+      - name: Server packaging tests
+        run: python -m unittest tools.test_package_server -v
+      - name: Build and stage the native Linux Steam relay
+        if: runner.os == 'Linux'
+        run: |
+          python -m unittest tools.test_stage_steam_relay -v
+          cargo build --locked -p skate-steam-relay --target x86_64-unknown-linux-gnu
+          python scripts/stage-steam-relay.py
+      - name: Verify Linux relay library loading without Steam
+        if: runner.os == 'Linux'
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+
+          stage = Path('target/debug/steam-relay').resolve()
+          result = subprocess.run(
+              [str(stage / 'skate-steam-relay')], cwd=stage,
+              env={**os.environ, 'LD_LIBRARY_PATH': str(stage)},
+              capture_output=True, text=True, timeout=10,
+          )
+          print(result.stdout, end='')
+          print(result.stderr, end='')
+          assert result.returncode == 1, f'Unexpected exit status: {result.returncode}'
+          assert 'Expected parent-address' in result.stderr, 'Relay did not reach argument parsing'
+          PY
+      - name: Build standalone Windows server package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Exercise relative overrides when the process and PowerShell working
+          # directories differ; outputs must still be rooted in the repository.
+          [Environment]::CurrentDirectory = $env:RUNNER_TEMP
+          ./scripts/Build-ServerRelease.ps1 -TargetDirectory target -OutputDirectory target
+      - name: Verify extracted Windows server UDP and Lua resource downloads
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $PWD 'target/skate-server-windows-x64.zip'
+          $expected = ((Get-Content -LiteralPath "$archive.sha256" -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($actual -ine $expected) { throw 'Dedicated server ZIP checksum mismatch' }
+          $unpacked = Join-Path $env:RUNNER_TEMP ('server-smoke-' + [guid]::NewGuid().ToString('N'))
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
+          $env:SKATE_SERVER_EXE = (Resolve-Path (Join-Path $unpacked 'skate-server-windows-x64/skate-server.exe')).Path
+          cargo test --locked -p skate-server --test package --test resources
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted dedicated server UDP smoke test failed' }
+      - name: Upload Windows server package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: skate-server-windows-x64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            target/skate-server-windows-x64.zip
+            target/skate-server-windows-x64.zip.sha256
