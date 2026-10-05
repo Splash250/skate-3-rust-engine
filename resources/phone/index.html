@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skate Phone</title><link rel="stylesheet" href="phone.css"><script src="phone.js" defer></script></head>
+<body data-theme="twilight">
+<main id="phone" class="phone" aria-label="Phone">
+  <div class="screen">
+    <header class="statusbar"><time id="clock">--:--</time><span class="speaker" aria-hidden="true"></span><span id="voice-status" class="connection">Voice off</span></header>
+    <div id="call-banner" hidden></div>
+    <header id="navigation" class="navigation" hidden><button id="back" type="button" class="icon-button" aria-label="Back to home"></button><h1 id="title"></h1><button id="close" type="button" class="icon-button" aria-label="Close phone"></button></header>
+    <section id="home" class="page home" aria-label="Home">
+      <div class="home-clock"><p id="date"></p><time id="large-clock">--:--</time><p class="greeting">Good times. Keep them close.</p></div>
+      <div class="apps" id="apps"></div>
+      <div class="home-bottom"><span class="brand">SKATE <span>CONNECT</span></span><button id="home-close" class="icon-button" aria-label="Close phone" type="button"></button></div>
+    </section>
+    <section id="content" class="page content" hidden aria-live="polite"></section>
+    <p id="notice" class="notice" role="status" hidden></p>
+    <footer class="controls"><span><b>A</b> Select</span><span><b>B</b> Back</span><span>Esc · Close</span></footer>
+    <button id="home-button" class="home-button" type="button" aria-label="Home"></button>
+  </div>
+</main>
+<section id="camera-overlay" class="camera-overlay" hidden aria-label="Camera viewfinder controls"><div class="camera-label">CAMERA <span>1920 × 1080</span></div><h1>Frame the moment.</h1><p>Right stick / arrows · Frame<br>Triggers / PgUp & PgDn · Zoom</p><div class="camera-actions"><strong>X / F12 · Photograph</strong><span>B / Esc · Gallery</span></div><p id="camera-status" role="status">Photos save to Desktop / Skate Photos.</p></section>
+</body></html>

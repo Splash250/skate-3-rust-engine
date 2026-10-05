@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "phone",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [
+    "index.html",
+    "phone.css",
+    "phone.js",
+    "phone-sans.ttf",
+    "font-license.txt",
+    "ring.wav"
+  ],
+  "dependencies": {
+    "phone-calls": "1.0.0",
+    "interaction-policy": "1.0.0",
+    "inventory-ui": "1.0.0",
+    "admin-dashboard": "1.0.0"
+  },
+  "capabilities": [
+    "resource.exports",
+    "resource.storage",
+    "resource.events",
+    "engine.ui",
+    "engine.audio",
+    "engine.photos"
+  ],
+  "exports": [
+    "open"
+  ],
+  "requires_features": [
+    "resource.interfaces.v1",
+    "browser.surface.v1",
+    "engine.photos.v1"
+  ]
+}

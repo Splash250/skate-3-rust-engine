@@ -127,6 +127,7 @@ impl JavaScript {
                                         | "resource.storage.set"
                                         | "resource.call"
                                         | "resource.players"
+                                        | "resource.authorized"
                                         | "resource.teleport"
                                         | "resource.entities.command"
                                         | "resource.entities.all"

@@ -81,6 +81,7 @@
         // Lua's empty sequence crosses the shared adapter as an empty object.
         // Preserve the public list contract before the first player joins too.
         players() { const value=call('resource.players'); return isArray(value) ? value : []; },
+        authorized(sender, permission) { return call('resource.authorized', sender, permission) === true; },
         lifecycle(handlers) { for (const name of Object.keys(handlers)) register('lifecycle', name, handlers[name]); },
         entities: { command(value) { return call('resource.entities.command', value); }, all() { return call('resource.entities.all'); } },
         entity(value) { return call('resource.entities.command', value); },

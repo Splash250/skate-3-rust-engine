@@ -179,4 +179,52 @@ fn controller_identity_is_metadata_and_never_changes_gameplay_actions() {
     let mut input = with;
     input.collect(std::array::from_fn(|_| Err(DeviceError::Disconnected)));
     assert!(input.kind(0).is_none());
+#[test]
+fn trusted_consumed_buttons_keep_physical_voice_input_without_manual_marker_actions() {
+    let mut input = ControllerInput::default();
+    let mut baseline = ControllerInput::default();
+    for number in 1..=3 {
+        input.collect_masked(
+            [
+                packet(number, 0x100 | 0x1, [16000, 0]),
+                Err(DeviceError::Disconnected),
+                Err(DeviceError::Disconnected),
+                Err(DeviceError::Disconnected),
+            ],
+            0x100,
+        );
+        input.publish_actions();
+        baseline.collect([
+            packet(number, 0x1, [16000, 0]),
+            Err(DeviceError::Disconnected),
+            Err(DeviceError::Disconnected),
+            Err(DeviceError::Disconnected),
+        ]);
+        baseline.publish_actions();
+    }
+    assert_eq!(input.raw_input().buttons, 0x101);
+    assert_eq!(input.session_marker_actions(), (false, false, false));
+    // Stick conditioning applies the native 0.25 deadzone. Consuming LB must
+    // leave every other mapped action exactly equal to the same packet without LB.
+    assert!(baseline.mapped_actions[0][0] > 0.0);
+    assert_eq!(input.mapped_actions, baseline.mapped_actions);
+}
+
+#[test]
+fn one_physical_frame_serves_interface_before_gameplay_collection() {
+    let mut frame = crate::input::ControllerFrame(Some([
+        Err(DeviceError::Disconnected),
+        packet(4, 0x100, [16000, 0]),
+        Err(DeviceError::Disconnected),
+        Err(DeviceError::Disconnected),
+    ]));
+    assert_eq!(frame.raw_input().buttons, 0x100);
+    assert_eq!(frame.raw_input().left, [16000.0 / 32768.0, 0.0]);
+    let mut input = ControllerInput::default();
+    input.collect_masked(frame.0.take().unwrap(), 0x100);
+    input.publish_actions();
+    assert_eq!(input.raw_input().buttons, 0x100);
+    assert_eq!(input.packet_numbers[1], Some(4));
+    assert!(input.mapped_actions[1][0] > 0.0);
+    assert_eq!(input.session_marker_actions(), (false, false, false));
 }

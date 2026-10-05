@@ -7,6 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_SETTINGS: usize = 64;
 pub const MAX_SETTINGS_BYTES: usize = 32 * 1024;
 pub const ENGINE_FEATURES: &[&str] = &[
+    "resource.interfaces.v1",
+    "browser.surface.v1",
+    "engine.photos.v1",
+    "resource.admin.v1",
+    "resource.authorization.v1",
     "resource.settings.v1",
     "resource.profiling.v1",
     "resource.teleport_leases.v1",

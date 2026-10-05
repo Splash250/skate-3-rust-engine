@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "admin-dashboard",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [
+    "index.html",
+    "admin.css",
+    "admin.js"
+  ],
+  "capabilities": [
+    "engine.ui",
+    "resource.network",
+    "resource.admin"
+  ],
+  "requires_features": [
+    "resource.interfaces.v1",
+    "browser.surface.v1",
+    "resource.admin.v1"
+  ]
+}

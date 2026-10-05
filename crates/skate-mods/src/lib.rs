@@ -20,6 +20,8 @@ mod lua_patterns;
 mod runtime_metrics;
 mod runtime_profile;
 pub mod extensions;
+pub mod interactions;
+pub mod photo;
 pub mod resources;
 mod javascript;
 mod managed;

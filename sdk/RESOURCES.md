@@ -675,3 +675,68 @@ measurements are null. `@host` dispatch spans correlate callback costs with
 resource dispatch stalls. Trace metadata contains no payloads, settings values,
 storage contents, full source or script error text. See
 [profiling](../docs/multiplayer/resource-profiling.md) for use and measurements.
+
+## In-game interfaces and administration
+
+Feature IDs `resource.interfaces.v1`, `browser.surface.v1`, `engine.photos.v1` and
+`resource.admin.v1` can be declared in `requires_features`. The engine's generic
+registry/input/composition APIs are described in [GENERAL_API.md](GENERAL_API.md)
+and [resource interactions](../docs/multiplayer/resource-interactions.md).
+
+`resource.admin` is an explicit grant for a narrow native administration bridge,
+not authority to bypass a player's roles. Client resources send
+`resource.send('__host_admin',{seq='correlation',action={kind='permissions'}})` and
+register `resource.on_net('__host_admin_result',callback)`. `permissions` accepts an
+optional `check={"custom.manage"}` list of up to 128 permission names, each at most
+64 ASCII letters/digits or `_.:-*`. Only currently permitted requested names and
+the built-in dashboard permissions return; no account secrets or role internals
+are exposed. Other supported kinds
+are `status`, `settings_read`, `settings_set`, `resource_start`, `resource_stop`,
+`resource_restart` and `profile_read`, with the existing typed action fields.
+Only sender `"0"` is accepted for results. Correlation IDs are bounded 32-byte
+letters/digits/underscore/hyphen strings; replies contain `{seq,ok,value,error}`.
+
+The native server intercepts the reserved request before resource callbacks and
+uses the actual admitted sender. Generation, requested/granted capability, live
+verified session and the action's permission are checked. Execution uses the
+existing audited administration queue, and original permission/session are checked
+again before private delivery. Limits are four pending requests per actor, 64
+overall, eight ingress requests/second per actor and 15 KiB response data. Large
+results become actionable errors, not partial private settings. Pages never receive
+account credentials or unrestricted execution. Close a dashboard by retiring its
+pending UI correlations; a stale response must not repopulate a new screen.
+
+The RP profile includes `interaction-policy`, `master-menu`, `phone`, `phone-calls`,
+`inventory-ui`, `admin-dashboard` and `park-guide`, with exact dependencies and
+explicit grants in [rp-server.json](../resources/rp-server.json).
+
+### Authorizing plugin-specific server handlers
+
+Declare and grant `resource.authorization`, with required feature
+`resource.authorization.v1`. Lua and JavaScript use
+`resource.authorized(sender, permission)`; C# uses
+`resource.Authorized(sender, permission)`. The result is a boolean derived from
+the existing live verified account session. It is false on clients, without the
+capability, without verified login, for disconnected actors, and after permission
+revocation. A permission name is 1–64 ASCII letters/digits or `_.:-*`; actor IDs
+are canonical nonzero decimal strings. No role array or identity supplied by a
+client payload is trusted, and this call does not access SQL or expose credentials.
+
+```lua
+resource.on_net("diagnostics_test", function(request, sender)
+    if not resource.authorized(sender, "calls.test") then return end
+    -- Validate and rate-limit this specific bounded operation here.
+    local result = run_bounded_invariant_test()
+    -- Recheck before returning private data; roles can change during work.
+    if resource.authorized(sender, "calls.test") then
+        resource.send("diagnostics_result", result, sender, {kind="player", id=sender})
+    end
+end)
+```
+
+Always use the handler's actual sender argument. A visibility check in a menu
+does not authorize a handler. Each private read, mutation and test operation must
+check its own permission. Recheck before returning results, including after an
+export or asynchronous completion, and scope results
+to that same actor and request generation. See the shipped
+`resources/call-diagnostics` dashboard for separate read/test permissions.

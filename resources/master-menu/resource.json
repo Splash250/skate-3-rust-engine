@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "master-menu",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [
+    "index.html",
+    "menu.css",
+    "menu.js"
+  ],
+  "dependencies": {
+    "interaction-policy": "1.0.0",
+    "phone": "1.0.0",
+    "inventory-ui": "1.0.0",
+    "admin-dashboard": "1.0.0",
+    "park-guide": "1.0.0",
+    "call-diagnostics": "1.0.0"
+  },
+  "capabilities": [
+    "engine.ui",
+    "resource.exports"
+  ],
+  "requires_features": [
+    "resource.interfaces.v1",
+    "browser.surface.v1"
+  ]
+}

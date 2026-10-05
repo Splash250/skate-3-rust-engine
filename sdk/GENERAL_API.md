@@ -325,3 +325,35 @@ and receive lifecycle `on_event` results. They execute in the managed worker,
 subject to the capability checks and process limits documented in
 [RESOURCES.md](RESOURCES.md#c-resources); they do not receive native pointers or
 arbitrary .NET/native libraries.
+
+## Resource interaction registry and local photographs
+
+Dedicated resources with `engine.ui` can use `sdk.ui.interfaces.register(key,
+descriptor)`, `.remove(key)`, `.list()`, `.invoke(id,generation)` and
+`.bind(id,binding)`. Version-1 descriptors, ownership limits, dependency rules,
+local remapping and the shared-policy example are documented in
+[resource interactions](../docs/multiplayer/resource-interactions.md#apps-interfaces-and-themes).
+List replies use `on_event {type='interfaces',version=1,entries}`; invocation uses
+`on_event {type='interface',key,generation}` on the registered owner only.
+The generic command is `{kind='ui_interfaces',operation={kind='register',key=...,
+descriptor=...}}` (or `remove`, `list`, `invoke`, `bind`). Wrap a command in
+`sdk.commands.request` to handle rejection without resource failure.
+
+`sdk.ui.interaction_policy(manual_markers)` requires `engine.input` and installs a
+resource-owned override for manual marker controls/HUD. False suppresses only
+manual placement/return; automatic recovery remains. Retiring every suppressing
+owner restores the stock behavior.
+
+The narrow `engine.photos` capability exposes `sdk.photos.mode(enabled)`,
+`.gallery()` and `.thumbnail(opaque_id)`. Commands are `{kind='photos',
+operation={op='mode',enabled=true}}`, `{op='gallery'}` and `{op='thumbnail',id=...}`.
+There is no scripted shutter, supplied filename, directory or arbitrary-file read.
+Mode entry requires the same resource's focused in-game browser. The native host
+accepts only local physical shutter input while that camera context is active.
+Listen through `resource.on('photo',callback)` for `mode`, `saving`, `saved`,
+`error`, `gallery` and `thumbnail` results. Thumbnail results contain bounded data
+URLs; `saved` returns an opaque ID/dimensions and a generic destination label,
+never a filesystem pathname. See the guide for Desktop resolution and budgets.
+
+JavaScript and C# use these same validated command schemas through `sdk.submit`
+and `Resource.Submit`; no separate language-specific permission path exists.

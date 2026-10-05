@@ -1,0 +1,48 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "phone-calls",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "exports": [
+    "request",
+    "snapshot",
+    "diagnostics",
+    "invariant_test"
+  ],
+  "requires_features": [
+    "resource.settings.v1"
+  ],
+  "capabilities": [
+    "resource.network",
+    "resource.events",
+    "resource.exports",
+    "resource.settings",
+    "resource.voice",
+    "engine.voice"
+  ],
+  "settings": {
+    "ring_seconds": {
+      "type": "integer",
+      "default": 30,
+      "min": 10,
+      "max": 60,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "dial_cooldown_seconds": {
+      "type": "integer",
+      "default": 5,
+      "min": 3,
+      "max": 60,
+      "visibility": "private",
+      "change": "live"
+    }
+  }
+}

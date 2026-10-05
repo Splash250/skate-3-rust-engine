@@ -26,6 +26,7 @@ pub(crate) struct Accounts {
     peer_seen: BTreeMap<u64, Instant>,
     admitted: BTreeSet<u64>,
     completions: VecDeque<(u64, skate_accounts::Result<String>)>,
+    gameplay_admin: BTreeMap<u64, (crate::resources::admin::Request, VerifiedSession)>,
     last_status: Instant,
 }
 impl Accounts {
@@ -61,6 +62,7 @@ impl Accounts {
             peer_seen: BTreeMap::new(),
             admitted: BTreeSet::new(),
             completions: VecDeque::new(),
+            gameplay_admin: BTreeMap::new(),
             last_status: Instant::now() - Duration::from_secs(1),
         })
     }
@@ -111,13 +113,13 @@ impl Accounts {
             }
         }
         if let Some(platform) = resources {
-            platform.set_authenticated_accounts(
+            if let Err(error) = platform.set_authenticated_sessions(
                 self.peers
-                    .values()
-                    .filter(|s| s.is_active())
-                    .map(|s| (s.actor(), s.account_id().to_string()))
+                    .iter()
+                    .filter(|(peer, session)| session.is_active() && server.peer_for_actor(session.actor()) == Some(**peer))
+                    .map(|(_,session)| (session.actor(), session.clone()))
                     .collect(),
-            );
+            ) { eprintln!("Resource authorization update: {error}"); }
         }
     }
     pub fn step(
@@ -143,6 +145,7 @@ impl Accounts {
         self.peer_seen.retain(|peer,_|self.peers.contains_key(peer));
         self.admitted
             .retain(|actor| self.peers.values().any(|session| session.actor() == *actor));
+        self.resource_admin(server, resources);
         // Retain a failed try-lock completion; execute each host action only once.
         while let Some((ticket, result)) = self.completions.front() {
             if self.bridge.complete(*ticket, result.clone()).is_err() {
@@ -157,7 +160,11 @@ impl Accounts {
             let Some(command) = self.bridge.try_command() else {
                 break;
             };
-            let result = if !command.session.permits(command.action.permission()) {
+            let live_interface = self.gameplay_admin.get(&command.ticket).is_none_or(|(request, session)| {
+                session.is_active() && resources.as_ref().is_some_and(|platform|platform.admin_request_live(request))
+                    && server.peer_for_actor(request.sender).is_some_and(|peer|self.peers.get(&peer).is_some_and(|active|active.actor()==session.actor()))
+            });
+            let result = if !live_interface || !command.session.permits(command.action.permission()) {
                 Err(skate_accounts::Error {
                     code: "denied".into(),
                     message: "session or permission revoked before execution".into(),
@@ -165,6 +172,10 @@ impl Accounts {
             } else {
                 let host_error = |message:String| skate_accounts::Error {code:"host".into(),message};
                 match command.action {
+                    HostAction::StatusRead {} => {
+                        let resource_status=resources.as_ref().map(|platform|platform.admin_status()).unwrap_or_else(||serde_json::json!({"resources":[]}));
+                        serde_json::to_string(&resource_status).map_err(|error|host_error(error.to_string()))
+                    }
                     HostAction::Maintenance {reason,delay_ms,restart} => {
                         if crate::supervision::pending() {Err(host_error("A stopped-store operation is already draining".into()))}
                         else if restart && !crate::supervision::available() {Err(host_error("Restart requires the external supervisor".into()))}
@@ -251,6 +262,58 @@ impl Accounts {
             // bounded before publication so they cannot leave stale status.
             let _ = self.bridge.set_status(status);
             self.last_status = Instant::now();
+        }
+    }
+
+    fn resource_admin(&mut self, server: &mut skate_net::dedicated::Server, resources: &mut Option<crate::resources::Platform>) {
+        let Some(platform)=resources.as_mut() else { return; };
+        for request in platform.take_admin_requests() {
+            let session=server.peer_for_actor(request.sender).and_then(|peer|self.peers.get(&peer))
+                .filter(|session|session.actor()==request.sender && session.is_active()).cloned();
+            let Some(session)=session else {
+                platform.finish_admin_request(&request,Err(crate::resources::admin::error("Verified gameplay session required.")),server);
+                continue;
+            };
+            if !platform.admin_request_live(&request) {
+                platform.finish_admin_request(&request,Err(crate::resources::admin::error("Interface generation retired.")),server);
+                continue;
+            }
+            if let Some(action)=request.action.host_action() {
+                if self.gameplay_admin.len()>=64 {
+                    platform.finish_admin_request(&request,Err(crate::resources::admin::error("Administration request queue is full.")),server);
+                    continue;
+                }
+                match self.bridge.enqueue_gameplay(session.clone(),action) {
+                    Ok(ticket)=>{self.gameplay_admin.insert(ticket,(request,session));},
+                    Err(error)=>platform.finish_admin_request(&request,Err(error),server),
+                }
+            } else {
+                platform.finish_admin_request(&request,Ok(crate::resources::admin::permissions(&session,&request.action)),server);
+            }
+        }
+        let tickets:Vec<_>=self.gameplay_admin.keys().copied().collect();
+        for ticket in tickets {
+            let (request,session)=&self.gameplay_admin[&ticket];
+            let live=platform.admin_request_live(request) && session.is_active()
+                && server.peer_for_actor(request.sender).is_some_and(|peer|self.peers.get(&peer).is_some_and(|active|active.actor()==session.actor()));
+            let completion = if !live {
+                if self.bridge.cancel_gameplay(session,ticket).is_err() {continue;}
+                Some(Err(crate::resources::admin::error("Request session or interface retired.")))
+            } else {
+                match self.bridge.try_gameplay_result(session,ticket) {
+                    Ok(None)=>None,
+                    Ok(Some(result))=>Some(result.map(|text|serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))),
+                    Err(error) if error.code=="busy"=>None,
+                    Err(error)=>{
+                        if self.bridge.cancel_gameplay(session,ticket).is_err() {continue;}
+                        Some(Err(error))
+                    }
+                }
+            };
+            if let Some(result)=completion {
+                let (request,_)=self.gameplay_admin.remove(&ticket).unwrap();
+                platform.finish_admin_request(&request,result,server);
+            }
         }
     }
 }

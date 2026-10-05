@@ -160,13 +160,13 @@ pub(super) fn clear(world: &mut World) {
     });
 }
 
-struct GameplayEnv {
-    hdr: bool,
-    tone: Option<crate::retail_render::RetailTone>,
-    layers: Option<RenderLayers>,
+pub(super) struct GameplayEnv {
+    pub hdr: bool,
+    pub tone: Option<crate::retail_render::RetailTone>,
+    pub layers: Option<RenderLayers>,
 }
 
-fn gameplay_environment(world: &mut World) -> GameplayEnv {
+pub(super) fn gameplay_environment(world: &mut World) -> GameplayEnv {
     let mut query = world.query_filtered::<(
         Option<&Hdr>,
         Option<&crate::retail_render::RetailTone>,

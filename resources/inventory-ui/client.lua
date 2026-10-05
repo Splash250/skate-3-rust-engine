@@ -1,7 +1,7 @@
-local opened, ready, was_down = false, false, false
+local opened, ready = false, false
 local function open()
     if opened then return end
-    sdk.ui.browser.open("inventory", {entry="index.html", files={"index.html","inventory.css","inventory.js"}, width=900, height=640, focus=true})
+    sdk.ui.browser.open("inventory", {entry="index.html", files={"index.html","inventory.css","inventory.js"}, width=900, height=640, focus=true, surface={anchor="center",scale=1,offset={0,0},fps=20}})
     opened=true
 end
 resource.on_net("inventory", function(payload, sender)
@@ -11,13 +11,11 @@ resource.on_net("inventory", function(payload, sender)
     end
 end)
 return {
-    on_load=function() open(); sdk.ui.text("inventory-help", "Inventory: I") end,
-    on_update=function()
-        local down=sdk.input.down("KeyI") == true
-        if down and not was_down then open() end
-        was_down=down
+    on_load=function()
+        sdk.ui.interfaces.register("open",{version=1,label="Inventory",icon="bag",category="Player",destination="dashboard",phone=true,quick=true,binding={key="KeyI",hold_ms=0}})
     end,
     on_event=function(payload)
+        if payload.type=="interface" and payload.key=="open" then open();return end
         if payload.type ~= "browser" or payload.key ~= "inventory" then return end
         local event=payload.event
         if event.kind == "ready" then

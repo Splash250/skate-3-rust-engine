@@ -240,28 +240,26 @@ impl Plugin for CustomiserPlugin {
             );
     }
 }
-pub(crate) fn navigation(mut nav: ResMut<Navigation>, time: Res<Time<Real>>, keys: Res<ButtonInput<KeyCode>>) {
-    let pad = (0..4).find_map(|i| crate::input::platform::poll(i).ok());
+pub(crate) fn navigation(mut nav: ResMut<Navigation>, time: Res<Time<Real>>, keys: Res<ButtonInput<KeyCode>>, frame: Res<crate::input::ControllerFrame>) {
+    let pad = frame.raw_input();
     // Remap outside the dead zone so a resting stick cannot drift the preview.
-    let axis = pad.as_ref().map_or(0., |p| (p.state.right[0] as f32 / 32767.).clamp(-1., 1.));
+    let axis = (pad.right[0] * (32768.0 / 32767.0)).clamp(-1., 1.);
     nav.preview_turn = axis.signum() * ((axis.abs() - 0.24) / 0.76).max(0.);
-    let mut current = pad.map_or(0, |p| {
-            p.state.buttons
-                | if p.state.left[1] > 16000 {
+    let mut current = pad.buttons
+                | if pad.left[1] > 16000.0 / 32768.0 {
                     1
-                } else if p.state.left[1] < -16000 {
+                } else if pad.left[1] < -16000.0 / 32768.0 {
                     2
                 } else {
                     0
                 }
-                | if p.state.left[0] > 16000 {
+                | if pad.left[0] > 16000.0 / 32768.0 {
                     8
-                } else if p.state.left[0] < -16000 {
+                } else if pad.left[0] < -16000.0 / 32768.0 {
                     4
                 } else {
                     0
-                }
-        });
+                };
     for (key, bit) in [
         (KeyCode::ArrowUp, 1),
         (KeyCode::ArrowDown, 2),

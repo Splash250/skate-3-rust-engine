@@ -20,6 +20,9 @@ use std::{
 };
 
 pub const MAX_PAYLOAD: usize = 16 * 1024;
+/// A trusted native host adapter. Implementations must be bounded and nonblocking;
+/// scripts cannot install one or mutate the identity/permissions behind it.
+pub type Authorizer = Arc<dyn Fn(u64, &str) -> bool + Send + Sync>;
 fn default_transfer_timeout()->u64 {10_000}
 
 /// Host-selected limits. Peers never choose the limits of a local VM.
@@ -187,6 +190,7 @@ struct RegisteredCommand {
 }
 #[derive(Default)]
 struct Shared {
+    authorizer: Option<Authorizer>,
     active: BTreeSet<String>,
     outputs: Vec<Output>,
     output_bytes: usize,
@@ -264,6 +268,10 @@ impl Bootstrap {
             "engine.camera"
         } else if kind.starts_with("audio_") {
             "engine.audio"
+        } else if kind == "photos" {
+            "engine.photos"
+        } else if kind == "ui_interaction_policy" {
+            "engine.input"
         } else if kind == "voice" {
             "engine.voice"
         } else if kind.starts_with("ui_") || matches!(kind, "overlay" | "multiplayer_debug") {
@@ -622,6 +630,20 @@ impl Bootstrap {
                 }
             })?,
         )?;
+        let ctx = self.clone();
+        api.set("authorized", lua.create_function(move |_, (actor, permission): (mlua::Value, mlua::Value)| {
+            ctx.action()?;
+            if ctx.side != Side::Server || ctx.require("resource.authorization").is_err() { return Ok(false); }
+            let (mlua::Value::String(actor), mlua::Value::String(permission)) = (actor, permission) else { return Ok(false); };
+            let (Ok(actor), Ok(permission)) = (actor.to_str(), permission.to_str()) else { return Ok(false); };
+            let Ok(id) = actor.parse::<u64>() else { return Ok(false); };
+            if id == 0 || id.to_string() != actor.as_ref() || permission.is_empty() || permission.len() > 64
+                || !permission.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.:-*".contains(&byte)) {
+                return Ok(false);
+            }
+            let adapter = ctx.shared.try_lock().ok().and_then(|shared| shared.authorizer.clone());
+            Ok(adapter.is_some_and(|authorize| authorize(id, &permission)))
+        })?)?;
         let ctx = self.clone();
         api.set("teleport", lua.create_function(move |lua, (player, value): (String, mlua::Value)| {
             if ctx.side != Side::Server { return Err(lua_error("teleport approval is server-only")); }
@@ -996,6 +1018,12 @@ pub struct Host {
     pub diagnostics: Vec<String>,
 }
 impl Host {
+    /// Inject live authenticated authorization independently of untrusted snapshots.
+    pub fn set_authorizer(&mut self, authorizer: Option<Authorizer>) -> Result<(), String> {
+        if self.side != Side::Server { return Err("authorization adapters are server-only".into()); }
+        self.shared.try_lock().map_err(|_| "resource authorization adapter is busy")?.authorizer = authorizer;
+        Ok(())
+    }
     pub fn new(side: Side, storage_root: PathBuf, scope: &str) -> Result<Self, String> {
         Self::new_with_limits(side, storage_root, scope, RuntimeLimits::default())
     }
@@ -1411,6 +1439,7 @@ impl Host {
         let mut shared=self.shared.lock().unwrap();
         shared.outputs.clear();
         shared.output_bytes=0;
+        shared.authorizer = None;
     }
     pub fn set_snapshot(&mut self, snapshot: Arc<Value>, fields: SnapshotFields) {
         self.snapshot = snapshot;
@@ -1731,7 +1760,9 @@ impl Drop for Host {
 fn supported_capability(cap: &str) -> bool {
     matches!(
         cap,
-        "resource.events"
+        "resource.admin"
+            | "resource.authorization"
+            | "resource.events"
             | "resource.network"
             | "resource.state"
             | "resource.settings"
@@ -1748,6 +1779,7 @@ fn supported_capability(cap: &str) -> bool {
             | "engine.ui"
             | "engine.audio"
             | "engine.voice"
+            | "engine.photos"
             | "engine.graphics"
             | "engine.physics"
             | "engine.player"

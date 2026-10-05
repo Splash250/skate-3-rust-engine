@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "park-guide",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "files": [
+    "index.html",
+    "guide.css",
+    "guide.js"
+  ],
+  "dependencies": {
+    "phone": "1.0.0"
+  },
+  "capabilities": [
+    "engine.ui"
+  ],
+  "requires_features": [
+    "resource.interfaces.v1",
+    "browser.surface.v1"
+  ]
+}

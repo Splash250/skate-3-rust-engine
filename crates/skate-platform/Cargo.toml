@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 skate-core.workspace = true
+dirs = "=7.0.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gilrs = "=0.11.2"

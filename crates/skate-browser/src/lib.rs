@@ -15,6 +15,122 @@ pub const MAX_FILES: usize = 512;
 pub const MAX_FILE: usize = 8 * 1024 * 1024;
 pub const MAX_ASSETS: usize = 32 * 1024 * 1024;
 pub const QUEUE: usize = 64;
+pub const MAX_SURFACE_WIDTH: u32 = 1280;
+pub const MAX_SURFACE_HEIGHT: u32 = 960;
+pub const MAX_FRAME: usize = MAX_SURFACE_WIDTH as usize * MAX_SURFACE_HEIGHT as usize * 4;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Surface {
+    #[serde(default)]
+    pub anchor: Anchor,
+    #[serde(default = "surface_scale")]
+    pub scale: f32,
+    #[serde(default = "surface_offset")]
+    pub offset: [f32; 2],
+    #[serde(default = "surface_fps")]
+    pub fps: u32,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Anchor {
+    #[default]
+    BottomRight,
+    Center,
+}
+fn surface_scale() -> f32 {
+    1.0
+}
+fn surface_offset() -> [f32; 2] {
+    [24.0, 24.0]
+}
+fn surface_fps() -> u32 {
+    20
+}
+impl Default for Surface {
+    fn default() -> Self {
+        Self {
+            anchor: Anchor::default(),
+            scale: surface_scale(),
+            offset: surface_offset(),
+            fps: surface_fps(),
+        }
+    }
+}
+/// Exact RGBA byte count, checked before any frame allocation or read.
+pub fn frame_len(width: u32, height: u32) -> Result<usize, String> {
+    if !(320..=MAX_SURFACE_WIDTH).contains(&width) || !(240..=MAX_SURFACE_HEIGHT).contains(&height)
+    {
+        return Err("browser surface dimensions outside 320..1280 x 240..960".into());
+    }
+    Ok(width as usize * height as usize * 4)
+}
+#[derive(Debug)]
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SurfaceInput {
+    Pointer {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        click: bool,
+    },
+    Wheel {
+        delta: f32,
+    },
+    Key {
+        key: String,
+        #[serde(default)]
+        shift: bool,
+    },
+    Text {
+        text: String,
+    },
+    Navigate {
+        direction: String,
+    },
+}
+impl SurfaceInput {
+    pub fn validate(&self) -> bool {
+        match self {
+            Self::Pointer { x, y, .. } => {
+                x.is_finite()
+                    && y.is_finite()
+                    && *x >= 0.
+                    && *y >= 0.
+                    && *x <= MAX_SURFACE_WIDTH as f32
+                    && *y <= MAX_SURFACE_HEIGHT as f32
+            }
+            Self::Wheel { delta } => delta.is_finite() && delta.abs() <= 2000.,
+            Self::Key { key, .. } => matches!(
+                key.as_str(),
+                "Tab"
+                    | "SelectAll"
+                    | "Enter"
+                    | "Escape"
+                    | "Backspace"
+                    | "Delete"
+                    | "ArrowUp"
+                    | "ArrowDown"
+                    | "ArrowLeft"
+                    | "ArrowRight"
+                    | "Home"
+                    | "End"
+                    | " "
+            ),
+            Self::Text { text } => text.len() <= 256 && !text.chars().any(char::is_control),
+            Self::Navigate { direction } => matches!(
+                direction.as_str(),
+                "up" | "down" | "left" | "right" | "accept" | "back"
+            ),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +143,8 @@ pub struct Options {
     pub height: u32,
     #[serde(default)]
     pub focus: bool,
+    #[serde(default)]
+    pub surface: Option<Surface>,
 }
 fn width() -> u32 {
     900
@@ -46,6 +164,19 @@ impl Options {
             return Err(
                 "browser requires a listed HTML entry, 1..512 files and bounded dimensions".into(),
             );
+        }
+        if let Some(surface) = &self.surface {
+            frame_len(self.width, self.height)?;
+            if !surface.scale.is_finite()
+                || !(0.5..=2.).contains(&surface.scale)
+                || !(1..=30).contains(&surface.fps)
+                || surface
+                    .offset
+                    .iter()
+                    .any(|v| !v.is_finite() || !(0.0..=256.).contains(v))
+            {
+                return Err("browser surface scale/offset/refresh outside bounds".into());
+            }
         }
         let mut seen = std::collections::BTreeSet::new();
         for path in &self.files {
@@ -71,16 +202,31 @@ pub enum Input {
     Message { value: Value },
     Focus { focused: bool },
     Close,
+    Frame,
+    SurfaceInput { input: SurfaceInput },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
+    /// Header followed by exactly width*height*4 bytes on the private pipe.
+    Frame {
+        width: u32,
+        height: u32,
+        #[serde(skip)]
+        rgba: Vec<u8>,
+    },
     Heartbeat,
     Ready,
-    Message { value: Value },
-    Focus { focused: bool },
+    Message {
+        value: Value,
+    },
+    Focus {
+        focused: bool,
+    },
     Closed,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Includes the newline in the bound. Never reads an unbounded line into memory.
@@ -119,6 +265,7 @@ pub fn mime(path: &str) -> Result<&'static str, String> {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "woff" => "font/woff",
+        "ttf" => "font/ttf",
         "woff2" => "font/woff2",
         _ => return Err(format!("unsupported browser asset format: {path}")),
     })
@@ -186,6 +333,87 @@ impl Assets {
 mod tests {
     use super::*;
     #[test]
+    fn frame_bounds_and_input_validation_reject_untrusted_dimensions_and_values() {
+        assert_eq!(frame_len(1280, 960).unwrap(), MAX_FRAME);
+        for (w, h) in [(0, 0), (u32::MAX, 960), (1280, u32::MAX), (1920, 1080)] {
+            assert!(frame_len(w, h).is_err());
+        }
+        assert!(
+            !SurfaceInput::Pointer {
+                x: f32::NAN,
+                y: 0.,
+                click: true
+            }
+            .validate()
+        );
+        assert!(
+            !SurfaceInput::Text {
+                text: "x".repeat(257)
+            }
+            .validate()
+        );
+        assert!(
+            !SurfaceInput::Text {
+                text: "a\nb".into()
+            }
+            .validate()
+        );
+        assert!(
+            !SurfaceInput::Navigate {
+                direction: "evaluate".into()
+            }
+            .validate()
+        );
+        assert!(
+            !SurfaceInput::Key {
+                key: "F12".into(),
+                shift: false
+            }
+            .validate()
+        );
+        assert!(
+            SurfaceInput::Navigate {
+                direction: "accept".into()
+            }
+            .validate()
+        );
+    }
+    #[test]
+    fn composited_surface_contract_is_bounded_and_backwards_compatible() {
+        let base = serde_json::json!({"entry":"index.html","files":["index.html"],"width":400,"height":800,"focus":true});
+        assert!(
+            serde_json::from_value::<Options>(base.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        let mut value = base;
+        value["surface"] =
+            serde_json::json!({"anchor":"bottom_right","scale":1.0,"offset":[24,24],"fps":20});
+        assert!(
+            serde_json::from_value::<Options>(value.clone())
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        for (key, invalid) in [
+            ("scale", serde_json::json!(0)),
+            ("fps", serde_json::json!(61)),
+            ("offset", serde_json::json!([-1, 0])),
+        ] {
+            let mut bad = value.clone();
+            bad["surface"][key] = invalid;
+            assert!(serde_json::from_value::<Options>(bad).map_or(true, |o| o.validate().is_err()));
+        }
+        value["width"] = serde_json::json!(1920);
+        assert!(
+            serde_json::from_value::<Options>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    #[test]
     fn bounded_ipc_rejects_unterminated_and_oversized_records() {
         assert!(read_record(&mut &b"1234\n"[..], 4).is_err());
         assert!(read_record(&mut &b"1234"[..], 4).is_err());
@@ -218,6 +446,7 @@ mod tests {
                 width: 900,
                 height: 640,
                 focus: false,
+                surface: None,
             },
         };
         let assets = Assets::load(&init).unwrap();

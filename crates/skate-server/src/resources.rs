@@ -2,6 +2,10 @@
 //! projection reaches HTTP; configuration, grants and persistence stay here.
 #[path = "teleport_leases.rs"]
 mod teleport_leases;
+#[path = "resource_admin.rs"]
+pub(crate) mod admin;
+#[path = "resource_authorization.rs"]
+mod authorization;
 use serde::Deserialize;
 use skate_mods::resources::{Host, InstalledResource, Output, Side};
 use skate_net::{
@@ -110,6 +114,7 @@ pub fn validate_configuration(path: &Path) -> Result<String, String> {
     serde_json::to_string(&serde_json::json!({"valid":true,"revision":published.set.revision,"resources":published.set.resources.len(),"bytes":published.set.total_bytes()})).map_err(|e|e.to_string())
 }
 pub struct Platform {
+    admin: admin::State,
     teleport_leases: teleport_leases::Leases,
     last_settings: u64,
     authenticated_accounts: BTreeMap<u64,String>,
@@ -181,6 +186,7 @@ impl Platform {
         let http = HttpServer::bind_with_limits(bind, published.clone(), config.content_limits)
             .map_err(|e| e.to_string())?;
         let mut platform = Self {
+            admin: Default::default(),
             teleport_leases: Default::default(),
             last_settings: u64::MAX,
             authenticated_accounts: BTreeMap::new(),
@@ -253,6 +259,11 @@ impl Platform {
     pub fn set_authenticated_accounts(&mut self, accounts: BTreeMap<u64,String>) {
         self.authenticated_accounts = accounts;
     }
+    /// Only Accounts supplies admitted, currently connected verified sessions.
+    pub(crate) fn set_authenticated_sessions(&mut self, sessions: BTreeMap<u64, skate_accounts::VerifiedSession>) -> Result<(), String> {
+        self.set_authenticated_accounts(sessions.iter().take(256).map(|(actor,session)|(*actor,session.account_id().to_owned())).collect());
+        self.lua.set_authorizer(Some(authorization::adapter(sessions)))
+    }
     fn sync_voice_owners(&mut self, router: &mut skate_voice::Router) {
         let active: BTreeMap<_,_> = self.lua.installed().iter().filter(|(id, installed)| {
             self.lua.running(id) && installed.grants.contains("resource.voice")
@@ -277,7 +288,7 @@ impl Platform {
             let result = serde_json::from_value::<skate_voice::ServerCommand>(operation.clone())
                 .map_err(|e|format!("Invalid voice operation: {e}"))
                 .and_then(|command|router.command(&resource,generation,command));
-            let value=serde_json::json!({"operation":operation.get("kind"),"ok":result.is_ok(),"error":result.err()});
+            let value=serde_json::json!({"operation":operation.get("kind"),"name":operation.get("name"),"ok":result.is_ok(),"error":result.err()});
             let _=self.lua.host_event(&resource,generation,"voice_result",value);
             // A failing completion handler cannot retain a channel for another tick.
             self.sync_voice_owners(router);
@@ -489,6 +500,7 @@ impl Platform {
         self.lua.tick(dt,serde_json::json!({"players":players,"entities":server.entity_observations(),"network":{"active":true,"is_host":true}}));
         for event in server.drain_resource_events() {
             let m = event.message;
+            if self.intercept_admin(event.sender, &m, server) { continue; }
             if let Err(error) =
                 self.lua
                     .receive(event.sender, &m.resource, m.generation, &m.name, m.value)
@@ -647,7 +659,7 @@ impl Platform {
                     if self.voice_operations.len() < 128 {
                         self.voice_operations.push_back((resource,generation,operation));
                     } else {
-                        let _=self.lua.host_event(&resource,generation,"voice_result",serde_json::json!({"ok":false,"error":"Voice operation queue exhausted"}));
+                        let _=self.lua.host_event(&resource,generation,"voice_result",serde_json::json!({"operation":operation.get("kind"),"name":operation.get("name"),"ok":false,"error":"Voice operation queue exhausted"}));
                     }
                     continue;
                 }

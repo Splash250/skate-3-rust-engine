@@ -2,13 +2,34 @@
 //! perform local disk work; send/poll never block the game loop on web content.
 use crate::{Event, Init, Input, MAX_INIT, MAX_MESSAGE, QUEUE, encode, read_record};
 use std::{
-    io::{BufReader, Write},
+    io::{BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, SyncSender},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+
+fn read_frame(
+    reader: &mut impl Read,
+    width: u32,
+    height: u32,
+    expected: Option<(u32, u32)>,
+) -> Result<crate::Frame, String> {
+    let length = crate::frame_len(width, height)?;
+    if expected != Some((width, height)) {
+        return Err("invalid browser frame dimensions".into());
+    }
+    let mut rgba = vec![0; length];
+    reader
+        .read_exact(&mut rgba)
+        .map_err(|_| "truncated browser frame".to_owned())?;
+    Ok(crate::Frame {
+        width,
+        height,
+        rgba,
+    })
+}
 
 pub struct Page {
     child: Child,
@@ -18,6 +39,10 @@ pub struct Page {
     started: Instant,
     ready: bool,
     heartbeat: Instant,
+    frame: std::sync::Arc<std::sync::Mutex<Option<crate::Frame>>>,
+    surface: Option<(u32, u32, u32)>,
+    frame_requested: Instant,
+    focused: bool,
     #[cfg(target_os = "linux")]
     group: LinuxGroup,
     #[cfg(windows)]
@@ -29,12 +54,22 @@ impl Page {
         // Readability/format/budgets fail before launching the webview. The child
         // repeats this check and serves immutable loaded bytes thereafter.
         crate::Assets::load(&init)?;
+        let surface = init
+            .options
+            .surface
+            .as_ref()
+            .map(|s| (init.options.width, init.options.height, s.fps));
+        let focused = init.options.focus;
         let init = encode(&init, MAX_INIT)?;
         let mut command = Command::new(executable);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // The host event loop explicitly uses X11. Keep GTK on that same
+        // display even when the game itself runs in a Wayland session.
+        #[cfg(target_os = "linux")]
+        command.env("GDK_BACKEND", "x11");
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -77,6 +112,8 @@ impl Page {
             }
         });
         let (tx, output) = mpsc::sync_channel(QUEUE);
+        let frame = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let latest_frame = frame.clone();
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -86,15 +123,25 @@ impl Page {
                             message: "invalid browser IPC response".into(),
                         })
                     }
-                    Ok(None) => {
-                        let _ = tx.try_send(Event::Closed);
-                        break;
-                    }
+                    // EOF alone cannot distinguish normal exit from a crash:
+                    // let poll classify the reaped child's actual status. The
+                    // host sends explicit Closed for an intentional UI close.
+                    Ok(None) => break,
                     Err(message) => {
                         let _ = tx.try_send(Event::Error { message });
                         break;
                     }
                 };
+                if let Event::Frame { width, height, .. } = event {
+                    match read_frame(&mut reader, width, height, surface.map(|(w, h, _)| (w, h))) {
+                        Ok(frame) => *latest_frame.lock().unwrap() = Some(frame),
+                        Err(message) => {
+                            let _ = tx.try_send(Event::Error { message });
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 // A bounded channel limits retained web messages even if the
                 // render loop is paused; dropping the pipe forces host shutdown.
                 if tx.try_send(event).is_err() {
@@ -110,6 +157,10 @@ impl Page {
             started: Instant::now(),
             ready: false,
             heartbeat: Instant::now(),
+            frame,
+            surface,
+            focused,
+            frame_requested: Instant::now(),
             #[cfg(target_os = "linux")]
             group,
             #[cfg(windows)]
@@ -123,7 +174,25 @@ impl Page {
             .try_send(encode(input, MAX_MESSAGE)?)
             .map_err(|_| "browser backpressure or closed process".into())
     }
+    /// Takes the newest frame; older frames are overwritten on the worker.
+    pub fn take_frame(&self) -> Option<crate::Frame> {
+        self.frame.lock().unwrap().take()
+    }
+    pub fn set_focus(&mut self, focused: bool) -> Result<(), String> {
+        self.send(&Input::Focus { focused })?;
+        self.focused = focused;
+        Ok(())
+    }
     pub fn poll(&mut self) -> Vec<Event> {
+        if self.ready
+            && self.focused
+            && self.surface.is_some_and(|(_, _, fps)| {
+                self.frame_requested.elapsed() >= Duration::from_secs_f64(1.0 / fps as f64)
+            })
+        {
+            self.frame_requested = Instant::now();
+            let _ = self.send(&Input::Frame);
+        }
         let mut events = Vec::new();
         for _ in 0..QUEUE {
             match self.output.lock().unwrap().try_recv() {
@@ -163,6 +232,9 @@ impl Page {
                 events.push(Event::Closed);
             }
         }
+        // A terminal failure must be observed before a graceful close in the
+        // same batch, otherwise the engine could retire the page and lose it.
+        events.sort_by_key(|event| !matches!(event, Event::Error { .. }));
         events
     }
     pub fn id(&self) -> u32 {
@@ -313,5 +385,31 @@ impl Drop for Job {
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    #[test]
+    fn frames_reject_unexpected_oversized_and_truncated_bodies() {
+        // Dimension rejection happens before consulting the reader.
+        struct NeverRead;
+        impl Read for NeverRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("invalid dimensions must not read or allocate a body")
+            }
+        }
+        assert!(read_frame(&mut NeverRead, u32::MAX, 480, Some((640, 480))).is_err());
+        assert!(read_frame(&mut NeverRead, 640, 480, Some((800, 600))).is_err());
+        assert!(read_frame(&mut NeverRead, 640, 480, None).is_err());
+        assert!(
+            read_frame(&mut &b"short"[..], 640, 480, Some((640, 480)))
+                .unwrap_err()
+                .contains("truncated")
+        );
+        let body = vec![73; 640 * 480 * 4];
+        let frame = read_frame(&mut body.as_slice(), 640, 480, Some((640, 480))).unwrap();
+        assert_eq!(frame.rgba, body);
     }
 }

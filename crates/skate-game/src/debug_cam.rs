@@ -1,7 +1,7 @@
 //! Pad chords + intents only — mirrors `skate3_debug_cam.cpp`.
 //! `SetManualCamMode` / `UpdateManualCam` / `GetMatrix` live in `ManualCam`.
-use bevy::prelude::*;
 use crate::app::SimulationSet;
+use bevy::prelude::*;
 
 const DPAD_RIGHT: u16 = 0x0008;
 const R3: u16 = 0x0080;
@@ -16,6 +16,15 @@ pub(crate) struct DebugCam {
 }
 
 impl DebugCam {
+    fn yield_to_interface(&mut self, buttons: u16, owned: bool) -> bool {
+        if owned {
+            self.previous_buttons = buttons;
+            self.want_toggle = false;
+            self.want_spawn = false;
+        }
+        owned
+    }
+
     pub fn active(camera: &crate::camera::CameraRuntime) -> bool {
         camera.manual_cam.manual_cam_active()
     }
@@ -25,7 +34,9 @@ impl DebugCam {
     }
 
     pub fn pose(camera: &crate::camera::CameraRuntime) -> Option<Transform> {
-        let Some(base) = camera.frame else { return None; };
+        let Some(base) = camera.frame else {
+            return None;
+        };
         if !camera.manual_cam.manual_cam_active() {
             return None;
         }
@@ -94,12 +105,22 @@ fn on_camera_input(
     mods: Option<Res<crate::modding::ModMenu>>,
     custom_models: Option<Res<crate::custom_models::CustomModels>>,
     time: Res<Time<Fixed>>,
+    resource_ui: Option<Res<crate::modding::Mods>>,
+    interfaces: Option<Res<crate::modding::interactions::Interfaces>>,
 ) {
     if replay.active && camera.manual_cam.manual_cam_active() {
         debug.want_toggle = true;
     }
 
     let raw = input.raw_input();
+    if debug.yield_to_interface(
+        raw.buttons,
+        crate::modding::browser_focused(resource_ui.as_deref())
+            || crate::modding::interactions::blocked(interfaces.as_deref()),
+    ) {
+        // A resource owns chords and analog camera movement until its release gate clears.
+        return;
+    }
     if !gameplay_blocked(menu, &replay, customiser, travel, mods, custom_models) {
         if chord(raw.buttons, DPAD_RIGHT | R3, debug.previous_buttons) {
             debug.want_toggle = true;
@@ -222,6 +243,25 @@ fn update_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_ownership_cancels_camera_intents_and_requires_a_new_chord() {
+        let buttons = DPAD_RIGHT | R3 | B;
+        let mut debug = DebugCam {
+            want_toggle: true,
+            want_spawn: true,
+            ..default()
+        };
+        assert!(debug.yield_to_interface(buttons, true));
+        assert!(!debug.want_toggle && !debug.want_spawn);
+        assert!(!debug.yield_to_interface(buttons, false));
+        assert!(!chord(buttons, DPAD_RIGHT | R3, debug.previous_buttons));
+        assert!(!chord(buttons, B, debug.previous_buttons));
+        // Tracking neutral input during the interface release gate admits a new press.
+        assert!(debug.yield_to_interface(0, true));
+        assert!(!debug.yield_to_interface(buttons, false));
+        assert!(chord(buttons, DPAD_RIGHT | R3, debug.previous_buttons));
+    }
 
     #[test]
     fn chord_needs_both_buttons_and_is_edge_only() {

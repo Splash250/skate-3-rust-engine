@@ -9,8 +9,8 @@ use skate_core::input::{
     gameplay_map::GameplayActions,
     history::{DEVICE_SLOTS, HistoryRecord, PadHistory},
     pad::Pad,
-    xbox,
     tick::TickInput,
+    xbox,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,15 +60,24 @@ impl ControllerInput {
     /// Original input.cfg: LB.held && DPadD.pressed / LB.held && DPadU.held.
     /// Use the same debounced native Pad publication as ordinary gameplay.
     pub(crate) fn session_marker_actions(&self) -> (bool, bool, bool) {
-        let Some(device) = self.status.iter().position(|s| *s == ControllerStatus::Ready) else {
+        let Some(device) = self
+            .status
+            .iter()
+            .position(|s| *s == ControllerStatus::Ready)
+        else {
             return (false, false, false);
         };
         let pad = &self.pads[device];
-        if pad.count() == 0 { return (false, false, false); }
+        if pad.count() == 0 {
+            return (false, false, false);
+        }
         let flags = |i: usize| pad.records().get(i).map_or(0, |r| r[1]);
         let modifier = flags(8) & 0xff00 != 0;
-        (modifier, modifier && flags(1) & 0xff00_0000 != 0,
-            modifier && flags(0) & 0xff00 != 0)
+        (
+            modifier,
+            modifier && flags(1) & 0xff00_0000 != 0,
+            modifier && flags(0) & 0xff00 != 0,
+        )
     }
     /// The slot gameplay reads: the first ready one.
     pub(crate) fn active_slot(&self) -> Option<usize> {
@@ -78,7 +87,9 @@ impl ControllerInput {
         self.kinds.get(slot)?.as_deref()
     }
     pub(crate) fn raw_input(&self) -> RawInput {
-        self.status.iter().position(|s| *s == ControllerStatus::Ready)
+        self.status
+            .iter()
+            .position(|s| *s == ControllerStatus::Ready)
             .map_or(RawInput::default(), |i| self.raw[i])
     }
 
@@ -90,7 +101,11 @@ impl ControllerInput {
     }
     #[cfg(test)]
     pub(crate) fn player_actions(&self) -> GameplayActions {
-        let device = self.status.iter().position(|status| *status == ControllerStatus::Ready).unwrap_or(0);
+        let device = self
+            .status
+            .iter()
+            .position(|status| *status == ControllerStatus::Ready)
+            .unwrap_or(0);
         GameplayActions::from_pad(&self.pads[device])
     }
 
@@ -103,16 +118,22 @@ impl ControllerInput {
         let actions = device
             .map(|device| GameplayActions::from_pad(&self.pads[device]))
             .unwrap_or_else(|| GameplayActions::from_values([0.0; 18]));
-        TickInput::new(
-            self.tick,
-            actions,
-            controller_available,
-        )
+        TickInput::new(self.tick, actions, controller_available)
     }
     /// TU3 8296D288/8296D0D0: write the inactive cache, publish one four-device
     /// batch. Even an unchanged platform packet is sampled; packet-number
     /// deduplication would alter native Pad edge/repeat behavior.
+    #[cfg(test)]
     pub(super) fn collect(&mut self, samples: [Result<DevicePacket, DeviceError>; DEVICE_SLOTS]) {
+        self.collect_masked(samples, 0);
+    }
+    /// Trusted UI/voice buttons remain available in raw input while their
+    /// gameplay meaning is consumed once by the owning context.
+    pub(super) fn collect_masked(
+        &mut self,
+        samples: [Result<DevicePacket, DeviceError>; DEVICE_SLOTS],
+        consumed_buttons: u16,
+    ) {
         let next = self.active ^ 1;
         for (device, sample) in samples.into_iter().enumerate() {
             match sample {
@@ -124,7 +145,9 @@ impl ControllerInput {
                         right: packet.state.right.map(|v| f32::from(v) / 32768.0),
                     };
                     // 8296D480 sets byte13 only when capability SubType == 7.
-                    let values = xbox::convert(&packet.state, u8::from(packet.subtype == 7));
+                    let mut gameplay = packet.state;
+                    gameplay.buttons &= !consumed_buttons;
+                    let values = xbox::convert(&gameplay, u8::from(packet.subtype == 7));
                     self.cache[next][device] = HistoryRecord::new(&values);
                     self.packet_numbers[device] = Some(packet.number);
                     self.kinds[device] = packet.kind;

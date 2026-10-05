@@ -6,7 +6,7 @@ publish.workspace = true
 
 [features]
 default = []
-host = ["dep:wry", "dep:winit", "dep:gtk"]
+host = ["dep:wry", "dep:winit", "dep:gtk", "dep:webkit2gtk", "dep:windows", "dep:webview2-com", "dep:image"]
 
 [[bin]]
 name = "skate-browser-host"
@@ -18,11 +18,15 @@ serde.workspace = true
 serde_json.workspace = true
 skate-resources = { path = "../skate-resources" }
 wry = { version = "=0.57.0", optional = true }
+image = { version = "=0.25.10", default-features = false, features = ["png"], optional = true }
 winit = { version = "=0.30.13", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", optional = true }
 gtk = { version = "=0.18.2", optional = true }
 libc = "=0.2.189"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", optional = true, features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Memory"] }
+webview2-com = { version = "=0.39.1", optional = true }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }

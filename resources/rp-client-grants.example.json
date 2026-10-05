@@ -1,0 +1,10 @@
+{
+  "udp://127.0.0.1:31030/48031030": {
+    "phone": [
+      "engine.photos"
+    ],
+    "interaction-policy": [
+      "engine.input"
+    ]
+  }
+}

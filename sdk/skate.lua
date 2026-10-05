@@ -1081,3 +1081,23 @@ function sdk.world_audio.info() end
 sdk.animation = {version=1}
 ---@param operation {op:'load'|'unload'|'play'|'stop'|'appearance'|'attach'|'remove',key:string,bank?:string,clip?:string,path?:string,target?:string,bone?:string,speed?:number,looped?:boolean,fade_in?:number,fade_out?:number,weight?:number,offset?:number,translation?:Vec3,rotation?:Quat,scale?:Vec3}
 function sdk.animation.submit(operation) end
+
+---Dedicated resource interface registry (engine.ui); generation owned by host.
+---@class ResourceInterfaces
+---@field register fun(key:string, descriptor:table)
+---@field remove fun(key:string)
+---@field list fun()
+---@field invoke fun(id:string, generation:string)
+---@field bind fun(id:string, binding:table)
+---@type ResourceInterfaces
+sdk.ui.interfaces = {}
+---@param manual_markers boolean Resource-owned manual marker policy (engine.input).
+function sdk.ui.interaction_policy(manual_markers) end
+
+---Narrow local photo capability; there is deliberately no script shutter/path API.
+sdk.photos = {}
+---@param enabled boolean Requires the resource's focused in-game surface.
+function sdk.photos.mode(enabled) end
+function sdk.photos.gallery() end
+---@param id string Opaque ID issued to this owner/generation by the host.
+function sdk.photos.thumbnail(id) end

@@ -39,6 +39,7 @@ pub struct ClientCredentials {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
+    StatusRead {},
     Maintenance { reason: String, delay_ms: u64, restart: bool },
     Resume {},
     Capacity { players: usize },
@@ -65,6 +66,7 @@ pub enum HostAction {
 impl HostAction {
     pub fn permission(&self) -> &'static str {
         match self {
+            Self::StatusRead {} => "status.read",
             Self::Kick { .. } => "players.kick",
             Self::Maintenance { .. } | Self::Resume {} | Self::Capacity { .. } => "server.manage",
             Self::Backup { .. } | Self::Restore { .. } => "server.backup",
@@ -76,6 +78,7 @@ impl HostAction {
     }
     fn target(&self) -> String {
         match self {
+            Self::StatusRead {} => "status".into(),
             Self::ResourceStart { resource }
             | Self::ResourceStop { resource }
             | Self::ResourceRestart { resource } => resource.clone(),
@@ -124,6 +127,8 @@ struct Ticket {
     audited: bool,
 }
 struct BridgeState {
+    /// Gameplay submissions wait for durable queued audit on the existing worker.
+    submissions: VecDeque<HostCommand>,
     commands: VecDeque<HostCommand>,
     tickets: BTreeMap<u64, Ticket>,
     status: serde_json::Value,
@@ -142,6 +147,7 @@ impl AdminBridge {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(BridgeState {
+                submissions: VecDeque::new(),
                 commands: VecDeque::new(),
                 tickets: BTreeMap::new(),
                 status: serde_json::json!({"attached":false}),
@@ -153,6 +159,47 @@ impl AdminBridge {
     pub fn try_command(&self) -> Option<HostCommand> {
         self.state.try_lock().ok()?.commands.pop_front()
     }
+    /// Authenticated gameplay UI submissions never run SQL or wait on a mutex.
+    /// The administrative worker audits the request before making it executable.
+    pub fn enqueue_gameplay(&self, session: VerifiedSession, action: HostAction) -> Result<u64> {
+        action.validate()?;
+        session.require(action.permission())?;
+        if serde_json::to_vec(&action).map_err(|_| error("invalid", "invalid host action"))?.len() > MAX_BODY {
+            return Err(error("limit", "host action exceeds 16 KiB"));
+        }
+        let mut state = self.state.try_lock().map_err(|_| error("busy", "administration bridge busy"))?;
+        if state.commands.len() + state.submissions.len() >= 64 { return Err(error("busy", "host action queue full")); }
+        if state.tickets.len() >= 256 {
+            let oldest = state.tickets.iter().find_map(|(id, ticket)| ticket.audited.then_some(*id))
+                .ok_or_else(|| error("busy", "host action result capacity reached"))?;
+            state.tickets.remove(&oldest);
+        }
+        let ticket = self.next.fetch_add(1, Ordering::Relaxed);
+        state.tickets.insert(ticket, Ticket { session:session.clone(), action:action.clone(), result:None, audited:false });
+        state.submissions.push_back(HostCommand { ticket, session, action });
+        Ok(ticket)
+    }
+
+    /// Results are bound to the same verified connection and reauthorize the
+    /// original operation immediately before exposing potentially private data.
+    pub fn try_gameplay_result(&self, session: &VerifiedSession, ticket: u64) -> Result<Option<Result<String>>> {
+        let state = self.state.try_lock().map_err(|_| error("busy", "administration bridge busy"))?;
+        let entry = state.tickets.get(&ticket).ok_or_else(|| error("missing", "unknown action ticket"))?;
+        if !Arc::ptr_eq(&entry.session.0, &session.0) { return Err(error("denied", "action belongs to another connection")); }
+        session.require(entry.action.permission())?;
+        Ok(entry.result.clone())
+    }
+    /// Retiring an interface cancels work which has not executed yet. The audit
+    /// record stays, while queued host commands and private results are discarded.
+    pub fn cancel_gameplay(&self, session: &VerifiedSession, ticket: u64) -> Result<()> {
+        let mut state = self.state.try_lock().map_err(|_| error("busy", "administration bridge busy"))?;
+        let entry = state.tickets.get_mut(&ticket).ok_or_else(|| error("missing", "unknown action ticket"))?;
+        if !Arc::ptr_eq(&entry.session.0, &session.0) { return Err(error("denied", "action belongs to another connection")); }
+        if entry.result.is_none() { entry.result=Some(Err(error("stale", "request session or interface retired"))); }
+        state.commands.retain(|command| command.ticket!=ticket);
+        state.submissions.retain(|command| command.ticket!=ticket);
+        Ok(())
+    }
     /// A busy result is safe to retry; do not repeat the actual host action.
     pub fn complete(&self, ticket: u64, mut result: Result<String>) -> Result<()> {
         let mut state = self
@@ -163,11 +210,12 @@ impl AdminBridge {
             .tickets
             .get_mut(&ticket)
             .ok_or_else(|| error("missing", "unknown action ticket"))?;
-        let limit = match entry.action {HostAction::ProfileExport {}=>512*1024,HostAction::ProfileRead {..}=>128*1024,HostAction::SettingsRead {..}=>64*1024,_=>4096};
+        let limit = match entry.action {HostAction::ProfileExport {}=>512*1024,HostAction::StatusRead {}|HostAction::ProfileRead {..}=>128*1024,HostAction::SettingsRead {..}=>64*1024,_=>4096};
         if result.as_ref().map_or_else(|e|e.message.len()+e.code.len(),|s|s.len()) > limit {
             result=Err(error("limit", &format!("host result exceeds {limit} bytes")));
         }
         if entry.result.is_some() {
+            if entry.result.as_ref().is_some_and(|result|result.as_ref().is_err_and(|error|error.code=="stale")) { return Ok(()); }
             return Err(error("invalid", "action ticket already completed"));
         }
         entry.result = Some(result);
@@ -196,7 +244,7 @@ impl AdminBridge {
         action.validate()?;
         session.require(action.permission())?;
         let mut state = self.state.lock().unwrap();
-        if state.commands.len() >= 64 {
+        if state.commands.len() + state.submissions.len() >= 64 {
             return Err(error("busy", "host action queue full"));
         }
         if state.tickets.len() >= 256 {
@@ -255,6 +303,25 @@ impl AdminBridge {
         })
     }
     fn flush_audit(&self, store: &AccountStore) {
+        let submissions: Vec<_> = {
+            let mut state = self.state.lock().unwrap();
+            let count = state.submissions.len().min(16);
+            state.submissions.drain(..count).collect()
+        };
+        for command in submissions {
+            let result = command.session.require(command.action.permission()).and_then(|()| {
+                store.audit_action(&command.session, "host.queued", &command.action.target(),
+                    &format!("ticket {}: {}", command.ticket, command.action.audit_summary()))
+            });
+            let mut state = self.state.lock().unwrap();
+            match result {
+                Ok(()) if state.tickets.get(&command.ticket).is_some_and(|ticket|ticket.result.is_none()) => state.commands.push_back(command),
+                Ok(()) => (),
+                Err(error) => {
+                    if let Some(ticket) = state.tickets.get_mut(&command.ticket) { ticket.result = Some(Err(error)); }
+                }
+            }
+        }
         // Snapshot under the bridge lock; SQLite never holds up the gameplay caller.
         let pending = {
             let state = self.state.lock().unwrap();
@@ -299,6 +366,79 @@ impl AdminBridge {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gameplay_tests {
+    use super::*;
+    struct Fixture { path: PathBuf, store: AccountStore, admin: VerifiedSession }
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let path=std::env::temp_dir().join(format!("skate-gameplay-admin-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+            let store=AccountStore::open(path.join("accounts.sqlite3")).unwrap();
+            store.bootstrap_admin("administrator","test-password-12345").unwrap();
+            let login=store.login("administrator","test-password-12345").unwrap();
+            let admin=store.authenticate(&login.token).unwrap();
+            Self {path,store,admin}
+        }
+        fn user(&self)->VerifiedSession {
+            self.store.create_account(&self.admin,"viewer","test-password-12345").unwrap();
+            let login=self.store.login("viewer","test-password-12345").unwrap();
+            self.store.authenticate(&login.token).unwrap()
+        }
+    }
+    impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.path); } }
+
+    #[test]
+    fn gameplay_actions_are_audited_before_execution_and_not_authorized_by_visibility() {
+        let fixture=Fixture::new();
+        let user=fixture.user();
+        let bridge=AdminBridge::new();
+        assert!(bridge.enqueue_gameplay(user,HostAction::SettingsRead {resource:"private".into()}).is_err());
+        let ticket=bridge.enqueue_gameplay(fixture.admin.clone(),HostAction::SettingsSet {resource:"example".into(),key:"secret".into(),value:serde_json::json!("private-value-do-not-log")}).unwrap();
+        assert!(bridge.try_command().is_none());
+        bridge.flush_audit(&fixture.store);
+        let command=bridge.try_command().unwrap();
+        assert_eq!(command.ticket,ticket);
+        let audit=fixture.store.audit_log(&fixture.admin,0).unwrap();
+        assert!(audit.iter().any(|entry|entry.action=="host.queued"));
+        assert!(audit.iter().all(|entry|!entry.detail.contains("private-value-do-not-log")));
+    }
+
+    #[test]
+    fn private_result_rechecks_permission_and_exact_connection() {
+        let fixture=Fixture::new();
+        let user=fixture.user();
+        fixture.store.create_role(&fixture.admin,"settings-viewer",None).unwrap();
+        fixture.store.role_permission(&fixture.admin,"settings-viewer","settings.read",true).unwrap();
+        fixture.store.assign_role(&fixture.admin,user.account_id(),"settings-viewer",true).unwrap();
+        let bridge=AdminBridge::new();
+        let ticket=bridge.enqueue_gameplay(user.clone(),HostAction::SettingsRead {resource:"example".into()}).unwrap();
+        bridge.flush_audit(&fixture.store);
+        assert!(bridge.try_command().is_some());
+        bridge.complete(ticket,Ok("private-result".into())).unwrap();
+        assert_eq!(bridge.try_gameplay_result(&user,ticket).unwrap().unwrap().unwrap(),"private-result");
+        let login=fixture.store.login("viewer","test-password-12345").unwrap();
+        let another_connection=fixture.store.authenticate(&login.token).unwrap();
+        assert!(bridge.try_gameplay_result(&another_connection,ticket).is_err());
+        fixture.store.role_permission(&fixture.admin,"settings-viewer","settings.read",false).unwrap();
+        assert!(bridge.try_gameplay_result(&user,ticket).is_err());
+        bridge.flush_audit(&fixture.store);
+        assert!(fixture.store.audit_log(&fixture.admin,0).unwrap().iter().all(|entry|!entry.detail.contains("private-result")));
+    }
+
+    #[test]
+    fn retirement_cancels_queued_actions_and_late_completion_is_idempotent() {
+        let fixture=Fixture::new();
+        let bridge=AdminBridge::new();
+        let ticket=bridge.enqueue_gameplay(fixture.admin.clone(),HostAction::ResourceRestart {resource:"example".into()}).unwrap();
+        bridge.cancel_gameplay(&fixture.admin,ticket).unwrap();
+        bridge.flush_audit(&fixture.store);
+        assert!(bridge.try_command().is_none());
+        bridge.complete(ticket,Ok("late-result".into())).unwrap();
+        assert_eq!(bridge.try_gameplay_result(&fixture.admin,ticket).unwrap().unwrap().unwrap_err().code,"stale");
     }
 }
 

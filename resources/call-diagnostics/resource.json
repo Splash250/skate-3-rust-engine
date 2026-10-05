@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "call-diagnostics",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "server_scripts": [
+    "server.lua"
+  ],
+  "files": [
+    "index.html",
+    "diagnostics.css",
+    "diagnostics.js"
+  ],
+  "dependencies": {
+    "phone-calls": "1.0.0",
+    "phone": "1.0.0"
+  },
+  "capabilities": [
+    "engine.ui",
+    "resource.network",
+    "resource.exports",
+    "resource.authorization"
+  ],
+  "requires_features": [
+    "resource.interfaces.v1",
+    "browser.surface.v1",
+    "resource.authorization.v1"
+  ]
+}

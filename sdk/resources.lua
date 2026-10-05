@@ -132,3 +132,16 @@ resource.settings = {}
 function resource.settings.get(key) end
 ---@return table<string, boolean|number|string>
 function resource.settings.all() end
+
+---Reserved authenticated native administration request lane (resource.admin).
+---resource.send('__host_admin', {seq='1', action={kind='permissions'}})
+---resource.on_net('__host_admin_result', function(result, sender) ... end)
+---The host derives actual sender identity and rechecks live action permissions.
+
+---Server-only live account permission check. Requires resource.authorization.
+---Use the actual on_net sender; never a sender claimed in payload data.
+---Clients, inactive sessions, missing grants and malformed arguments return false.
+---@param sender string Canonical nonzero decimal actor ID.
+---@param permission string Existing account permission name (1–64 ASCII name characters).
+---@return boolean
+function resource.authorized(sender,permission) end

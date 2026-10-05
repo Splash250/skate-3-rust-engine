@@ -77,6 +77,7 @@ fn suspend(
     replay: Res<crate::replay::Replay>,
     time: Res<Time<Real>>,
     native: Option<Res<crate::multiplayer::native_authority::Prediction>>,
+    interfaces: Option<Res<crate::modding::interactions::Interfaces>>,
 ) {
     if marker.generation != map.generation {
         *marker = SessionMarker {
@@ -87,6 +88,8 @@ fn suspend(
     }
     if !crate::graphics_menu::gameplay_active(Some(menu))
         || replay.active
+        || !crate::modding::interactions::manual_markers(interfaces.as_deref())
+        || crate::modding::interactions::blocked(interfaces.as_deref())
         || !crate::multiplayer::native_authority::ordinary(native)
     {
         marker.hold.cancel();

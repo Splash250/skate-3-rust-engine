@@ -1,0 +1,69 @@
+{
+  "root": ".",
+  "storage": "../resource-data/rp",
+  "ensure": [
+    "creator-park",
+    "master-menu"
+  ],
+  "grants": {
+    "creator-park": [
+      "resource.state",
+      "resource.teleport",
+      "engine.ui"
+    ],
+    "interaction-policy": [
+      "resource.network",
+      "resource.exports",
+      "resource.settings",
+      "resource.admin",
+      "engine.input"
+    ],
+    "inventory-ui": [
+      "resource.network",
+      "resource.events",
+      "resource.database",
+      "engine.ui"
+    ],
+    "admin-dashboard": [
+      "engine.ui",
+      "resource.network",
+      "resource.admin"
+    ],
+    "phone-calls": [
+      "resource.network",
+      "resource.events",
+      "resource.exports",
+      "resource.settings",
+      "resource.voice",
+      "engine.voice"
+    ],
+    "phone": [
+      "resource.exports",
+      "resource.storage",
+      "resource.events",
+      "engine.ui",
+      "engine.audio",
+      "engine.photos"
+    ],
+    "park-guide": [
+      "engine.ui"
+    ],
+    "master-menu": [
+      "engine.ui",
+      "resource.exports"
+    ],
+    "call-diagnostics": [
+      "engine.ui",
+      "resource.network",
+      "resource.exports",
+      "resource.authorization"
+    ]
+  },
+  "settings": {
+    "interaction-policy": {
+      "manual_markers": false,
+      "enabled": "*",
+      "order": "phone/open,inventory-ui/open,phone/voice,park-guide/open,admin-dashboard/open,call-diagnostics/open"
+    }
+  }
+}

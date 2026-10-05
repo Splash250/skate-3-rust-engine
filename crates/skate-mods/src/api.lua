@@ -24,6 +24,17 @@ sdk._local_ang_accel_impulse = nil
 function sdk.log(text) submit{kind="log",text=text} end
 
 sdk.ui = { version = 1 }
+sdk.ui.interfaces = {}
+function sdk.ui.interfaces.register(key, descriptor) submit{kind="ui_interfaces",operation={kind="register",key=key,descriptor=descriptor}} end
+function sdk.ui.interfaces.remove(key) submit{kind="ui_interfaces",operation={kind="remove",key=key}} end
+function sdk.ui.interfaces.list() submit{kind="ui_interfaces",operation={kind="list"}} end
+function sdk.ui.interfaces.invoke(id,generation) submit{kind="ui_interfaces",operation={kind="invoke",id=id,generation=generation}} end
+function sdk.ui.interfaces.bind(id,binding) submit{kind="ui_interfaces",operation={kind="bind",id=id,binding=binding}} end
+function sdk.ui.interaction_policy(manual_markers) submit{kind="ui_interaction_policy",manual_markers=manual_markers} end
+sdk.photos = {}
+function sdk.photos.mode(enabled) submit{kind="photos",operation={op="mode",enabled=enabled}} end
+function sdk.photos.gallery() submit{kind="photos",operation={op="gallery"}} end
+function sdk.photos.thumbnail(id) submit{kind="photos",operation={op="thumbnail",id=id}} end
 sdk.ui.browser = {}
 function sdk.ui.browser.open(key, options) submit{kind="ui_browser_open",key=key,options=options} end
 function sdk.ui.browser.send(key, value) submit{kind="ui_browser_message",key=key,value=value} end

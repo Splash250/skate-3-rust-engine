@@ -5,6 +5,11 @@ movement, all 33 physical bodies, skeleton poses, trick/landing/bail state and
 score presentation. The server validates membership and compatible game data,
 routes those streams, and authorizes shared player collisions and shoves.
 
+For the resource-driven RP profile, see [interaction menu and phone setup](resource-interactions.md):
+in-game HTML interfaces, player calls, local photographs and permission-controlled
+dashboards. Its [evidence matrix](resource-interactions-evidence.md) records native
+Linux results separately from physical-device and Windows acceptance.
+
 ## Build and start
 
 From the repository root, with the existing Rust toolchain:

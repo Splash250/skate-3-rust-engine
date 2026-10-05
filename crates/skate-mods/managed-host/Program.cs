@@ -67,6 +67,7 @@ public sealed class Resource
     public JsonNode? StorageGet(string key) => Call("resource.storage.get", JsonValue.Create(key));
     public void StorageSet(string key, JsonNode? value) => Call("resource.storage.set", JsonValue.Create(key), value);
     public JsonNode? Players() => Call("resource.players");
+    public bool Authorized(string sender, string permission) => Call("resource.authorized", JsonValue.Create(sender), JsonValue.Create(permission))?.GetValue<bool>() == true;
     public void Teleport(string player, JsonNode destination) => Call("resource.teleport", JsonValue.Create(player), destination);
     public JsonNode? Entities() => Call("resource.entities.all");
     public void Entity(JsonNode command) => Call("resource.entities.command", command);

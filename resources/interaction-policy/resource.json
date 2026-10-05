@@ -1,0 +1,68 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "interaction-policy",
+  "version": "1.0.0",
+  "language": "lua",
+  "client_scripts": [
+    "client.lua"
+  ],
+  "exports": [
+    "filter"
+  ],
+  "requires_features": [
+    "resource.settings.v1",
+    "resource.interfaces.v1",
+    "resource.admin.v1"
+  ],
+  "capabilities": [
+    "resource.network",
+    "resource.exports",
+    "resource.settings",
+    "resource.admin",
+    "engine.input"
+  ],
+  "settings": {
+    "enabled": {
+      "type": "string",
+      "default": "*",
+      "max_bytes": 4096,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "order": {
+      "type": "string",
+      "default": "phone/open,inventory-ui/open,phone/voice,park-guide/open,admin-dashboard/open",
+      "max_bytes": 4096,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "labels": {
+      "type": "string",
+      "default": "",
+      "max_bytes": 4096,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "categories": {
+      "type": "string",
+      "default": "",
+      "max_bytes": 4096,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "access": {
+      "type": "string",
+      "default": "admin-dashboard/open=status.read",
+      "max_bytes": 4096,
+      "visibility": "replicated",
+      "change": "live"
+    },
+    "manual_markers": {
+      "type": "boolean",
+      "default": false,
+      "visibility": "replicated",
+      "change": "live"
+    }
+  }
+}

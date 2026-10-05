@@ -28,6 +28,8 @@ pub(crate) struct VoiceState {
     user_muted: bool,
     user_deafened: bool,
     pressed: bool,
+    focus_context: u64,
+    release_ptt: bool,
     needs_open: bool,
     status: serde_json::Value,
 }
@@ -54,9 +56,16 @@ impl VoiceState {
             user_muted: false,
             user_deafened: false,
             pressed: false,
+            focus_context: 0,
+            release_ptt: true,
             needs_open: true,
             status: serde_json::json!({"state":if enabled{"waiting_for_connection"}else{"disabled"}}),
         }
+    }
+    fn physical_ptt(&mut self, context:u64, physical:bool)->bool {
+        if self.focus_context!=context {self.focus_context=context;self.release_ptt=true;}
+        if !physical {self.release_ptt=false;}
+        context!=0 && physical && !self.release_ptt
     }
     fn invalidate(&mut self) {
         self.generation = self.generation.saturating_add(1);
@@ -101,7 +110,7 @@ pub(crate) fn enqueue(state: &mut VoiceState, peer: u64, bytes: Vec<u8>) {
     state.incoming.push_back((peer, bytes));
 }
 pub(crate) fn snapshot(world: &World) -> serde_json::Value {
-    world.get_resource::<VoiceState>().map_or(serde_json::json!({"enabled":false}),|s|serde_json::json!({"enabled":s.enabled,"muted":s.muted||s.user_muted,"deafened":s.deafened||s.user_deafened,"push_to_talk":s.pressed&&s.requested,"channel":s.channel,"device":s.status}))
+    world.get_resource::<VoiceState>().map_or(serde_json::json!({"enabled":false}),|s|serde_json::json!({"enabled":s.enabled,"muted":s.muted||s.user_muted,"deafened":s.deafened||s.user_deafened,"push_to_talk":s.pressed&&s.requested,"channel":s.channel,"device":s.status,"stats":s.engine.as_ref().map(|engine|engine.stats())}))
 }
 pub(crate) fn take_events(world: &mut World) -> Vec<(String, u64, serde_json::Value)> {
     world
@@ -271,20 +280,26 @@ pub(crate) fn retire(world: &mut World, owner: &str) {
         }
     }
 }
+pub(crate) fn controller_ptt_reserved(state:Option<&VoiceState>)->bool {state.is_some_and(|state|state.enabled&&!state.channel.is_empty())}
 fn input(
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     mods: Option<Res<crate::modding::Mods>>,
     mut state: ResMut<VoiceState>,
+    controller: Res<crate::input::ControllerInput>,
+    interfaces: Option<Res<crate::modding::interactions::Interfaces>>,
 ) {
     if !state.enabled {
         return;
     }
     let focused = windows.iter().any(|w| w.focused)
         && !menu.is_some_and(|m| m.open)
-        && !crate::modding::browser_focused(mods.as_deref());
-    let pressed = focused && keys.pressed(KeyCode::KeyV);
+        && !crate::modding::external_browser_focused(mods.as_deref());
+    let context=if !focused {0} else if crate::modding::browser_focused(mods.as_deref()) {crate::modding::browser_focus_token(mods.as_deref())} else {1};
+    let context=if context==0 {0} else {context.saturating_mul(2)+u64::from(crate::modding::interactions::camera_context(interfaces.as_deref()))};
+    let physical=keys.pressed(KeyCode::KeyV) || (!state.channel.is_empty() && controller.raw_input().buttons & 0x100 != 0);
+    let pressed = state.physical_ptt(context,physical);
     let modifiers = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let mute = focused && modifiers && keys.just_pressed(KeyCode::KeyM);
     let deafen = focused && modifiers && keys.just_pressed(KeyCode::KeyD);
@@ -430,5 +445,20 @@ fn network(mut state: ResMut<VoiceState>, mut net: ResMut<Multiplayer>) {
                 let _ = transport.send(context.host_peer, &packet);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    #[test]
+    fn ptt_requires_a_fresh_physical_hold_after_every_focus_ownership_change() {
+        let mut state=VoiceState::new(true);
+        assert!(!state.physical_ptt(1,true));assert!(!state.physical_ptt(1,false));assert!(state.physical_ptt(1,true));
+        // Embedded page replacement can keep the game window focused in one frame.
+        assert!(!state.physical_ptt(2,true));assert!(!state.physical_ptt(3,true));
+        assert!(!state.physical_ptt(3,false));assert!(state.physical_ptt(3,true));
+        assert!(!state.physical_ptt(0,true));assert!(!state.physical_ptt(1,true));
+        assert!(!state.physical_ptt(1,false));assert!(state.physical_ptt(1,true));
     }
 }

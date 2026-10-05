@@ -90,6 +90,29 @@ fn prerequisites() {
 }
 
 #[test]
+#[ignore = "requires rebuilt isolated .NET worker with Resource.Authorized"]
+fn csharp_live_authorization_uses_actual_sender_and_revocation() {
+    prerequisites();
+    let temp=Temp::new();let mut host=host(&temp,Side::Server);
+    let app=installed(&temp,"auth_managed","csharp",r#"
+      using Skate.Managed;using System.Text.Json.Nodes;
+      public class Script:IResourceScript { public void Start(Resource resource) {
+        resource.OnNet("check",(value,sender)=>resource.Send("result",JsonValue.Create(resource.Authorized(sender,"calls.test"))));
+      }}
+    "#,&[],&["resource.network","resource.authorization"]);
+    let allowed=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));let live=allowed.clone();
+    host.set_authorizer(Some(std::sync::Arc::new(move |actor,permission|actor==42&&permission=="calls.test"&&live.load(Ordering::Acquire)))).unwrap();
+    host.install(vec![app]).unwrap();host.start_all().unwrap();
+    let query=|host:&mut Host,actor| {
+        host.receive(actor,"auth_managed",1,"check",json!({"sender":"42","role":"administrator"})).unwrap();
+        host.drain_outputs().into_iter().find_map(|output|if let Output::Event{name,payload,..}=output {(name=="result").then_some(payload)}else{None}).unwrap()
+    };
+    assert_eq!(query(&mut host,7),false);
+    assert_eq!(query(&mut host,42),true);
+    allowed.store(false,Ordering::Release);assert_eq!(query(&mut host,42),false);
+}
+
+#[test]
 fn csharp_empty_side_keeps_resource_active_without_managed_prerequisites() {
     let t = Temp::new();
     if std::env::var_os("SKATE_TEST_MANAGED_EMPTY_SIDE").is_none() {

@@ -2,6 +2,8 @@
 mod audio;
 pub(crate) mod animation;
 mod browser;
+pub(crate) mod interactions;
+mod photos;
 mod canvas;
 mod graphics_dynamic;
 mod vehicle_camera;
@@ -190,6 +192,9 @@ impl Plugin for ModdingPlugin {
         if server_selected {
             info!("Dedicated client: server-selected resources; local mod discovery disabled");
         }
+        interactions::install(app);
+        photos::install(app);
+        app.add_systems(PreUpdate,browser::input.after(crate::customiser::navigation).before(crate::graphics_menu::MenuInput));
         menu::install(app);
         audio::install(app);
         world_audio::install(app);
@@ -761,10 +766,15 @@ fn fixed(world: &mut World) {
 }
 
 pub(crate) fn browser_focused(mods: Option<&Mods>) -> bool {mods.is_some_and(browser::focused)}
+pub(crate) fn browser_focus_token(mods: Option<&Mods>) -> u64 {mods.map_or(0,browser::focus_token)}
+pub(crate) fn external_browser_focused(mods: Option<&Mods>) -> bool {mods.is_some_and(|m|browser::focused(m)&&!browser::composited_focused(m))}
 
 fn update(world: &mut World) {
     let _span = bevy::log::tracing::info_span!("mods.update").entered();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
+        // A cancelled writer can outlive the last resource; reap its bounded
+        // slot even when no script or interface remains active.
+        photos::poll(world, &mut mods);
         if !mods.runtime_busy() {
             return;
         }
@@ -812,6 +822,8 @@ fn camera_angle_snapshot(world: &World) -> Value {
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
     animation::clear(world,None);
     browser::clear(world,mods,None);
+    interactions::clear(world);
+    photos::clear(world);
     for owner in mods.manager.packages.keys() {crate::multiplayer::voice::retire(world,owner);}
     replication::reset(world,mods);
     audio::clear(world);
@@ -882,6 +894,8 @@ fn apply(world: &mut World, mods: &mut Mods) {
     for id in &retired {
         animation::clear(world,Some(id));
         browser::clear(world,mods,Some(id));
+        interactions::clear_owner(world,id);
+        photos::clear_owner(world,id);
         crate::multiplayer::voice::retire(world,id);
         mods.suspended_by.remove(id);
         engine_access::restore_gates(world,mods,Some(id));
@@ -1145,7 +1159,13 @@ fn apply_one(
             if mods.attach.is_some() || !mods.suspended_by.is_empty() {return Err("native player is attached or suspended".into());}
             player_physics::impulse(world,&body,impulse,point,angular)?;
         }
-        Command::UiBrowserOpen {key,options} => browser::open(mods,id,key,options)?,
+        Command::UiInterfaces {operation} => interactions::apply(world,mods,id,operation)?,
+        Command::UiInteractionPolicy {manual_markers} => interactions::policy(world,id,manual_markers),
+        Command::Photos {operation} => {
+            let generation=mods.manager.resources.as_ref().and_then(|h|h.generation(id)).ok_or("photo mode requires a live resource")?;
+            photos::apply(world,mods,id,generation,operation)?;
+        }
+        Command::UiBrowserOpen {key,options} => browser::open(world,mods,id,key,options)?,
         Command::Animation {version,operation} => animation::apply(world,mods,id,version,operation)?,
         Command::Voice {operation} => {
             let generation=mods.manager.resources.as_ref().filter(|host|host.running(id)).and_then(|host|host.generation(id))
@@ -1158,8 +1178,8 @@ fn apply_one(
                 completion?;
             }
         }
-        Command::UiBrowserMessage {key,value} => browser::send(mods,id,&key,value)?,
-        Command::UiBrowserFocus {key,focused} => browser::focus(world,mods,id,&key,focused)?,
+        Command::UiBrowserMessage {key,value} => browser::send(&mods.browsers,id,&key,value)?,
+        Command::UiBrowserFocus {key,focused} => browser::focus(world,&mut mods.browsers,id,&key,focused)?,
         Command::UiBrowserClose {key} => browser::close(world,mods,id,&key),
         Command::UiCanvas { key, options } => canvas::set(world, &mut mods.canvases, id, key, options)?,
         Command::UiRemove { key } => {
