@@ -254,6 +254,7 @@ const EFFECT_ACK: &[u8] = br#"{"epoch":9007199254740993,"through":1}"#;
 fn reliable_gameplay_packet_keeps_utf8_json_and_64_bit_counters() {
     let state = Gameplay {
         mode: PlayerMode::Offboard,
+        suspended: false,
         trick_seq: 9_007_199_254_740_993,
         trick: "Kickflip".into(),
         landed_seq: 5,
@@ -277,6 +278,18 @@ fn reliable_gameplay_packet_keeps_utf8_json_and_64_bit_counters() {
     fixture.extend(GAMEPLAY);
     let output = client.service(100);
     assert!(output.iter().any(|p| p.data == fixture));
+}
+
+#[test]
+fn gameplay_separates_ragdoll_from_explicit_suspension_and_defaults_old_packets() {
+    let old: Gameplay = serde_json::from_slice(GAMEPLAY).unwrap();
+    assert_eq!(serde_json::to_value(old).unwrap().get("suspended"), None);
+
+    let suspended: Gameplay = serde_json::from_slice(
+        br#"{"mode":"Ragdoll","suspended":true,"trick_seq":0,"trick":"","landed_seq":0,"landed_trick":"","bail_seq":0,"sequence_score":0,"line_score":0}"#,
+    )
+    .unwrap();
+    assert_eq!(serde_json::to_value(suspended).unwrap()["suspended"], true);
 }
 
 #[test]

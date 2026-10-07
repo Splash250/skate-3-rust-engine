@@ -255,7 +255,7 @@ pub(super) fn fixed(
     }
 }
 
-pub(super) fn publish(net: &mut Multiplayer, skater: &SkaterRuntime) -> bool {
+pub(super) fn publish(net: &mut Multiplayer, skater: &SkaterRuntime, suspended: bool) -> bool {
     if !net.is_dedicated() {
         return true;
     }
@@ -289,6 +289,7 @@ pub(super) fn publish(net: &mut Multiplayer, skater: &SkaterRuntime) -> bool {
         } else {
             PlayerMode::Skating
         },
+        suspended,
         trick_seq: scoring.trick_seq() as u64,
         trick: trick_label(scoring.trick_name()),
         landed_seq: scoring.landing_seq as u64,

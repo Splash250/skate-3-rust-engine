@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "rp-properties",
+  "version": "1.0.0",
+  "language": "lua",
+  "server_scripts": ["server.lua"],
+  "client_scripts": ["client.lua"],
+  "files": ["index.html", "properties.css", "properties.js"],
+  "dependencies": {
+    "platform-profiles": "1.0.0",
+    "rp-economy": "1.0.0",
+    "boardwalk-borough": "1.0.0",
+    "phone": "1.0.0"
+  },
+  "exports": ["snapshot"],
+  "capabilities": [
+    "resource.database",
+    "resource.events",
+    "resource.exports",
+    "resource.network",
+    "resource.settings",
+    "resource.state",
+    "resource.storage",
+    "resource.teleport",
+    "engine.ui"
+  ],
+  "settings": {
+    "studio_price": {"type":"integer","default":50,"min":1,"max":100000,"visibility":"private","change":"restart"},
+    "max_guests": {"type":"integer","default":4,"min":1,"max":8,"visibility":"private","change":"live"}
+  },
+  "requires_features": ["resource.settings.v1", "resource.interfaces.v1", "browser.surface.v1"]
+}

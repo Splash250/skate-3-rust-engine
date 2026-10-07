@@ -270,7 +270,7 @@ fn poll_inner(
                     fw: forward.to_array(),
                     h: forward.x.atan2(forward.z),
                     sp: Vec3::from_array(velocity).length(),
-                    suspended: body.enabled & (1 << 63) != 0,
+                    suspended: is_remote_suspended(&gameplay),
                     ob: !offboard,
                     ca: if offboard { 500 } else { 100 },
                     ba: bailing,
@@ -450,6 +450,10 @@ fn poll_inner(
         super::apply(world, mods);
     }
     publish(world, client)
+}
+
+fn is_remote_suspended(gameplay: &skate_net::dedicated::Gameplay) -> bool {
+    gameplay.suspended
 }
 
 fn validate_models(report: &DownloadReport, cancel: &AtomicBool,limits:super::graphics::asset_limits::Limits) -> Result<(), String> {
@@ -691,6 +695,17 @@ pub(super) fn shutdown(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ragdoll_does_not_hide_remote_player_but_explicit_suspension_does() {
+        let mut gameplay = skate_net::dedicated::Gameplay {
+            mode: skate_net::dedicated::PlayerMode::Ragdoll,
+            ..Default::default()
+        };
+        assert!(!is_remote_suspended(&gameplay));
+        gameplay.suspended = true;
+        assert!(is_remote_suspended(&gameplay));
+    }
+
     #[test]
     fn local_network_budgets_are_bounded_and_reject_unknown_fields() {
         let root = std::env::temp_dir().join(format!("skate-local-network-budgets-{}-{}",

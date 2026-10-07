@@ -93,6 +93,8 @@ pub enum PlayerMode {
 #[serde(deny_unknown_fields)]
 pub struct Gameplay {
     pub mode: PlayerMode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspended: bool,
     pub trick_seq: u64,
     pub trick: String,
     pub landed_seq: u64,

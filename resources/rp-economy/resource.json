@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "rp-economy",
+  "version": "1.0.0",
+  "language": "lua",
+  "server_scripts": ["server.lua"],
+  "files": [],
+  "dependencies": {"platform-profiles": "1.0.0"},
+  "exports": ["balance", "submit", "operation"],
+  "capabilities": [
+    "resource.database",
+    "resource.events",
+    "resource.exports",
+    "resource.network",
+    "resource.settings",
+    "resource.state"
+  ],
+  "settings": {
+    "starter_balance": {"type":"integer","default":100,"min":0,"max":1000000,"visibility":"private","change":"restart"},
+    "max_balance": {"type":"integer","default":1000000,"min":100,"max":1000000000,"visibility":"private","change":"restart"},
+    "max_operation_amount": {"type":"integer","default":100000,"min":1,"max":100000000,"visibility":"private","change":"restart"}
+  },
+  "requires_features": ["resource.settings.v1"]
+}

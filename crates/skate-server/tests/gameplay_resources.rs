@@ -5,7 +5,7 @@ use skate_mods::resources::{Host, InstalledResource, Output, Side};
 use skate_resources::Manifest;
 use skate_services::{Grants, Limits, Owner, Services};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -13,6 +13,16 @@ use std::{
 
 const RESOURCES: &[&str] = &[
     "platform-profiles",
+    "rp-economy",
+    "voice-room",
+    "boardwalk-borough",
+    "phone",
+    "phone-calls",
+    "interaction-policy",
+    "inventory-ui",
+    "admin-dashboard",
+    "rp-properties",
+    "rp-pizza",
     "platform-crews",
     "platform-rounds",
     "platform-map-vote",
@@ -47,6 +57,7 @@ struct Runtime {
     hold_commits: bool,
     lose_commit_completion: bool,
     committed_without_completion: bool,
+    lost_service_tickets: BTreeSet<u64>,
 }
 impl Runtime {
     fn new(root: &Path) -> Self {
@@ -87,6 +98,7 @@ impl Runtime {
             hold_commits: false,
             lose_commit_completion: false,
             committed_without_completion: false,
+            lost_service_tickets: BTreeSet::new(),
         }
     }
     fn flush(&mut self) {
@@ -121,7 +133,12 @@ impl Runtime {
                     operation,
                     timeout_ms,
                 } => {
-                    if self.hold_commits && key == "commit" {
+                    let recovery_commit = resource == "rp-properties"
+                        && operation["statements"].as_array().is_some_and(|statements| {
+                            statements.iter().any(|statement| statement["sql"]
+                                .as_str().is_some_and(|sql| sql.contains("INSERT INTO rp_property_leases")))
+                        });
+                    if self.hold_commits && (key == "commit" || recovery_commit) {
                         continue;
                     }
                     let request = serde_json::from_value(operation).unwrap();
@@ -133,6 +150,9 @@ impl Runtime {
                             Duration::from_millis(timeout_ms),
                         )
                         .unwrap();
+                    if recovery_commit && self.lose_commit_completion {
+                        self.lost_service_tickets.insert(ticket);
+                    }
                     self.pending.insert(ticket, (resource, generation, key));
                 }
                 Output::State { .. } | Output::Log { .. } => {}
@@ -143,7 +163,9 @@ impl Runtime {
             let Some((resource, generation, key)) = self.pending.remove(&completion.id) else {
                 continue;
             };
-            if key == "commit" && self.lose_commit_completion {
+            if (key == "commit" && self.lose_commit_completion)
+                || self.lost_service_tickets.remove(&completion.id)
+            {
                 assert!(
                     completion.result.is_ok(),
                     "commit must really reach SQLite before simulating lost acknowledgement"
@@ -222,11 +244,325 @@ impl Runtime {
             .unwrap()
     }
     fn ready(&mut self) {
-        self.until(|runtime| runtime.host.state("platform-leaderboards", "top").is_some());
+        self.until(|runtime| {
+            runtime.host.state("platform-leaderboards", "top").is_some()
+                && runtime.host.state("rp-economy", "ready") == Some(json!(true))
+                && runtime.host.state("rp-properties", "ready") == Some(json!(true))
+        });
     }
 }
 fn players() -> Value {
     json!([{"id":"10","account_id":"verified-a","instance":"0","position":[-8,1,0]},{"id":"20","account_id":"verified-b","instance":"0","position":[-10,1,0]},{"id":"30","instance":"0","position":[-12,1,0]}])
+}
+
+fn rent_property(runtime: &mut Runtime, actor: u64) -> Value {
+    runtime.event(actor, "rp-properties", "request", json!({"action":"rent","unit":"studio"}));
+    runtime.until(|r| r.private("rp-properties", actor, "properties").is_some_and(|v| v["lease"]["unit"] == "studio"));
+    runtime.private("rp-properties", actor, "properties").unwrap()
+}
+fn place_actor(runtime: &mut Runtime, actor: &str, position: [f64; 3], instance: &str) {
+    let players=runtime.players.as_array_mut().expect("player fixture is an array");
+    let player=players.iter_mut().find(|player| player["id"]==actor).expect("actor fixture exists");
+    player["position"]=json!(position);
+    player["instance"]=json!(instance);
+    runtime.tick(0.02);
+    runtime.host.dispatch("on_fixed_update",json!({"dt":0.02}));
+    runtime.flush();
+}
+
+#[test]
+fn wallet_debits_are_conditional_and_idempotent() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+
+    let payload = json!({"actor":"10","operation_id":"rent_unit_1","kind":"charge","amount":30,"reason":"apartment lease"});
+    let accepted = runtime.invoke("rp-economy", "submit", payload.clone());
+    assert_eq!(accepted["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 10, "operation").is_some_and(|v| v["status"] == "applied"));
+    let receipt = runtime.private("rp-economy", 10, "operation").unwrap();
+    assert_eq!(receipt["balance"], 70);
+
+    let repeated = runtime.invoke("rp-economy", "submit", payload);
+    assert_eq!(repeated["status"], "applied");
+    assert_eq!(repeated["balance"], 70);
+    let conflict = runtime.invoke("rp-economy", "submit", json!({"actor":"10","operation_id":"rent_unit_1","kind":"charge","amount":31,"reason":"apartment lease"}));
+    assert_eq!(conflict["ok"], false);
+    assert_eq!(conflict["error"], "operation_conflict");
+
+    let insufficient = runtime.invoke("rp-economy", "submit", json!({"actor":"10","operation_id":"rent_unit_2","kind":"charge","amount":71,"reason":"second lease"}));
+    assert_eq!(insufficient["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 10, "operation").is_some_and(|v| v["operation_id"] == "rent_unit_2" && v["status"] == "rejected"));
+    assert_eq!(runtime.private("rp-economy", 10, "operation").unwrap()["balance"], 70);
+}
+
+#[test]
+fn wallet_credits_are_idempotent_and_reconnect_persists() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+    let accepted = runtime.invoke("rp-economy", "submit", json!({"actor":"10","operation_id":"pizza_order_1","kind":"credit","amount":25,"reason":"pizza delivery"}));
+    assert_eq!(accepted["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 10, "operation").is_some_and(|v| v["status"] == "applied"));
+    let repeated = runtime.invoke("rp-economy", "submit", json!({"actor":"10","operation_id":"pizza_order_1","kind":"credit","amount":25,"reason":"pizza delivery"}));
+    assert_eq!(repeated["balance"], 125);
+
+    runtime.players = json!([]);
+    runtime.tick(0.01);
+    runtime.players = json!([{"id":"40","account_id":"verified-a","instance":"0","position":[-8,1,0]}]);
+    runtime.until(|r| r.private("platform-profiles", 40, "profile").is_some());
+    assert_eq!(runtime.invoke("platform-profiles", "identity", json!("40")), json!("verified-a"));
+    let balance = runtime.invoke("rp-economy", "balance", json!({"actor":"40"}));
+    assert_eq!(balance["status"], "ready", "reconnected account lookup: {balance:?}");
+    assert_eq!(balance["balance"], 125);
+    runtime.host.restart("rp-economy").unwrap();
+    runtime.until(|r| r.host.state("rp-economy", "ready") == Some(json!(true)));
+    let replay = runtime.invoke("rp-economy", "submit", json!({"actor":"40","operation_id":"pizza_order_1","kind":"credit","amount":25,"reason":"pizza delivery"}));
+    assert_eq!(replay["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 40, "operation").is_some_and(|v| v["status"] == "applied"));
+    let after_restart = runtime.invoke("rp-economy", "balance", json!({"actor":"40"}));
+    assert_eq!(after_restart["status"], "ready");
+    assert_eq!(after_restart["balance"], 125);
+}
+
+#[test]
+fn economy_rejects_unverified_and_cross_actor_operations() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+    let unverified = runtime.invoke("rp-economy", "submit", json!({"actor":"999","operation_id":"spoof","kind":"credit","amount":1000,"reason":"forged"}));
+    assert_eq!(unverified["ok"], false);
+    assert_eq!(unverified["error"], "unverified_actor");
+
+    let credit = runtime.invoke("rp-economy", "submit", json!({"actor":"10","operation_id":"private_credit","kind":"credit","amount":10,"reason":"delivery","account":"verified-b"}));
+    assert_eq!(credit["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 10, "operation").is_some_and(|v| v["status"] == "applied"));
+    let other_actor = runtime.invoke("rp-economy", "operation", json!({"actor":"20","operation_id":"private_credit"}));
+    assert_eq!(other_actor["status"], "pending");
+    runtime.until(|r| r.private("rp-economy", 20, "operation").is_some_and(|v| v["status"] == "unknown"));
+    assert_eq!(runtime.private("rp-economy", 20, "operation").unwrap()["operation_id"], "private_credit");
+    let settled = runtime.invoke("rp-economy", "operation", json!({"actor":"20","operation_id":"private_credit"}));
+    assert_eq!(settled["status"], "unknown");
+}
+
+#[test]
+fn voice_policy_uses_operator_radius_and_dispatch_membership_is_authoritative() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource == "voice-room" && operation["kind"] == "proximity" && operation["meters"] == 12
+    )), "voice-room did not apply its default proximity radius: {:?}", runtime.operations);
+
+    runtime.host.set_setting("voice-room", "proximity_meters", json!(17)).unwrap();
+    runtime.flush();
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource == "voice-room" && operation["kind"] == "proximity" && operation["meters"] == 17
+    )), "voice-room did not apply the operator's live proximity change");
+
+    let enabled = runtime.invoke("voice-room", "dispatch_member", json!({"actor":"10","enabled":true}));
+    assert_eq!(enabled["ok"], true);
+    runtime.flush();
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource == "voice-room" && operation["kind"] == "channel" && operation["name"] == "pizza_dispatch" && operation["members"] == json!(["10"])
+    )), "dispatch membership was not submitted to the voice authority");
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Event {resource,recipient,name,payload,..} if resource == "voice-room" && *recipient == Some(10) && name == "select_channel" && payload["channel"] == "voice-room/pizza_dispatch"
+    )), "the admitted worker did not receive server-selected dispatch radio");
+
+    let rejected = runtime.invoke("voice-room", "dispatch_member", json!({"actor":"999","enabled":true}));
+    assert_eq!(rejected["ok"], false);
+    let disabled = runtime.invoke("voice-room", "dispatch_member", json!({"actor":"10","enabled":false}));
+    assert_eq!(disabled["ok"], true);
+    runtime.flush();
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Event {resource,recipient,name,payload,..} if resource == "voice-room" && *recipient == Some(10) && name == "select_channel" && payload["channel"] == ""
+    )), "dispatch removal did not return the worker to proximity");
+
+    runtime.operations.clear();
+    runtime.invoke("voice-room", "dispatch_member", json!({"actor":"10","enabled":true}));
+    runtime.flush();
+    runtime.players = json!([{"id":"20","account_id":"verified-b","instance":"0","position":[-10,1,0]}]);
+    runtime.tick(0.01);
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource == "voice-room" && operation["kind"] == "remove_channel" && operation["name"] == "pizza_dispatch"
+    )), "disconnect left an empty dispatch channel installed");
+
+    runtime.players = players();
+    runtime.tick(0.01);
+    runtime.invoke("voice-room", "dispatch_member", json!({"actor":"10","enabled":true}));
+    runtime.flush();
+    runtime.operations.clear();
+    let generation = runtime.host.generation("voice-room").unwrap();
+    runtime.host.restart("voice-room").unwrap();
+    runtime.flush();
+    assert_ne!(runtime.host.generation("voice-room"), Some(generation));
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource == "voice-room" && operation["kind"] == "proximity" && operation["meters"] == 17
+    )), "replacement generation did not restore configured proximity");
+    let replacement_member = runtime.invoke("voice-room", "dispatch_member", json!({"actor":"10","enabled":true}));
+    assert_eq!(replacement_member["ok"], true);
+    assert_eq!(replacement_member["changed"], true, "retired generation's in-memory dispatch membership leaked");
+}
+
+#[test]
+fn property_purchase_recovers_a_charged_operation_after_restart() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+    runtime.lose_commit_completion = true;
+    runtime.event(10, "rp-properties", "request", json!({"action":"rent","unit":"studio"}));
+    runtime.event(10, "rp-properties", "request", json!({"action":"rent","unit":"studio"}));
+    runtime.until(|r| r.committed_without_completion);
+    assert!(runtime.private("rp-economy", 10, "operation").is_some_and(|v| v["status"] == "applied"));
+
+    runtime.lose_commit_completion = false;
+    runtime.host.restart("rp-properties").unwrap();
+    runtime.until(|r| r.private("rp-properties", 10, "properties").is_some_and(|v| v["lease"]["unit"] == "studio"));
+    let properties = runtime.private("rp-properties", 10, "properties").unwrap();
+    assert_eq!(properties["lease"]["unit"], "studio");
+    assert_eq!(properties["lease"]["instance"], 2000);
+    let balance = runtime.invoke("rp-economy", "balance", json!({"actor":"10"}));
+    assert_eq!(balance["balance"], 50, "replayed property recovery charged only once");
+}
+
+#[test]
+fn property_entry_requires_owner_or_invite_and_returns_to_previous_world() {
+    let temp = Temp::new();
+    let mut runtime = Runtime::new(&temp.0);
+    runtime.players = players();
+    runtime.ready();
+    let lease = rent_property(&mut runtime, 10)["lease"].clone();
+
+    runtime.event(10, "rp-properties", "request", json!({"action":"enter"}));
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Teleport {resource,player,instance,restore_on_stop,..} if resource == "rp-properties" && *player == 10 && *instance == Some(2000) && *restore_on_stop
+    )), "owner was not sent to the predefined interior instance");
+    runtime.operations.clear();
+    runtime.event(10, "rp-properties", "request", json!({"action":"list"}));
+    let online=runtime.private("rp-properties",10,"properties").unwrap()["online_players"].clone();
+    assert!(online.as_array().is_some_and(|players|players.iter().any(|player|player["id"]=="20"))
+        && online.as_array().is_some_and(|players|!players.iter().any(|player|player["id"]=="10"||player["id"]=="30")),
+        "apartment invite list should include other verified players from the public instance and omit self/unverified connections: {online}");
+    runtime.operations.clear();
+    runtime.event(20, "rp-properties", "request", json!({"action":"enter","owner":"verified-a"}));
+    assert_eq!(runtime.private("rp-properties", 20, "properties").unwrap()["error"], "not_authorized");
+    assert!(runtime.operations.iter().all(|output| !matches!(output, Output::Teleport {resource,player,..} if resource == "rp-properties" && *player == 20)));
+
+    runtime.event(10, "rp-properties", "request", json!({"action":"invite","target":"20"}));
+    runtime.until(|r| r.private("rp-properties", 10, "properties").is_some_and(|v| v["message"] == "Invitation sent."));
+    runtime.operations.clear();
+    runtime.event(20, "rp-properties", "request", json!({"action":"accept_invite","owner":"verified-a"}));
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Teleport {resource,player,instance,restore_on_stop,..} if resource == "rp-properties" && *player == 20 && *instance == Some(lease["instance"].as_u64().unwrap() as u32) && *restore_on_stop
+    )), "invited guest did not enter the owner's private instance");
+    runtime.operations.clear();
+    runtime.event(20, "rp-properties", "request", json!({"action":"exit"}));
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Teleport {resource,player,restore_previous,..} if resource == "rp-properties" && *player == 20 && *restore_previous
+    )), "guest exit did not use the host's saved return lease");
+}
+
+#[test]
+fn pizza_route_rejects_forged_stale_out_of_order_and_wrong_instance_actions() {
+    let temp=Temp::new();
+    let mut runtime=Runtime::new(&temp.0);
+    runtime.players=players();
+    runtime.ready();
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    place_actor(&mut runtime,"10",[-10.0,1.0,0.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"go_to_counter"}));
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Teleport {resource,player,position,instance,..} if resource=="rp-pizza" && *player==10 && *position==[25.0,1.0,2.0] && *instance==Some(0)
+    )),"pizza app did not offer a server-authorized route to the counter");
+    runtime.operations.clear();
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"start","target":"drop_02","reward":9999}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"offered");
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["target"],"drop_01");
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["reward"],30);
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource=="voice-room" && operation["kind"]=="channel" && operation["name"]=="pizza_dispatch" && operation["members"]==json!(["10"])
+    )),"starting a shift did not admit the worker to dispatch");
+
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver","target":"drop_01","reward":9999}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"wrong_phase");
+    runtime.event(10,"rp-pizza","request",json!({"action":"pickup"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"picked_up");
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"wrong_marker");
+
+    place_actor(&mut runtime,"10",[-37.0,0.25,27.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"wrong_marker");
+    place_actor(&mut runtime,"10",[36.0,0.25,24.0],"2000");
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"wrong_instance");
+    place_actor(&mut runtime,"10",[36.0,0.25,24.0],"0");
+    runtime.event(20,"rp-pizza","request",json!({"action":"deliver","actor":"10"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"picked_up","a payload actor ID changed another worker's order");
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"too_soon");
+    runtime.event(10,"rp-pizza","request",json!({"action":"cancel"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"cancelled");
+    assert!(runtime.operations.iter().any(|output| matches!(output,
+        Output::Voice {resource,operation,..} if resource=="voice-room" && operation["kind"]=="remove_channel" && operation["name"]=="pizza_dispatch"
+    )),"cancelled shift left dispatch membership installed");
+
+    runtime.host.set_setting("rp-pizza","shift_timeout_seconds",json!(60)).unwrap();
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    runtime.operations.clear();
+    runtime.event(10,"rp-pizza","request",json!({"action":"start"}));
+    for _ in 0..7 { runtime.tick(10.0); }
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"cancelled");
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["error"],"expired");
+
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"start"}));
+    runtime.operations.clear();
+    runtime.players=json!([{"id":"20","account_id":"verified-b","instance":"0","position":[-10,1,0]},{"id":"30","instance":"0","position":[-12,1,0]}]);
+    runtime.tick(0.02);
+    assert!(runtime.operations.iter().any(|output|matches!(output,
+        Output::Voice {resource,operation,..} if resource=="voice-room" && operation["kind"]=="remove_channel" && operation["name"]=="pizza_dispatch"
+    )),"disconnect left the departed worker in dispatch");
+
+    runtime.players=players();
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"start"}));
+    runtime.operations.clear();
+    runtime.host.stop("rp-pizza").unwrap();
+    runtime.tick(10.0);
+    runtime.tick(10.0);
+    assert!(runtime.operations.iter().any(|output|matches!(output,
+        Output::Voice {resource,operation,..} if resource=="voice-room" && operation["kind"]=="remove_channel" && operation["name"]=="pizza_dispatch"
+    )),"resource retirement left its dispatch membership installed");
+}
+
+#[test]
+fn pizza_payout_and_dispatch_recover_exactly_once_after_restart() {
+    let temp=Temp::new();
+    let mut runtime=Runtime::new(&temp.0);
+    runtime.players=players();
+    runtime.ready();
+    place_actor(&mut runtime,"10",[25.0,0.25,2.0],"0");
+    runtime.event(10,"rp-pizza","request",json!({"action":"start"}));
+    runtime.event(10,"rp-pizza","request",json!({"action":"pickup"}));
+    place_actor(&mut runtime,"10",[36.0,0.25,24.0],"0");
+    runtime.tick(6.0);
+    runtime.event(10,"rp-pizza","request",json!({"action":"deliver"}));
+    assert_eq!(runtime.private("rp-pizza",10,"job").unwrap()["phase"],"payout_pending");
+    runtime.host.restart("rp-pizza").unwrap();
+    runtime.until(|r|r.private("rp-pizza",10,"job").is_some_and(|v|v["phase"]=="complete"));
+    let balance=runtime.invoke("rp-economy","balance",json!({"actor":"10"}));
+    assert_eq!(balance["balance"],130,"recovery replayed the server-generated credit more than once");
+    assert!(runtime.operations.iter().any(|output|matches!(output,
+        Output::Voice {resource,operation,..} if resource=="voice-room" && operation["kind"]=="remove_channel" && operation["name"]=="pizza_dispatch"
+    )),"completed order did not remove dispatch membership: {:?}",runtime.operations);
 }
 
 #[test]
@@ -703,6 +1039,36 @@ fn creator_park_scripts_read_exported_markers_and_publish_private_guidance() {
         !client.drain_commands().is_empty(),
         "creator HUD did not reach real engine command bridge"
     );
+}
+
+#[test]
+fn boardwalk_map_markers_are_server_observed_and_instance_scoped() {
+    let temp = Temp::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/boardwalk-borough");
+    let manifest = Manifest::read(&root).unwrap();
+    let mut host = Host::new(Side::Server, temp.0.join("server"), "boardwalk-server").unwrap();
+    host.install(vec![InstalledResource {
+        grants: manifest.capabilities.iter().cloned().collect(),
+        manifest: manifest.clone(),
+        root: root.clone(),
+        generation: 1,
+    }]).unwrap();
+    host.start_all().unwrap();
+    host.tick(0.02, json!({"players":[{"id":"10","instance":"0","position":[25,0.25,2]}]}));
+    host.dispatch("on_fixed_update", json!({"dt":0.02}));
+    assert!(host.diagnostics.is_empty(), "Boardwalk server diagnostics: {:?}", host.diagnostics);
+    let marker = host.scoped_state("boardwalk-borough", "marker", &json!({"kind":"player","id":"10"})).unwrap().unwrap();
+    assert_eq!(marker["id"], "pizza_counter");
+    assert_eq!(marker["label"], "Slice of Life Pizza");
+
+    host.tick(0.02, json!({"players":[{"id":"10","instance":"42","position":[25,0.25,2]}]}));
+    host.dispatch("on_fixed_update", json!({"dt":0.02}));
+    let private_room = host.scoped_state("boardwalk-borough", "marker", &json!({"kind":"player","id":"10"})).unwrap();
+    assert!(private_room.is_none() || private_room == Some(json!(false)), "street marker leaked into another instance: {private_room:?}");
+
+    host.tick(0.02, json!({"players":[]}));
+    host.dispatch("on_fixed_update", json!({"dt":0.02}));
+    assert!(host.diagnostics.is_empty(), "Boardwalk server diagnostics after departure: {:?}", host.diagnostics);
 }
 
 #[test]

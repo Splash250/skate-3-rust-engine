@@ -1,0 +1,526 @@
+{
+  "accounts_required": true,
+  "format": 1,
+  "id": "boardwalk-borough",
+  "resources": [
+    {
+      "files": [
+        {
+          "bytes": 425,
+          "path": "client.js",
+          "sha256": "622aec466c9d5a56d81e5336998f307f1fbcb087e6a0896e34e695e63137d3d1",
+          "source": "boardwalk-borough/client.js"
+        },
+        {
+          "bytes": 1301,
+          "path": "markers.json",
+          "sha256": "f67c496280e40e528a45ef88bf990f42e684e87294bfcd1d38465b0be40dce72",
+          "source": "boardwalk-borough/markers.json"
+        },
+        {
+          "bytes": 9370,
+          "path": "park-low.skate",
+          "sha256": "0ad48aadf4d8b86bca07f397718a88b0a1513df42fb76b29c60d65d593e9f9b2",
+          "source": "boardwalk-borough/park-low.skate"
+        },
+        {
+          "bytes": 124170,
+          "path": "park.skate",
+          "sha256": "aef98e229fcbe2775b284ce15ffdc4fcc7c675b3b537017d530ecf0089450fdd",
+          "source": "boardwalk-borough/park.skate"
+        },
+        {
+          "bytes": 1384,
+          "path": "placements-low.json",
+          "sha256": "53397c0602ba2acdfde8b7f27e22125ac82616a2525b025c4686a67c95a540de",
+          "source": "boardwalk-borough/placements-low.json"
+        },
+        {
+          "bytes": 15423,
+          "path": "placements.json",
+          "sha256": "964e15c1791e69934c85a1ec41b34b6e4c105b9a74bf9d934d51e2586c49eddc",
+          "source": "boardwalk-borough/placements.json"
+        },
+        {
+          "bytes": 628,
+          "path": "resource.json",
+          "sha256": "a52f511e7c5809df6c5d41007088499725d5d3e8da2936d48d4701852a979ce3",
+          "source": "boardwalk-borough/resource.json"
+        },
+        {
+          "bytes": 2593,
+          "path": "server.js",
+          "sha256": "c8aecd85fff5201740f82406efc672df3589c242f08c17d0c3e1163ea20d97d1",
+          "source": "boardwalk-borough/server.js"
+        }
+      ],
+      "id": "boardwalk-borough",
+      "provenance": "Original Boardwalk Borough scene and marker set authored for this repository with geometric primitives; no retail assets.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 881,
+          "path": "client.lua",
+          "sha256": "81cd179ca9e40af2aaf4fe33db5a5266933e79f940d027fe0ce0ede312fc8e42",
+          "source": "platform-profiles/client.lua"
+        },
+        {
+          "bytes": 719,
+          "path": "resource.json",
+          "sha256": "b23f8ffe8a5c64c1ec52d51243c991b4ea7b2f5270d7a51c5858b8678e8d7bc8",
+          "source": "platform-profiles/resource.json"
+        },
+        {
+          "bytes": 3226,
+          "path": "server.lua",
+          "sha256": "bc9644a2dcb35e8b21e30340b7a22d08ef4fde10a68069086e55e521d537f7dd",
+          "source": "platform-profiles/server.lua"
+        }
+      ],
+      "id": "platform-profiles",
+      "provenance": "Original Skate engine project resource from resources/platform-profiles.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 859,
+          "path": "resource.json",
+          "sha256": "5f0c16c316fb14c21000583bad9ad4e90cb55340f3fc9d8316436d93f60eb98a",
+          "source": "rp-economy/resource.json"
+        },
+        {
+          "bytes": 11569,
+          "path": "server.lua",
+          "sha256": "de986c86d241fdfb72f28da98588dadd612beaf8e8ecbd9ec9de6a78ab84447c",
+          "source": "rp-economy/server.lua"
+        }
+      ],
+      "id": "rp-economy",
+      "provenance": "Original Skate engine project resource from resources/rp-economy.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 623,
+          "path": "client.lua",
+          "sha256": "3f74656bac9b40ac1057f536be886151bb02796121b1e39387e272d151b166b2",
+          "source": "voice-room/client.lua"
+        },
+        {
+          "bytes": 592,
+          "path": "resource.json",
+          "sha256": "06c5422118ee462ec8510214a4f9cb4cfefdfad37e5e14e6b025294594296fd4",
+          "source": "voice-room/resource.json"
+        },
+        {
+          "bytes": 5241,
+          "path": "server.lua",
+          "sha256": "c99fee9de21c15180a8c4d75d3472a5a0dc37e67f441131a725f959dbdf9272a",
+          "source": "voice-room/server.lua"
+        }
+      ],
+      "id": "voice-room",
+      "provenance": "Original Skate engine project resource from resources/voice-room.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 5253,
+          "path": "client.lua",
+          "sha256": "a8a615f1ac571a9a93abc478a51cf860cea40ceec184978e6d02dfc4f1dded36",
+          "source": "phone-calls/client.lua"
+        },
+        {
+          "bytes": 850,
+          "path": "resource.json",
+          "sha256": "a65c95ecb84559716b5c8e9c655c470090070fa5cb9b8eccec2c63ea6a33f024",
+          "source": "phone-calls/resource.json"
+        },
+        {
+          "bytes": 8929,
+          "path": "server.lua",
+          "sha256": "a60feaf75a303b27159fc4e71d816a2bca8aa87e1c7bff3e5af5e800a28d94b3",
+          "source": "phone-calls/server.lua"
+        }
+      ],
+      "id": "phone-calls",
+      "provenance": "Original Skate engine project resource from resources/phone-calls.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 3512,
+          "path": "client.lua",
+          "sha256": "85dca9bf599d00e6249852f1ca49f3f03f56b5f192e2aedeca76ac0c7c008b00",
+          "source": "interaction-policy/client.lua"
+        },
+        {
+          "bytes": 1452,
+          "path": "resource.json",
+          "sha256": "c831c597ad59bdf652c7631083d480659b2e997edaa1e0afc1723b47e99eb951",
+          "source": "interaction-policy/resource.json"
+        }
+      ],
+      "id": "interaction-policy",
+      "provenance": "Original Skate engine project resource from resources/interaction-policy.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 1742,
+          "path": "client.lua",
+          "sha256": "95eb1d20e6487ad3f9d7d25bebb571cd0f97583b92b0233536582f63d38cc5f2",
+          "source": "inventory-ui/client.lua"
+        },
+        {
+          "bytes": 1277,
+          "path": "index.html",
+          "sha256": "9c65b2c6988e03c446d84138716dd12101f2cea2c7bedb1e82ae9bab5c836faa",
+          "source": "inventory-ui/index.html"
+        },
+        {
+          "bytes": 3173,
+          "path": "inventory.css",
+          "sha256": "614279e13a30ec411e0e6ec9c79b119487e1d10fe962ef152b1d3b88ca8e6d3a",
+          "source": "inventory-ui/inventory.css"
+        },
+        {
+          "bytes": 4344,
+          "path": "inventory.js",
+          "sha256": "f17fae8ee8e3cea5526bdbbf01e6c0fd7d62d5d57953e88d1dcaeb469771188f",
+          "source": "inventory-ui/inventory.js"
+        },
+        {
+          "bytes": 312,
+          "path": "resource.json",
+          "sha256": "1fcb43656e3a7a19dbb0034536e784ff32cdab1be3602fa727c0bdef7a2f69de",
+          "source": "inventory-ui/resource.json"
+        },
+        {
+          "bytes": 4526,
+          "path": "server.lua",
+          "sha256": "61aa1857b8f1b3ba89d8e9a2e8d9e9fc29f1da21e8aa69275161e931d281290d",
+          "source": "inventory-ui/server.lua"
+        }
+      ],
+      "id": "inventory-ui",
+      "provenance": "Original Skate engine project resource from resources/inventory-ui.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 2523,
+          "path": "admin.css",
+          "sha256": "1033d8575237979651128e52ea0d3ea1d2f49e8b1a1e1085163e9cfcae1978d9",
+          "source": "admin-dashboard/admin.css"
+        },
+        {
+          "bytes": 6095,
+          "path": "admin.js",
+          "sha256": "75dfe512d043e00f80e88dd2e9304ed89b7806bb04febdc63ff08cf213e8f9d8",
+          "source": "admin-dashboard/admin.js"
+        },
+        {
+          "bytes": 2280,
+          "path": "client.lua",
+          "sha256": "7bd6dc99ed574436103630ac2b41d0edcdd6abdf0d7134e87eded19e55bbde6a",
+          "source": "admin-dashboard/client.lua"
+        },
+        {
+          "bytes": 1324,
+          "path": "index.html",
+          "sha256": "7f308985c7e8cfa3aa8c0feca084d5decaf07cecddf1602a3ad739838d98f9ea",
+          "source": "admin-dashboard/index.html"
+        },
+        {
+          "bytes": 409,
+          "path": "resource.json",
+          "sha256": "129ae7bd20d2c14adf6ce91adfa63d027b2b35310cba000ae8d1e679a9c2fe48",
+          "source": "admin-dashboard/resource.json"
+        }
+      ],
+      "id": "admin-dashboard",
+      "provenance": "Original Skate engine project resource from resources/admin-dashboard.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 8078,
+          "path": "client.lua",
+          "sha256": "0c41d894d213cefb23c7b1c05eb54d1bbef022fbdab5c4938c0a85031b9272b1",
+          "source": "phone/client.lua"
+        },
+        {
+          "bytes": 28479,
+          "path": "font-license.txt",
+          "sha256": "1b6cdafc45ab22f1b00a27e33450e816a6d97cb2ba5c9615bad6892b2d1b99f2",
+          "source": "phone/font-license.txt"
+        },
+        {
+          "bytes": 2092,
+          "path": "index.html",
+          "sha256": "87600bc79f7bb89a90516cf14b6ca8ed3594e0dd9d60599a3ff7416820e236a4",
+          "source": "phone/index.html"
+        },
+        {
+          "bytes": 1080900,
+          "path": "phone-sans.ttf",
+          "sha256": "37e90bba45a2a1172d9f6078e45daebaa1b4e537943205cc1309f142a254fe40",
+          "source": "phone/phone-sans.ttf"
+        },
+        {
+          "bytes": 9463,
+          "path": "phone.css",
+          "sha256": "06ae02102275493be45df7d8643a9f0c0cbc3e375b1d81c31f2bdb709814daf1",
+          "source": "phone/phone.css"
+        },
+        {
+          "bytes": 23180,
+          "path": "phone.js",
+          "sha256": "5c4356d2c60a482ca4fe5b63da65003f1b791620ea39994c68457182600e77e7",
+          "source": "phone/phone.js"
+        },
+        {
+          "bytes": 705,
+          "path": "resource.json",
+          "sha256": "48c5f562d5cf604799422e2f07c9e3a0c665844b47beb351f679b6f973094ce6",
+          "source": "phone/resource.json"
+        },
+        {
+          "bytes": 96044,
+          "path": "ring.wav",
+          "sha256": "030a1b05a3dc1e1d3448fdc2b905a1493978c3c316351d02eeebad4de57a4e53",
+          "source": "phone/ring.wav"
+        }
+      ],
+      "id": "phone",
+      "provenance": "Original Phone app resource. Includes original generated ring tone and unmodified Ubuntu Sans font with its Ubuntu Font Licence 1.0 notice at phone/font-license.txt.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 2206,
+          "path": "client.lua",
+          "sha256": "9dbe858545edfce7aacf009b0bd34b6a1d5ef817549cae4ff404ebe153764991",
+          "source": "rp-properties/client.lua"
+        },
+        {
+          "bytes": 1626,
+          "path": "index.html",
+          "sha256": "b7ac89b7f5734a6a1d3e807470a500815937cfa4fb13c6bb6db1873ef87bed69",
+          "source": "rp-properties/index.html"
+        },
+        {
+          "bytes": 1704,
+          "path": "properties.css",
+          "sha256": "3f179ace5e053a6dd52601fd143afc5fa785cd09fe3324967594a7bd5c279370",
+          "source": "rp-properties/properties.css"
+        },
+        {
+          "bytes": 3355,
+          "path": "properties.js",
+          "sha256": "b51739e76af827e8fda5048f737ff9c986fd56ab8c0d28a5020c50260fa211ab",
+          "source": "rp-properties/properties.js"
+        },
+        {
+          "bytes": 971,
+          "path": "resource.json",
+          "sha256": "2104fcaa442727166d90a8f65d0bcbf9af80fe20b5e0dfad49dbedb5a70fa8e7",
+          "source": "rp-properties/resource.json"
+        },
+        {
+          "bytes": 20088,
+          "path": "server.lua",
+          "sha256": "05ebcab492f4608365d2763435c82a9e7077b186949cf72f003a606a3138aee2",
+          "source": "rp-properties/server.lua"
+        }
+      ],
+      "id": "rp-properties",
+      "provenance": "Original Boardwalk Borough properties resource from resources/rp-properties.",
+      "version": "1.0.0"
+    },
+    {
+      "files": [
+        {
+          "bytes": 1881,
+          "path": "client.lua",
+          "sha256": "b26c1ce3a63cae27227ef7a58f7dc9a38eb191d59f071a7bf1a1fa41035be19f",
+          "source": "rp-pizza/client.lua"
+        },
+        {
+          "bytes": 1535,
+          "path": "index.html",
+          "sha256": "53c1aade50c2d3abf88bf910dde12234c7a37ff0c042a80ddce98d1dcaecfe03",
+          "source": "rp-pizza/index.html"
+        },
+        {
+          "bytes": 1592,
+          "path": "pizza.css",
+          "sha256": "95d929d4e8f92fae38e73d10b055f41da6f2b311a85c41adab3de6b7093e0d91",
+          "source": "rp-pizza/pizza.css"
+        },
+        {
+          "bytes": 1504,
+          "path": "pizza.js",
+          "sha256": "2aaed79da0837d3c70006e6b8971216dc94745dec4728b639dbe635290498d5e",
+          "source": "rp-pizza/pizza.js"
+        },
+        {
+          "bytes": 1100,
+          "path": "resource.json",
+          "sha256": "2281ec2c4eb61d32e4edcd610ec5ace543cb4ef8be416f8cc2bfabda94ec69e5",
+          "source": "rp-pizza/resource.json"
+        },
+        {
+          "bytes": 10506,
+          "path": "server.lua",
+          "sha256": "06c1dde94193f95c09c1de5209c01ad9d9aeff0c972f3c3351fb3ed24cdb77a8",
+          "source": "rp-pizza/server.lua"
+        }
+      ],
+      "id": "rp-pizza",
+      "provenance": "Original Boardwalk Borough pizza job resource from resources/rp-pizza.",
+      "version": "1.0.0"
+    }
+  ],
+  "server": {
+    "ensure": [
+      "boardwalk-borough",
+      "platform-profiles",
+      "rp-economy",
+      "voice-room",
+      "phone-calls",
+      "interaction-policy",
+      "inventory-ui",
+      "admin-dashboard",
+      "phone",
+      "rp-properties",
+      "rp-pizza"
+    ],
+    "grants": {
+      "admin-dashboard": [
+        "engine.ui",
+        "resource.network",
+        "resource.admin"
+      ],
+      "boardwalk-borough": [
+        "resource.exports",
+        "resource.state",
+        "resource.teleport",
+        "engine.ui"
+      ],
+      "interaction-policy": [
+        "resource.network",
+        "resource.exports",
+        "resource.settings",
+        "resource.admin",
+        "engine.input"
+      ],
+      "inventory-ui": [
+        "resource.network",
+        "resource.events",
+        "resource.database",
+        "engine.ui"
+      ],
+      "phone": [
+        "resource.exports",
+        "resource.storage",
+        "resource.events",
+        "engine.ui",
+        "engine.audio",
+        "engine.photos"
+      ],
+      "phone-calls": [
+        "resource.network",
+        "resource.events",
+        "resource.exports",
+        "resource.settings",
+        "resource.voice",
+        "engine.voice"
+      ],
+      "platform-profiles": [
+        "resource.events",
+        "resource.network",
+        "resource.database",
+        "resource.exports",
+        "resource.state",
+        "resource.settings",
+        "engine.ui"
+      ],
+      "rp-economy": [
+        "resource.database",
+        "resource.events",
+        "resource.exports",
+        "resource.network",
+        "resource.settings",
+        "resource.state"
+      ],
+      "rp-pizza": [
+        "resource.events",
+        "resource.exports",
+        "resource.network",
+        "resource.settings",
+        "resource.state",
+        "resource.storage",
+        "engine.ui",
+        "resource.teleport"
+      ],
+      "rp-properties": [
+        "resource.database",
+        "resource.events",
+        "resource.exports",
+        "resource.network",
+        "resource.settings",
+        "resource.state",
+        "resource.storage",
+        "resource.teleport",
+        "engine.ui"
+      ],
+      "voice-room": [
+        "resource.voice",
+        "engine.voice",
+        "resource.commands",
+        "resource.network",
+        "resource.events",
+        "resource.exports",
+        "resource.settings"
+      ]
+    },
+    "settings": {
+      "platform-profiles": {
+        "welcome_name": "Skater"
+      },
+      "rp-economy": {
+        "max_balance": 1000000,
+        "max_operation_amount": 100000,
+        "starter_balance": 100
+      },
+      "rp-pizza": {
+        "delivery_reward": 30,
+        "minimum_delivery_seconds": 5,
+        "shift_timeout_seconds": 1800
+      },
+      "rp-properties": {
+        "max_guests": 4,
+        "studio_price": 50
+      },
+      "voice-room": {
+        "proximity_meters": 12
+      }
+    },
+    "world_rotation": [
+      "boardwalk-borough"
+    ]
+  },
+  "version": "1.0.0"
+}

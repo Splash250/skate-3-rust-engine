@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Borough Properties</title><link rel="stylesheet" href="properties.css"></head>
+<body><main><header><div><h1>Properties</h1></div><button id="close" aria-label="Close">×</button></header>
+<section class="card"><h2 id="unit">Borough Studio</h2><p class="muted">Available now. A private spot above the boardwalk, saved to your account.</p><div class="price"><span>Weekly lease</span><strong id="price">$50</strong></div><button class="primary" id="rent">Rent this studio</button></section>
+<section class="card hidden" id="lease-card"><h2 id="lease-title">Your Borough Studio</h2><p class="muted" id="lease-copy">Your apartment is ready.</p><div class="actions"><button class="primary" id="enter">Go inside</button><button id="exit" class="hidden">Leave apartment</button></div>
+<label id="target-label">Invite an online player</label><div class="player-picker"><button type="button" id="target-toggle" aria-haspopup="listbox" aria-expanded="false" disabled>Loading players…</button><button type="button" id="invite" disabled>Invite</button><div id="target-menu" class="target-menu hidden" role="listbox" aria-labelledby="target-label"></div></div></section>
+<section class="card hidden" id="invites"><h2>Friends' places</h2><div id="invite-list"></div></section>
+<p id="status" role="status" aria-live="polite">Connecting to the property service…</p><footer>Rentals, access and wallet charges are confirmed by the server.</footer></main><script src="properties.js"></script></body></html>

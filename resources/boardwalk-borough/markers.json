@@ -1,0 +1,86 @@
+[
+  {
+    "id": "plaza_spawn",
+    "position": [
+      -10,
+      0.25,
+      0
+    ],
+    "radius": 2.8,
+    "type": "spawn",
+    "order": 0,
+    "label": "Central Plaza"
+  },
+  {
+    "id": "pizza_counter",
+    "position": [
+      25,
+      0.25,
+      2
+    ],
+    "radius": 2.8,
+    "type": "interaction",
+    "order": 0,
+    "label": "Slice of Life Pizza"
+  },
+  {
+    "id": "drop_01",
+    "position": [
+      36,
+      0.25,
+      24
+    ],
+    "radius": 2.8,
+    "type": "checkpoint",
+    "order": 1,
+    "label": "Delivery: Seaside Steps"
+  },
+  {
+    "id": "drop_02",
+    "position": [
+      -37,
+      0.25,
+      27
+    ],
+    "radius": 2.8,
+    "type": "checkpoint",
+    "order": 2,
+    "label": "Delivery: Boardwalk Flats"
+  },
+  {
+    "id": "drop_03",
+    "position": [
+      5,
+      0.25,
+      -42
+    ],
+    "radius": 2.8,
+    "type": "checkpoint",
+    "order": 3,
+    "label": "Delivery: Sunset Court"
+  },
+  {
+    "id": "apt_entry",
+    "position": [
+      -27,
+      0.25,
+      14
+    ],
+    "radius": 2.8,
+    "type": "interaction",
+    "order": 0,
+    "label": "Borough Apartments"
+  },
+  {
+    "id": "apt_exit",
+    "position": [
+      180,
+      0.25,
+      6
+    ],
+    "radius": 2.8,
+    "type": "interaction",
+    "order": 0,
+    "label": "Exit to Boardwalk Borough"
+  }
+]

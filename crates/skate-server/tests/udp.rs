@@ -179,6 +179,7 @@ fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_ass
         .publish(packed::POSE, Packed::pose(&pose).unwrap(), now);
     let gameplay = Gameplay {
         mode: PlayerMode::Skating,
+        suspended: false,
         trick: "Kickflip".into(),
         trick_seq: 4,
         landed_seq: 2,

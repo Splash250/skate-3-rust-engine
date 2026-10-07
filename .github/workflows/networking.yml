@@ -37,6 +37,11 @@ jobs:
           shared-key: networking-${{ runner.os }}
       - name: Shared protocol and dedicated UDP tests
         run: cargo test --locked -p skate-net -p skate-server -p skate-resources -p skate-services -p skate-accounts -p skate-voice -p skate-browser
+      - name: Boardwalk roleplay server and phone lifecycle regressions
+        run: |
+          cargo test --locked -p skate-server --test gameplay_resources --test phone_calls
+          cargo test --locked -p skate-mods --test phone_ui
+          python -m unittest tools.test_boardwalk_borough tools.test_boardwalk_borough_pack tools.test_resource_park tools.test_park_editor tools.test_server_pack -v
       - name: Lua and JavaScript runtimes, resource examples and redistributable physics fixtures
         run: cargo test --locked -p skate-mods --lib --test resource_runtime --test animation --test physics_api --test validate_example
       - name: Build trusted managed worker and verify native isolation

@@ -1411,6 +1411,27 @@ fn resources_bundled_park_assigns_64_distinct_trusted_pads_once_and_reuses_depar
 }
 
 #[test]
+fn boardwalk_outside_marker_does_not_republish_empty_marker_state_each_tick() {
+    let temp=Temp::new();
+    let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/boardwalk-borough");
+    let manifest:Manifest=serde_json::from_slice(&std::fs::read(root.join("resource.json")).unwrap()).unwrap();
+    manifest.validate().unwrap();
+    let package=InstalledResource{grants:manifest.capabilities.iter().cloned().collect(),manifest,root,generation:1};
+    let mut server=host(&temp,Side::Server,"boardwalk-marker");
+    server.install(vec![package]).unwrap();server.start_all().unwrap();
+    let players=json!({"players":[{"id":"1","instance":"0","position":[1000,1,1000]}]});
+    for _ in 0..3 {
+        server.tick(0.01,players.clone());
+        server.call("boardwalk-borough","on_fixed_update",json!({"dt":0.01}));
+        let repeated:Vec<_>=server.drain_outputs().into_iter().filter(|output|matches!(output,
+            Output::State{resource,key,..} if resource=="boardwalk-borough"&&key=="marker"
+        )).collect();
+        assert!(repeated.is_empty(),"no marker state should be published while the player remains outside all markers: {repeated:?}");
+    }
+    assert!(server.running("boardwalk-borough"),"{:?}",server.diagnostics);
+}
+
+#[test]
 fn resources_scoped_state_is_bounded_and_pruned_on_visibility_change() {
     let temp=Temp::new();
     let limits=skate_mods::resources::RuntimeLimits {max_state_keys:2,..Default::default()};

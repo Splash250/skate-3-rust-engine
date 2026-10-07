@@ -823,7 +823,10 @@ fn send(mut net: ResMut<Multiplayer>, physics: Res<GamePhysics>, skater: Res<Ska
     if !net.active() || skater.pose_generation == 0 {
         return;
     }
-    if !dedicated::publish(&mut net, &skater) { return; }
+    let suspended = mods
+        .as_ref()
+        .is_some_and(|m| crate::modding::player_suspended(m));
+    if !dedicated::publish(&mut net, &skater, suspended) { return; }
     let now = net.started.elapsed().as_millis() as u64;
     if net.last_body.elapsed() >= Duration::from_millis(49) {
         let mut state=network::capture_body(&physics,&skater);

@@ -6,5 +6,17 @@
   "language": "lua",
   "client_scripts": ["client.lua"],
   "server_scripts": ["server.lua"],
-  "capabilities": ["resource.voice", "engine.voice", "resource.commands", "resource.network", "resource.events"]
+  "exports": ["dispatch_member"],
+  "capabilities": ["resource.voice", "engine.voice", "resource.commands", "resource.network", "resource.events", "resource.exports", "resource.settings"],
+  "settings": {
+    "proximity_meters": {
+      "type": "integer",
+      "default": 12,
+      "min": 1,
+      "max": 100,
+      "visibility": "private",
+      "change": "live"
+    }
+  },
+  "requires_features": ["resource.settings.v1"]
 }
