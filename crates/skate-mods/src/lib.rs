@@ -172,8 +172,9 @@ impl Manager {
         let Some(host)=self.resources.as_mut() else {return;};
         for (id,resource) in host.installed() {
             let package=self.packages.entry(id.clone()).or_insert_with(||Package {
-                manifest:Manifest {id:id.clone(),api:2,name:id.clone(),version:resource.manifest.version.clone(),author:String::new(),description:"Server-selected resource".into(),entry:String::new(),settings:BTreeMap::new()},
+                manifest:Manifest {id:id.clone(),api:2,name:id.clone(),version:resource.manifest.version.clone(),author:String::new(),description:"Server-selected resource".into(),entry:String::new(),enabled_by_default:true,settings:BTreeMap::new()},
                 root:resource.root.clone(),error:None,settings:BTreeMap::new(),enabled:true,vm:None,resource_owned:true,resource_running:false,fingerprint:0,pending:None,
+                audio_files:Default::default(),audio_changes:None,changes:Vec::new(),
             });
             package.resource_running=host.running(id);
             package.root=resource.root.clone();

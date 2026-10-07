@@ -187,11 +187,6 @@ impl Plugin for ModdingPlugin {
         if server_selected {
             info!("Dedicated client: server-selected resources; local mod discovery disabled");
         }
-        .init_resource::<ModMenu>()
-        .insert_resource(resource_client);
-        if server_selected {
-            info!("Dedicated client: server-selected resources; local mod discovery disabled");
-        }
         interactions::install(app);
         photos::install(app);
         app.add_systems(PreUpdate,browser::input.after(crate::customiser::navigation).before(crate::graphics_menu::MenuInput));

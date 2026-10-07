@@ -1183,7 +1183,7 @@ impl Vm {
     }
 
     pub(crate) fn new_resource(root: &Path, id: &str, snapshot: &Value, resource: &crate::resources::Bootstrap) -> Result<Self, String> {
-        let manifest = Manifest { id:id.into(), api:2, name:id.into(), version:"1.0.0".into(), author:String::new(), description:String::new(), entry:String::new(), settings:BTreeMap::new() };
+        let manifest = Manifest { id:id.into(), api:2, name:id.into(), version:"1.0.0".into(), author:String::new(), description:String::new(), entry:String::new(), enabled_by_default:true, settings:BTreeMap::new() };
         Self::build(root, &manifest, &BTreeMap::new(), snapshot, Some(resource))
     }
 
