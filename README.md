@@ -8,6 +8,24 @@ A Rust and Bevy skating project built from Skate 3 reverse-engineering research.
 Includes skating, tricks, grinds, offboard movement, difficulty settings and
 `.skate` map support. Gameplay parity is still a work in progress.
 
+## Community multiplayer fork
+
+This fork develops the community-hosted multiplayer and resource platform on top
+of [SK8-ENGINE's engine](https://github.com/SK8-ENGINE/skate-3-rust-engine).
+It includes dedicated hosting, native Linux support, server-selected resources,
+Lua/JavaScript/C# scripting, shared worlds, accounts, persistence, browser UI,
+voice, creator tools and roleplay examples.
+
+Start with the [project status and documentation index](docs/PROJECT_STATUS.md)
+for implemented capabilities, recorded validation, remaining work and the
+relationship to upstream. For use, see [Linux setup](docs/LINUX.md),
+[dedicated hosting](docs/multiplayer/README.md), and the
+[Boardwalk Borough showcase](docs/multiplayer/boardwalk-borough.md).
+
+This is a source-development fork. The upstream downloads below do not contain
+this fork's platform additions. Fork release packaging and updater identity
+still need configuration before distributing fork binaries.
+
 ## History
 
 Before this rewrite existed, **dumbad** spent more than two years reverse
@@ -39,8 +57,8 @@ system behaves exactly like the original.
 
 ## Play
 
-[Download Experimental](https://github.com/SK8-ENGINE/skate-3-rust-engine/releases/tag/experimental).
-Successful `main` builds replace this prerelease. Choose **Latest** in Updates
+[Download upstream Experimental](https://github.com/SK8-ENGINE/skate-3-rust-engine/releases/tag/experimental).
+Successful upstream `main` builds replace this prerelease. Choose **Latest** in Updates
 for experimental updates; **Stable** is the default.
 
 Extract the Windows release ZIP and run `skate3rust.exe`. Select your Skate 3
