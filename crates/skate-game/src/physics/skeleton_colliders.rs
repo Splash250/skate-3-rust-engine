@@ -101,7 +101,7 @@ pub(crate) fn volumes_with_parts(
             collision_group: state.part_group,
             body: CollisionBody::Attached(index),
             primitive,
-            linear_velocity: skeleton.bodies()[index].rates.linear_velocity,
+            motion: skate_core::physics::board_world::VolumeMotion::of(&skeleton.bodies()[index].rates),
             material: state.material,
         });
     }

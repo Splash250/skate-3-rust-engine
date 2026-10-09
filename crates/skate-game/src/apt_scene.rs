@@ -1,4 +1,11 @@
 //! Retained movie traversal. All geometry and glyphs come from the owned APT.
+//!
+//! Shapes are the retail GEO units (pre-tessellated, one render type each; doc 31 "Milestone 4"):
+//! `solid` units draw their unit colour, `texture_clamped` / `texture_wrapped` units sample the
+//! bitmap character the unit names (GEO unit +0x14 -> bitmap character -> texture resource) with
+//! UVs from the unit's UV matrix (GEO unit +0x18, divided by the texture size at export). The
+//! texture a unit draws with comes from a `ShapeSource`, so menus can resolve imported shapes and
+//! mod-supplied bitmaps by stable id while the HUD keeps its own table.
 use crate::{apt_movie::Movie, apt_vm::Vm};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -6,6 +13,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Deserialize)]
 pub struct Vertex {
     pub position: [f32; 2],
+    /// Absent on solid units (no texture).
+    #[serde(default)]
     pub uv: [f32; 2],
 }
 #[derive(Clone, Deserialize)]
@@ -14,18 +23,61 @@ pub struct Texture {
     pub height: u32,
     pub rgba: String,
 }
+/// GEO unit render type (unit +0x00): 0 line, 1 solid, 2 texture clamped, 3 texture wrapped.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Fill {
+    Line,
+    Solid,
+    #[default]
+    TextureClamped,
+    TextureWrapped,
+}
+impl Fill {
+    pub fn textured(self) -> bool {
+        matches!(self, Self::TextureClamped | Self::TextureWrapped)
+    }
+}
 #[derive(Clone, Deserialize)]
 pub struct Shape {
-    pub texture: Texture,
+    /// None on solid / line units.
+    #[serde(default)]
+    pub texture: Option<Texture>,
     pub triangles: Vec<[Vertex; 3]>,
     pub color: [f32; 4],
+    #[serde(default, rename = "render_type")]
+    pub fill: Fill,
+    /// Bitmap character the unit samples (GEO unit +0x14), in the movie that defines the shape.
+    #[serde(default)]
+    pub bitmap: Option<i32>,
 }
 pub type Shapes = BTreeMap<i32, Vec<Shape>>;
+/// Where the scene finds a shape character's units and the texture each unit draws with.
+pub trait ShapeSource {
+    fn shape(&self, character: i32) -> Option<&[Shape]>;
+    /// Texture key for a unit ("" = untextured); defaults to the exported retail RGBA payload.
+    fn texture(&self, _character: i32, shape: &Shape) -> String {
+        shape.texture.as_ref().map_or_else(String::new, |t| t.rgba.clone())
+    }
+    /// Retail unit colour rule (825D5580: unit colour * multiply + add as one colour, skip at
+    /// alpha <= 0). The HUD keeps its earlier `texel * multiply + add` until it is checked in game.
+    fn retail_unit_colour(&self) -> bool {
+        false
+    }
+}
+impl ShapeSource for Shapes {
+    fn shape(&self, character: i32) -> Option<&[Shape]> {
+        self.get(&character).map(Vec::as_slice)
+    }
+}
 pub struct Draw {
+    /// Texture key ("" for solid units: draw the colour only).
     pub texture: String,
     pub vertices: Vec<Vertex>,
     pub multiply: [f32; 4],
     pub add: [f32; 4],
+    /// Shapes: the unit's render type (clamp or wrap addressing); text draws are `TextureClamped`.
+    pub fill: Fill,
 }
 fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
     [
@@ -46,7 +98,7 @@ fn transform(m: [f32; 6], v: &Vertex) -> Vertex {
         uv: v.uv,
     }
 }
-pub fn draw(movie: &Movie, vm: &Vm, shapes: &Shapes) -> Result<Vec<Draw>, String> {
+pub fn draw(movie: &Movie, vm: &Vm, shapes: &dyn ShapeSource) -> Result<Vec<Draw>, String> {
     let mut draws = Vec::new();
     visit(
         movie,
@@ -63,7 +115,7 @@ pub fn draw(movie: &Movie, vm: &Vm, shapes: &Shapes) -> Result<Vec<Draw>, String
 fn visit(
     movie: &Movie,
     vm: &Vm,
-    shapes: &Shapes,
+    shapes: &dyn ShapeSource,
     id: usize,
     parent: [f32; 6],
     pm: [f32; 4],
@@ -103,19 +155,35 @@ fn visit(
     let character = &movie.characters[&instance.character];
     if character.type_name == "shape" {
         for shape in shapes
-            .get(&character.id)
+            .shape(character.id)
             .ok_or("Missing original shape geometry")?
         {
+            // Retail sub_825D5DC8 builds draw objects for unit types 1, 2 and 3 only.
+            if shape.fill == Fill::Line {
+                continue;
+            }
+            let (unit_multiply, unit_add) = if shapes.retail_unit_colour() {
+                // Retail draw 825D5580: colour = unit colour * cxform multiply + add, one colour
+                // for the whole unit (TheSimpleDraw sub_82805368); nothing drawn when its alpha <= 0.
+                let colour: [f32; 4] = std::array::from_fn(|i| shape.color[i].mul_add(multiply[i], add[i]));
+                if colour[3] <= 0. {
+                    continue;
+                }
+                (colour, [0.; 4])
+            } else {
+                (std::array::from_fn(|i| multiply[i] * shape.color[i]), add)
+            };
             out.push(Draw {
-                texture: shape.texture.rgba.clone(),
+                texture: shapes.texture(character.id, shape),
+                fill: shape.fill,
                 vertices: shape
                     .triangles
                     .iter()
                     .flatten()
                     .map(|v| transform(matrix, v))
                     .collect(),
-                multiply: std::array::from_fn(|i| multiply[i] * shape.color[i]),
-                add,
+                multiply: unit_multiply,
+                add: unit_add,
             });
         }
     } else if let Some(text) = &character.text {
@@ -123,10 +191,10 @@ fn visit(
             [&(text["font_id"].as_i64().ok_or("Invalid text font")? as i32)];
         // Native shadow text uses a black atlas pass followed by the sharp
         // futuraheavy glyphs translated +1 in text X (825D6B68/82CA1FD8).
-        let passes = if let Some(foreground) = font.foreground {
+        let passes = if let Some(foreground) = &font.foreground {
             vec![
                 (font, true, 0.),
-                (&movie.text_assets.fonts[&foreground], false, 1.),
+                (&**foreground, false, 1.),
             ]
         } else {
             vec![(font, false, 0.)]
@@ -192,6 +260,7 @@ fn visit(
             if !vertices.is_empty() {
                 out.push(Draw {
                     texture: font.texture.clone(),
+                    fill: Fill::TextureClamped,
                     vertices,
                     multiply: std::array::from_fn(|i| {
                         if shadow && i < 3 {

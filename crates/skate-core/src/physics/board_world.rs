@@ -7,6 +7,7 @@ mod query_index;
 pub mod query_metadata;
 use crate::math::Vector3;
 use broadphase::{conservative_bounds, primitive_bounds};
+pub use broadphase::{VOLUME_QUERY_SCALE, VOLUME_QUERY_STEP, VolumeMotion, volume_query_bounds};
 use query_metadata::{Bounds, QueryMetadata};
 
 use super::{
@@ -111,7 +112,8 @@ pub struct BoardWorldVolume {
     pub collision_group: u32,
     pub body: CollisionBody,
     pub primitive: ContactPrimitive,
-    pub linear_velocity: Vector3,
+    /// Owning body's rates; 82777E70 sweeps the query box over them.
+    pub motion: VolumeMotion,
     pub material: RetailContactMaterial,
 }
 
@@ -334,7 +336,7 @@ impl BoardWorld {
                         center: poses[id.index()].translation,
                         radius: settings.radius,
                     }),
-                    linear_velocity: body.rates.linear_velocity,
+                    motion: VolumeMotion::of(&body.rates),
                     material: settings.material,
                 })
             })
@@ -365,14 +367,33 @@ impl BoardWorld {
             } else {
                 f32::INFINITY
             };
-        let volume_bounds: Vec<_> = volumes
+        // Cluster preselection only: a conservative superset of every pair the
+        // per-volume test below can keep.
+        let preselect_bounds: Vec<_> = volumes
             .iter()
             .map(|v| {
                 primitive_bounds(v.primitive)
                     .map(|b| conservative_bounds(b, padding + self.maximum_fatness))
             })
             .collect();
-        let bounds: Option<Vec<_>> = volume_bounds.iter().copied().collect();
+        // 82777E70: the swept, scaled box 8277BC58 tests every triangle against.
+        let volume_bounds: Vec<_> = volumes
+            .iter()
+            .map(|v| {
+                volume_query_bounds(v.primitive, v.motion, VOLUME_QUERY_STEP, VOLUME_QUERY_SCALE)
+            })
+            .collect();
+        let bounds: Option<Vec<_>> = preselect_bounds
+            .iter()
+            .zip(&volume_bounds)
+            .map(|(p, v)| match (p, v) {
+                (Some(p), Some(v)) => Some(Bounds {
+                    min: Vector3::new(p.min.x.min(v.min.x), p.min.y.min(v.min.y), p.min.z.min(v.min.z)),
+                    max: Vector3::new(p.max.x.max(v.max.x), p.max.y.max(v.max.y), p.max.z.max(v.max.z)),
+                }),
+                _ => None,
+            })
+            .collect();
         let bounds = bounds
             .and_then(|b| Bounds::from_points(b.iter().flat_map(|b| [b.min, b.max])))
             .map(|b| b.expanded(padding));
@@ -390,15 +411,15 @@ impl BoardWorld {
                 if matches!(volume.collision_group, 7 | 16) && is_water_tag(entry.tag) {
                     continue;
                 }
-                if self.query_metadata.is_some()
-                    && volume_bounds.is_some_and(|b| !self.triangle_bounds[index].overlaps(b))
-                {
+                // 8277BC58 BE94..BF38: unpadded triangle vertex box against the
+                // volume box, for every triangle. A non-finite box keeps the pair.
+                if volume_bounds.is_some_and(|b| !self.triangle_bounds[index].overlaps(b)) {
                     continue;
                 }
                 let Some(manifold) = primitive_triangle_world_contacts(
                     volume.primitive,
                     entry.triangle,
-                    volume.linear_velocity,
+                    volume.motion.linear_velocity,
                     query,
                 ) else {
                     continue;

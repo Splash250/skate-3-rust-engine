@@ -36,7 +36,7 @@ fn volume(body: CollisionBody, x: f32) -> BoardWorldVolume {
             center: Vector3::new(x, 0.0, 0.0),
             radius: 0.5,
         }),
-        linear_velocity: Vector3::ZERO,
+        motion: Default::default(),
         material: material(),
     }
 }

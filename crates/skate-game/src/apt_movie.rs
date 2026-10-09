@@ -1,6 +1,6 @@
 //! Original APT movie hierarchy and timeline control, independent of Bevy.
 use crate::{
-    apt_display::{Control, DisplayList, Placement},
+    apt_display::{clip_event, ClipAction, Control, DisplayList, Placement},
     apt_vm::{Instruction, ObjectKind, Value, Vm},
 };
 use serde::Deserialize;
@@ -27,14 +27,45 @@ pub struct Instance {
     pub children: BTreeMap<i32, usize>,
     pub placement: Option<Placement>,
 }
+/// One queued action stream: a frame action (`event` 0) or a clip-event handler (doc 31,
+/// Milestone 3d). It runs with `this` = `object`, the clip that owns the frame or the
+/// placement (retail: the action queue entry's target, sub_82E78168 / sub_82E78240).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pending {
+    pub object: usize,
+    pub offset: u32,
+    pub event: u32,
+}
+#[derive(Clone)]
 pub struct Movie {
     pub characters: BTreeMap<i32, Character>,
     pub instances: BTreeMap<usize, Instance>,
     pub actions: BTreeMap<String, Vec<Instruction>>,
-    pub pending: VecDeque<(usize, u32)>,
+    /// The retail action queue (ring buffer at global+24 -> +12): frame actions and most
+    /// clip events go to the back (sub_82E78168), enterFrame to the front (sub_82E78240).
+    pub pending: VecDeque<Pending>,
+    /// Initialize / construct handlers. Retail runs them synchronously inside the placement
+    /// (sub_82E7AF18 -> sub_82E5B158 -> sub_82E6A208), before anything already queued.
+    /// NOT RETAIL (timing): when a running action places the clip (gotoAndStop), ours run
+    /// right after that action instead of inside it; still before every other queued action.
+    pub immediate: VecDeque<Pending>,
     pub root: usize,
     pub text_assets: crate::apt_text::TextAssets,
+    /// Shape characters copied in by `link_imports`: local id -> (library key, id there). Their GEO
+    /// units and bitmaps stay in the library movie (doc 31, Milestone 4).
+    pub shape_origins: BTreeMap<i32, (String, i32)>,
     states: BTreeMap<i32, Vec<DisplayList>>,
+}
+fn display_states(c: &Character) -> Result<Vec<DisplayList>, String> {
+    let mut list = DisplayList::default();
+    let mut frames = Vec::new();
+    for frame in &c.frames {
+        for control in &frame.controls {
+            list.apply(control)?;
+        }
+        frames.push(list.clone());
+    }
+    Ok(frames)
 }
 impl Movie {
     pub fn load(json: &serde_json::Value) -> Result<Self, String> {
@@ -42,28 +73,22 @@ impl Movie {
             serde_json::from_value(json["characters"].clone()).map_err(|e| e.to_string())?;
         let mut states = BTreeMap::new();
         for c in &characters {
-            let mut list = DisplayList::default();
-            let mut frames = Vec::new();
-            for frame in &c.frames {
-                for control in &frame.controls {
-                    list.apply(control)?;
-                }
-                frames.push(list.clone());
-            }
-            states.insert(c.id, frames);
+            states.insert(c.id, display_states(c)?);
         }
         Ok(Self {
             characters: characters.into_iter().map(|c| (c.id, c)).collect(),
             instances: BTreeMap::new(),
             actions: serde_json::from_value(json["actions"].clone()).map_err(|e| e.to_string())?,
             pending: VecDeque::new(),
+            immediate: VecDeque::new(),
             root: usize::MAX,
             text_assets: crate::apt_text::TextAssets::load(json)?,
+            shape_origins: BTreeMap::new(),
             states,
         })
     }
     pub fn initialize(&mut self, vm: &mut Vm) -> Result<(), String> {
-        self.root = self.create(vm, 0, None, 0)?;
+        self.root = self.create(vm, 0, None, 0, &[])?;
         vm.set(self.root, "_root", Value::Object(self.root))?;
         // Every clip sees the same authored root, including unnamed children.
         for id in self.instances.keys() {
@@ -77,6 +102,7 @@ impl Movie {
         character: i32,
         parent: Option<usize>,
         depth: usize,
+        events: &[ClipAction],
     ) -> Result<usize, String> {
         if depth > 32 || self.instances.len() > 2048 {
             return Err("APT movie hierarchy limit".into());
@@ -115,8 +141,22 @@ impl Movie {
             },
         );
         self.text_changed(vm, id)?;
+        // Retail sub_82E7AF18 (sprites only): initialize, then construct, both before the
+        // new clip's own frame runs.
+        let sprite = c.type_name == "sprite";
+        if sprite {
+            self.queue_events(id, events, clip_event::INITIALIZE, true);
+            self.queue_events(id, events, clip_event::CONSTRUCT, true);
+        }
         if !c.frames.is_empty() {
             self.seek(vm, id, 0, depth + 1)?;
+        }
+        // Retail sub_82E5B640: the first tick of a new clip dispatches load (not
+        // enterFrame), after that frame's actions were queued.
+        // NOT RETAIL YET (order): retail ticks children after the parent queued its own
+        // frame actions; our seek places (and loads) children first, as for frame actions.
+        if sprite {
+            self.queue_events(id, events, clip_event::LOAD, false);
         }
         Ok(id)
     }
@@ -153,8 +193,48 @@ impl Movie {
         )?;
         Ok(())
     }
+    /// Queues every handler of `events` whose flags include `event` (record order, as the
+    /// retail loop in sub_82E5B158 walks the table).
+    fn queue_events(&mut self, object: usize, events: &[ClipAction], event: u32, now: bool) {
+        for e in events
+            .iter()
+            .filter(|e| e.flags & event != 0 && e.actions_offset != 0)
+        {
+            let p = Pending {
+                object,
+                offset: e.actions_offset,
+                event,
+            };
+            if now {
+                self.immediate.push_back(p);
+            } else if event == clip_event::ENTER_FRAME {
+                self.pending.push_front(p);
+            } else {
+                self.pending.push_back(p);
+            }
+        }
+    }
+    /// Next action stream to run: immediate handlers first, then the queue. Frame actions
+    /// and handlers of removed clips are skipped, except unload, which retail queues during
+    /// removal (sub_82E55DA8) and runs on the removed clip.
+    pub fn next_action(&mut self) -> Option<Pending> {
+        loop {
+            let p = self
+                .immediate
+                .pop_front()
+                .or_else(|| self.pending.pop_front())?;
+            if p.event == clip_event::UNLOAD || self.instances.contains_key(&p.object) {
+                return Some(p);
+            }
+        }
+    }
     fn remove(&mut self, vm: &mut Vm, id: usize) {
         if let Some(instance) = self.instances.remove(&id) {
+            // Retail sub_82E55DA8 dispatches unload before tearing down the children.
+            if let Some(p) = &instance.placement {
+                let events = p.clip_actions.clone();
+                self.queue_events(id, &events, clip_event::UNLOAD, false);
+            }
             for child in instance.children.values() {
                 self.remove(vm, *child);
             }
@@ -215,7 +295,13 @@ impl Movie {
                 if let Some(old) = previous {
                     self.remove(vm, old);
                 }
-                self.create(vm, placement.character, Some(id), nesting + 1)?
+                self.create(
+                    vm,
+                    placement.character,
+                    Some(id),
+                    nesting + 1,
+                    &placement.clip_actions,
+                )?
             };
             let old = self.instances[&child].placement.as_ref();
             if old.is_none_or(|old| old.matrix != placement.matrix) {
@@ -249,11 +335,18 @@ impl Movie {
         vm.set(id, "_currentframe", Value::Number((frame + 1) as f64))?;
         vm.set(id, "_totalframes", Value::Number(frame_count as f64))?;
         for offset in actions {
-            self.pending.push_back((id, offset));
+            self.pending.push_back(Pending {
+                object: id,
+                offset,
+                event: 0,
+            });
         }
         Ok(())
     }
     pub fn advance(&mut self, vm: &mut Vm) -> Result<(), String> {
+        // Retail sub_82E5B640 ticks every clip (playing or not) and dispatches enterFrame
+        // from the second tick on; clips placed during this advance get load instead.
+        let ticked: Vec<usize> = self.instances.keys().copied().collect();
         let playing: Vec<_> = self
             .instances
             .iter()
@@ -267,6 +360,25 @@ impl Movie {
             let count = self.characters[&character].frames.len();
             if count > 1 {
                 self.seek(vm, id, (frame + 1) % count, 0)?;
+            }
+        }
+        // Each tick pushes its enterFrame to the queue front (sub_82E78240) and the parent
+        // ticks before its children (sub_82E7C658), so children's handlers run first; ids
+        // grow with creation, so pushing in id order gives the same result.
+        for id in ticked {
+            let Some(instance) = self.instances.get(&id) else {
+                continue;
+            };
+            let Some(events) = instance
+                .placement
+                .as_ref()
+                .filter(|p| !p.clip_actions.is_empty())
+                .map(|p| p.clip_actions.clone())
+            else {
+                continue;
+            };
+            if self.characters[&instance.character].type_name == "sprite" {
+                self.queue_events(id, &events, clip_event::ENTER_FRAME, false);
             }
         }
         Ok(())
@@ -316,5 +428,390 @@ impl Movie {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+}
+
+/// Cross-movie imports (doc 31, Milestone 3b): an imported character id gets a copy of the
+/// defining library movie's character, together with every character it places, its action
+/// streams and its fonts, under ids that are free in this movie. Copies are made in binding
+/// order with a deterministic id / action-offset allocator, so the same movies always give the
+/// same ids.
+/// NOT RETAIL (layout only): retail sub_82E76070 stores a pointer to the source movie's
+/// character in this movie's character table and keeps a reference to the source movie
+/// (for its constants); copying keeps our single-movie player unchanged and behaves the same,
+/// because character data is immutable and our action streams are already decoded (no
+/// constant pool lookups). Unresolved imports stay absent, like retail's null slot.
+impl Movie {
+    pub fn link_imports(
+        &mut self,
+        key: &str,
+        resolution: &crate::apt_imports::Resolution,
+        libraries: &BTreeMap<String, Movie>,
+    ) -> Result<usize, String> {
+        let key = crate::apt_imports::library_key(key);
+        let mut memo = BTreeMap::new();
+        let mut linked = 0;
+        for b in resolution.bindings.iter().filter(|b| b.movie == key) {
+            if self.characters.contains_key(&b.character_id) {
+                return Err(format!(
+                    "APT import {} collides with a local character",
+                    b.character_id
+                ));
+            }
+            let library = libraries
+                .get(&b.source)
+                .ok_or_else(|| format!("APT library {} is not loaded", b.source))?;
+            let mut link = Link {
+                resolution,
+                libraries,
+                memo: &mut memo,
+            };
+            self.copy_character(
+                &mut link,
+                &b.source,
+                library,
+                b.source_character,
+                Some(b.character_id),
+                0,
+            )?;
+            linked += 1;
+        }
+        Ok(linked)
+    }
+    fn fresh_character(&self) -> i32 {
+        self.characters.keys().next_back().map_or(1, |k| k + 1)
+    }
+    fn fresh_action(&self) -> u32 {
+        self.actions
+            .keys()
+            .filter_map(|k| k.parse::<u32>().ok())
+            .max()
+            .map_or(1, |k| k + 1)
+    }
+    fn copy_character(
+        &mut self,
+        link: &mut Link,
+        lib_key: &str,
+        lib: &Movie,
+        source: i32,
+        as_id: Option<i32>,
+        depth: usize,
+    ) -> Result<i32, String> {
+        if depth > 64 || self.characters.len() > 65_536 {
+            return Err("APT import copy limit".into());
+        }
+        if as_id.is_none() {
+            if let Some(id) = link.memo.get(&(lib_key.to_string(), source)) {
+                return Ok(*id);
+            }
+        }
+        let Some(original) = lib.characters.get(&source) else {
+            // Imported again inside the library: follow its own binding.
+            let b = link
+                .resolution
+                .binding(lib_key, source)
+                .ok_or_else(|| format!("APT {lib_key} character {source} is unresolved"))?
+                .clone();
+            let next = link
+                .libraries
+                .get(&b.source)
+                .ok_or_else(|| format!("APT library {} is not loaded", b.source))?;
+            let id =
+                self.copy_character(link, &b.source, next, b.source_character, as_id, depth + 1)?;
+            link.memo.insert((lib_key.to_string(), source), id);
+            return Ok(id);
+        };
+        let id = as_id.unwrap_or_else(|| self.fresh_character());
+        link.memo.entry((lib_key.to_string(), source)).or_insert(id);
+        let mut c = original.clone();
+        c.id = id;
+        if c.type_name == "shape" {
+            let origin = lib.shape_origins.get(&source).cloned();
+            self.shape_origins
+                .insert(id, origin.unwrap_or_else(|| (lib_key.to_string(), source)));
+        }
+        // Reserve the id before copying children so they allocate past it.
+        self.characters.insert(id, c.clone());
+        for frame in &mut c.frames {
+            for control in &mut frame.controls {
+                let placed = matches!(
+                    control.type_name.as_str(),
+                    "place_object2" | "place_object3"
+                ) && control.flags & 2 != 0;
+                if let Some(child) = control.character_id.filter(|_| placed) {
+                    control.character_id =
+                        Some(self.copy_character(link, lib_key, lib, child, None, depth + 1)?);
+                }
+                for event in &mut control.clip_actions {
+                    let code = lib
+                        .actions
+                        .get(&event.actions_offset.to_string())
+                        .ok_or("APT library clip action stream missing")?
+                        .clone();
+                    let offset = self.fresh_action();
+                    self.actions.insert(offset.to_string(), code);
+                    event.actions_offset = offset;
+                }
+                if control.actions_offset != 0
+                    && matches!(control.type_name.as_str(), "do_action" | "do_init_action")
+                {
+                    let code = lib
+                        .actions
+                        .get(&control.actions_offset.to_string())
+                        .ok_or("APT library action stream missing")?
+                        .clone();
+                    let offset = self.fresh_action();
+                    self.actions.insert(offset.to_string(), code);
+                    control.actions_offset = offset;
+                }
+            }
+        }
+        if let Some(font) = c.text.as_ref().and_then(|t| t["font_id"].as_i64()) {
+            let new = self.copy_character(link, lib_key, lib, font as i32, None, depth + 1)?;
+            if let Some(text) = &mut c.text {
+                text["font_id"] = serde_json::json!(new);
+            }
+        }
+        if let Some(font) = lib.text_assets.fonts.get(&source) {
+            // The secondary native font travels with the font (it is not an APT character).
+            self.text_assets.fonts.insert(id, font.clone());
+        }
+        self.states.insert(id, display_states(&c)?);
+        self.characters.insert(id, c);
+        Ok(id)
+    }
+}
+struct Link<'a> {
+    resolution: &'a crate::apt_imports::Resolution,
+    libraries: &'a BTreeMap<String, Movie>,
+    memo: &'a mut BTreeMap<(String, i32), i32>,
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use crate::apt_imports::{resolve, Import, MovieDecl};
+
+    fn place(depth: i32, character: i32) -> serde_json::Value {
+        serde_json::json!({"type_name": "place_object2", "flags": 2, "depth": depth, "character_id": character})
+    }
+
+    #[test]
+    fn apt_imports_link_copies_library_subtree() {
+        // Library: export "Button" = sprite 3 placing shape 1 and running action 100.
+        let lib_json = serde_json::json!({
+            "characters": [
+                {"id": 0, "type_name": "animation", "frames": [{"controls": []}]},
+                {"id": 1, "type_name": "shape"},
+                {"id": 3, "type_name": "sprite", "frames": [{"controls": [
+                    place(1, 1),
+                    {"type_name": "do_action", "actions_offset": 100}
+                ]}]}
+            ],
+            "actions": {"100": []},
+            "language": {},
+            "exports": [{"name": "Button", "character_id": 3}]
+        });
+        let lib = Movie::load(&lib_json).unwrap();
+        let mut root = Movie::load(&serde_json::json!({
+            "characters": [{"id": 0, "type_name": "animation", "frames": [{"controls": [place(1, 9)]}]}],
+            "actions": {"7": []},
+            "language": {}
+        }))
+        .unwrap();
+        let root_decl = MovieDecl {
+            imports: vec![Import {
+                file: "source/controls/lib".into(),
+                name: "Button".into(),
+                character_id: 9,
+            }],
+            exports: vec![],
+            characters: [0].into(),
+        };
+        let mut decls = BTreeMap::new();
+        decls.insert(
+            "source/controls/lib".to_string(),
+            MovieDecl::from_json(&lib_json).unwrap(),
+        );
+        let r = resolve("root", root_decl, &mut decls);
+        let mut libs = BTreeMap::new();
+        libs.insert("source/controls/lib".to_string(), lib);
+        assert_eq!(root.link_imports("root", &r, &libs).unwrap(), 1);
+        let imported = &root.characters[&9];
+        assert_eq!(imported.type_name, "sprite");
+        let child = imported.frames[0].controls[0].character_id.unwrap();
+        assert_eq!(root.characters[&child].type_name, "shape");
+        let offset = imported.frames[0].controls[1].actions_offset;
+        assert!(offset != 100 && root.actions.contains_key(&offset.to_string()));
+        // The imported clip now instantiates like a local one.
+        let mut vm = Vm::new();
+        root.initialize(&mut vm).unwrap();
+        assert!(root.instances.values().any(|i| i.character == child));
+        // Linking twice or without the library is an error, not a panic.
+        assert!(root.link_imports("root", &r, &BTreeMap::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod clip_action_tests {
+    use super::*;
+    use crate::apt_display::clip_event as ev;
+    use crate::apt_vm::Host;
+
+    struct Stub;
+    impl Host for Stub {
+        fn call(&mut self, _: &mut Vm, _: usize, _: &str, _: Vec<Value>) -> Result<Value, String> {
+            Ok(Value::Undefined)
+        }
+    }
+
+    fn events() -> serde_json::Value {
+        // One handler per event kind, in retail record order; offsets name the event.
+        serde_json::json!([
+            {"flags": ev::LOAD, "key_code": 0, "actions_offset": 11},
+            {"flags": ev::ENTER_FRAME, "key_code": 0, "actions_offset": 12},
+            {"flags": ev::UNLOAD, "key_code": 0, "actions_offset": 14},
+            {"flags": ev::CONSTRUCT, "key_code": 0, "actions_offset": 40},
+            {"flags": ev::INITIALIZE, "key_code": 0, "actions_offset": 20},
+            {"flags": ev::PRESS, "key_code": 0, "actions_offset": 30}
+        ])
+    }
+
+    /// Root: frame 0 places sprite 2 at depth 1 with clip actions (named "clip"), frame 1
+    /// removes it. Sprite 2: one frame with frame action 50.
+    fn movie() -> Movie {
+        let set_type = serde_json::json!([
+            {"offset": 0, "opcode": 0xa1, "operand": "_type"},
+            {"offset": 1, "opcode": 0xa6, "operand": "Button"}
+        ]);
+        Movie::load(&serde_json::json!({
+            "characters": [
+                {"id": 0, "type_name": "movie", "frames": [
+                    {"controls": [{"type_name": "place_object2", "flags": 0x80 | 0x20 | 2,
+                        "depth": 1, "character_id": 2, "name": "clip", "actions_offset": 999,
+                        "clip_actions": events()}]},
+                    {"controls": [{"type_name": "remove_object2", "depth": 1}]}
+                ]},
+                {"id": 2, "type_name": "sprite", "frames": [
+                    {"controls": [{"type_name": "do_action", "actions_offset": 50}]}
+                ]}
+            ],
+            "actions": {"11": [], "12": [], "14": [], "20": [], "30": [], "50": [], "40": set_type},
+            "language": {}
+        }))
+        .unwrap()
+    }
+
+    fn drain(m: &mut Movie) -> Vec<(u32, bool)> {
+        let mut out = Vec::new();
+        while let Some(p) = m.next_action() {
+            out.push((p.offset, m.instances.contains_key(&p.object)));
+        }
+        out
+    }
+
+    #[test]
+    fn apt_clip_actions_dispatch_in_retail_order() {
+        let mut m = movie();
+        let mut vm = Vm::new();
+        m.initialize(&mut vm).unwrap();
+        // Placement: initialize then construct right away, then the clip's frame action,
+        // then load. Press waits for input; nothing else fires.
+        assert_eq!(
+            drain(&mut m),
+            [(20, true), (40, true), (50, true), (11, true)]
+        );
+        // Next tick: enterFrame at the queue front, before the frame actions queued by the
+        // same tick (the root is stopped on frame 0 here, so only the handler runs).
+        m.instances.get_mut(&m.root).unwrap().playing = false;
+        m.advance(&mut vm).unwrap();
+        assert_eq!(drain(&mut m), [(12, true)]);
+        // Removal queues unload, which still runs although the clip is gone.
+        let root = m.root;
+        m.seek(&mut vm, root, 1, 0).unwrap();
+        assert_eq!(drain(&mut m), [(14, false)]);
+        // Removed clips get no more handlers.
+        m.advance(&mut vm).unwrap();
+        assert!(drain(&mut m).iter().all(|(o, _)| *o != 12));
+    }
+
+    #[test]
+    fn apt_clip_action_runs_on_its_clip() {
+        let mut m = movie();
+        let mut vm = Vm::new();
+        m.initialize(&mut vm).unwrap();
+        let Value::Object(clip) = vm.get(m.root, "clip") else {
+            panic!("named clip missing")
+        };
+        while let Some(p) = m.next_action() {
+            let code = m.actions[&p.offset.to_string()].clone();
+            vm.begin_update();
+            vm.run_on(p.object, &code, &mut Stub).unwrap();
+        }
+        // Construct (0xa6 = push string + setVariable) set the member on the clip itself.
+        assert_eq!(vm.get(clip, "_type").text(), "Button");
+        assert!(matches!(vm.get(m.root, "_type"), Value::Undefined));
+    }
+
+    #[test]
+    fn apt_clip_actions_unsafe_tables_are_errors() {
+        let place = |extra: serde_json::Value| {
+            let mut c = serde_json::json!({"type_name": "place_object2", "flags": 0x82,
+                "depth": 1, "character_id": 2, "actions_offset": 64});
+            c.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<Control>(c).unwrap()
+        };
+        let mut list = DisplayList::default();
+        // Exported before 3d (pointer but no decoded table): refused, not ignored.
+        assert!(list.apply(&place(serde_json::json!({}))).is_err());
+        let many: Vec<_> = (0..65)
+            .map(|i| serde_json::json!({"flags": 1, "actions_offset": i + 1}))
+            .collect();
+        assert!(list
+            .apply(&place(serde_json::json!({"clip_actions": many})))
+            .is_err());
+        let one = serde_json::json!({"clip_actions": [{"flags": 1, "actions_offset": 7}]});
+        list.apply(&place(one)).unwrap();
+        assert_eq!(list.depths[&1].clip_actions[0].actions_offset, 7);
+        // A move without flag 0x80 keeps the table (retail stores it only when present).
+        let mv = serde_json::json!({"type_name": "place_object2", "flags": 1, "depth": 1});
+        list.apply(&serde_json::from_value(mv).unwrap()).unwrap();
+        assert_eq!(list.depths[&1].clip_actions.len(), 1);
+    }
+
+    /// Doc 31, Milestone 3f: retail sub_82E7B340 / sub_82E7A950 clip-depth storage.
+    #[test]
+    fn apt_clip_depth_follows_retail_placement() {
+        let apply = |list: &mut DisplayList, c: serde_json::Value| {
+            list.apply(&serde_json::from_value::<Control>(c).unwrap())
+        };
+        let mut list = DisplayList::default();
+        // New object: the record's value is stored even without flag 0x40.
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 2,
+            "depth": 1, "character_id": 2, "clip_depth": 5})).unwrap();
+        assert_eq!(list.depths[&1].clip_depth, 5);
+        // Move of an existing object: retail passes -1 and keeps the stored value.
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 0x41,
+            "depth": 1, "clip_depth": 9})).unwrap();
+        assert_eq!(list.depths[&1].clip_depth, 5);
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 0x41,
+            "depth": 1})).unwrap();
+        assert_eq!(list.depths[&1].clip_depth, 5);
+        // Replacing the character creates the object again with the record's value.
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 3,
+            "depth": 1, "character_id": 3, "clip_depth": -1})).unwrap();
+        assert_eq!(list.depths[&1].clip_depth, -1);
+        // Stored as a 16-bit halfword (sth props+22); a missing value (old export) is none.
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 2,
+            "depth": 2, "character_id": 2, "clip_depth": 0x1_0007})).unwrap();
+        assert_eq!(list.depths[&2].clip_depth, 7);
+        apply(&mut list, serde_json::json!({"type_name": "place_object2", "flags": 2,
+            "depth": 3, "character_id": 2})).unwrap();
+        assert_eq!(list.depths[&3].clip_depth, -1);
+        // Removal drops it with the object.
+        apply(&mut list, serde_json::json!({"type_name": "remove_object2", "depth": 2})).unwrap();
+        assert!(!list.depths.contains_key(&2));
     }
 }

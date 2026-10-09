@@ -40,6 +40,8 @@ const GRAPH_BARS: usize = 80;
 const GRAPH_BUCKET_S: f64 = 0.05;
 /// A bar of this frame time fills the graph height.
 const GRAPH_FULL_MS: f32 = 50.0;
+/// Simple mode: the latest bars only (2 s), drawn small.
+const SIMPLE_BARS: usize = 40;
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -210,6 +212,15 @@ impl FrameTiming {
         })
     }
 
+    /// The simplified readout: the essentials on two short lines.
+    fn readout_simple(&self) -> String {
+        let s = self.summary;
+        let (frame_ms, _, _) = self.shown.mean();
+        let fps = if frame_ms > 0.0 { 1000.0 / frame_ms } else { 0.0 };
+        format!("{fps:4.0} fps {frame_ms:5.1} ms
+1% {:5.1}  max {:5.0}", s.low_1_ms, s.worst_ms)
+    }
+
     fn readout(&self) -> String {
         let s = self.summary;
         let (frame_ms, main_ms, fixed_ms) = self.shown.mean();
@@ -234,6 +245,8 @@ struct FrameOverlay;
 struct FrameText;
 #[derive(Component)]
 struct FrameBar(usize);
+#[derive(Component)]
+struct FrameGraph;
 
 pub(crate) struct FrameTimingPlugin;
 
@@ -316,12 +329,15 @@ fn show(
     timing: Res<FrameTiming>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     mut overlay: Query<&mut Node, (With<FrameOverlay>, Without<FrameBar>)>,
-    mut text: Query<&mut Text, With<FrameText>>,
-    mut bars: Query<(&FrameBar, &mut Node, &mut BackgroundColor), Without<FrameOverlay>>,
+    mut text: Query<(&mut Text, &mut TextFont), With<FrameText>>,
+    mut bars: Query<(&FrameBar, &mut Node, &mut BackgroundColor), (Without<FrameOverlay>, Without<FrameGraph>)>,
+    mut graph_node: Query<&mut Node, (With<FrameGraph>, Without<FrameOverlay>, Without<FrameBar>)>,
     mut graph: Local<Vec<f32>>,
     mut shown_at: Local<Option<f64>>,
+    mut layout_simple: Local<Option<bool>>,
 ) {
-    let visible = menu.is_some_and(|m| m.frame_stats_visible());
+    let visible = menu.as_ref().is_some_and(|m| m.frame_stats_visible());
+    let simple = menu.as_ref().is_some_and(|m| m.frame_stats_simple());
     for mut node in &mut overlay {
         let display = if visible { Display::Flex } else { Display::None };
         if node.display != display {
@@ -332,6 +348,22 @@ fn show(
         *shown_at = None;
         return;
     }
+    // Resize for the mode once per change (smaller font, a tiny graph of the latest bars).
+    if *layout_simple != Some(simple) {
+        *layout_simple = Some(simple);
+        *shown_at = None;
+        for (_, mut font) in &mut text {
+            font.font_size = if simple { 11.0 } else { 14.0 };
+        }
+        for mut node in &mut graph_node {
+            node.width = px(if simple { SIMPLE_BARS as f32 * 2.0 } else { GRAPH_BARS as f32 * 3.0 });
+            node.height = px(if simple { 14 } else { 40 });
+        }
+        for (bar, mut node, _) in &mut bars {
+            node.width = px(if simple { 1 } else { 2 });
+            node.display = if simple && bar.0 >= SIMPLE_BARS { Display::None } else { Display::Flex };
+        }
+    }
     // Update the text with each summary refresh and the graph at 10 Hz; layout
     // changes every frame would cost more than the readout is worth.
     let now_s = timing.now_s();
@@ -339,14 +371,14 @@ fn show(
         return;
     }
     *shown_at = Some(now_s);
-    for mut label in &mut text {
-        label.0 = timing.readout();
+    for (mut label, _) in &mut text {
+        label.0 = if simple { timing.readout_simple() } else { timing.readout() };
     }
-    graph.resize(GRAPH_BARS, 0.0);
+    graph.resize(if simple { SIMPLE_BARS } else { GRAPH_BARS }, 0.0);
     stats::bucket_worst(timing.window.iter().map(|s| (s.end_s, s.ms)), now_s, GRAPH_BUCKET_S, graph.as_mut_slice());
     let median = timing.summary.median_ms;
     for (bar, mut node, mut color) in &mut bars {
-        let ms = graph[bar.0];
+        let Some(&ms) = graph.get(bar.0) else { continue };
         node.height = percent((ms / GRAPH_FULL_MS).clamp(0.0, 1.0) * 100.0);
         color.0 = if median > 0.0 && ms > stats::HITCH_FACTOR * median {
             Color::srgb(0.95, 0.25, 0.2)
@@ -386,13 +418,13 @@ fn spawn_overlay(mut commands: Commands) {
                 TextColor(Color::WHITE),
             ));
             parent
-                .spawn(Node {
+                .spawn((FrameGraph, Node {
                     width: px(GRAPH_BARS as f32 * 3.0),
                     height: px(40),
                     align_items: AlignItems::FlexEnd,
                     column_gap: px(1),
                     ..default()
-                })
+                }))
                 .with_children(|graph| {
                     for i in 0..GRAPH_BARS {
                         graph.spawn((

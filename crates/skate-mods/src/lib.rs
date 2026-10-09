@@ -7,6 +7,8 @@ pub mod audio_rules;
 pub mod audio_tuning;
 pub mod world_audio;
 pub mod animation;
+
+pub mod menus;
 pub mod graphics_dynamic;
 pub mod presentation;
 pub mod scene;

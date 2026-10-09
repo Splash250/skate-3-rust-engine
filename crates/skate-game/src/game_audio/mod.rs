@@ -75,12 +75,78 @@ struct SavedSettings {
     /// share the 5 emitter states with the map's emitters, the first reached served first). Read
     /// every frame. `SKATE_AUDIO_MOD_EMITTER_SLOTS=shared|extra` overrides it for one run.
     mod_emitter_slots: ModEmitterSlots,
+    /// Retail's option volumes (Settings menu rows SFX / Dialog / Music, settings object +128 /
+    /// +132 / +136), fed to the MixMap's Master controller every pass (`RetailVolumes::master_inputs`).
+    retail_volumes: RetailVolumes,
     // Files saved before 2026-10-03 may hold `"interim"` (the opt-out to the removed interim cue
     // tables) or the older `"native"`; unknown keys are ignored, so they still load.
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false, mod_emitter_slots: ModEmitterSlots::Extra }
+        Self {
+            master: 75,
+            ambience: 100,
+            effects: 100,
+            more_audible_world: false,
+            mod_emitter_slots: ModEmitterSlots::Extra,
+            retail_volumes: RetailVolumes::default(),
+        }
+    }
+}
+
+/// One of retail's option volumes (the audio rows of the Settings menu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetailVolume {
+    /// Row 7 `ID_GAMESETTINGS_SFXVOLUME`, settings +128.
+    Sfx,
+    /// Row 8 `ID_GAMESETTINGS_DIALOGVOLUME`, settings +132.
+    Dialog,
+    /// Row 9 `ID_GAMESETTINGS_MUSICVOLUME`, settings +136.
+    Music,
+}
+
+/// Retail's option volumes, 0..1. Retail's routing (TU3 `sub_824D5160`, the MixMap Master
+/// controller's step, every pass): input = trunc(volume × 32767.0) (`fmuls` by the constant at
+/// 0x821747FC, `fctiwz`), clamped to 0..32767, written to Master.in1 (Music, +136), Master.in2
+/// (SFX, +128) and Master.in3 (Dialog, +132). The MixMap data does the rest (mixmap-spec §6.5:
+/// in1 → Music, in2 → nearly every SFX sum, in3 → Announcer / NIS / CameraMan speech). Master.in4
+/// (emitters, ambience) is not an option volume. Default 1.0 each: the settings constructor is not
+/// decoded; the recomp's free-skate capture had Master.in1..in3 = 32767 (mixmap-spec §7.4).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct RetailVolumes {
+    pub(crate) sfx: f32,
+    pub(crate) dialog: f32,
+    pub(crate) music: f32,
+}
+impl Default for RetailVolumes {
+    fn default() -> Self {
+        Self { sfx: 1.0, dialog: 1.0, music: 1.0 }
+    }
+}
+impl RetailVolumes {
+    pub(crate) fn get(&self, volume: RetailVolume) -> f32 {
+        match volume {
+            RetailVolume::Sfx => self.sfx,
+            RetailVolume::Dialog => self.dialog,
+            RetailVolume::Music => self.music,
+        }
+    }
+    fn field(&mut self, volume: RetailVolume) -> &mut f32 {
+        match volume {
+            RetailVolume::Sfx => &mut self.sfx,
+            RetailVolume::Dialog => &mut self.dialog,
+            RetailVolume::Music => &mut self.music,
+        }
+    }
+    /// The Master controller input of one option volume (`sub_824D5160`).
+    pub(crate) fn master_input(volume: f32) -> i32 {
+        // `as` truncates toward zero like `fctiwz` and maps NaN to 0.
+        ((volume * 32767.0) as i32).clamp(0, 32767)
+    }
+    /// (Master input id, value) in retail's write order: in1 Music, in2 SFX, in3 Dialog.
+    pub(crate) fn master_inputs(&self) -> [(usize, i32); 3] {
+        [(1, Self::master_input(self.music)), (2, Self::master_input(self.sfx)), (3, Self::master_input(self.dialog))]
     }
 }
 
@@ -109,6 +175,9 @@ impl SavedSettings {
         for value in [&mut self.master, &mut self.ambience, &mut self.effects] {
             *value = (*value).min(100) / STEP * STEP;
         }
+        for volume in [&mut self.retail_volumes.sfx, &mut self.retail_volumes.dialog, &mut self.retail_volumes.music] {
+            *volume = if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 };
+        }
         self
     }
 }
@@ -119,6 +188,17 @@ pub(crate) struct AudioSettings {
     saved: SavedSettings,
     path: PathBuf,
     muted: bool,
+    /// Option volumes a mod holds through the retail menus (`sdk.menus.set_value`): in force
+    /// over the saved ones, never saved, dropped when the mod stops.
+    volume_overrides: RetailVolumeOverrides,
+}
+
+/// Runtime-only replacements of the saved option volumes (None = the player's setting).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RetailVolumeOverrides {
+    sfx: Option<f32>,
+    dialog: Option<f32>,
+    music: Option<f32>,
 }
 impl AudioSettings {
     fn load(config: &crate::config::Config) -> Self {
@@ -131,7 +211,7 @@ impl AudioSettings {
             Err(_) => SavedSettings::default(),
         }
         .validated();
-        Self { saved, path, muted: config.mute }
+        Self { saved, path, muted: config.mute, volume_overrides: RetailVolumeOverrides::default() }
     }
     /// Linear master gain (0 when muted).
     pub(crate) fn master(&self) -> f32 {
@@ -165,6 +245,9 @@ impl AudioSettings {
         let steps = (100 / STEP + 1) as i32;
         let value = self.field(row);
         *value = ((*value / STEP) as i32 + direction).rem_euclid(steps) as u32 * STEP;
+        self.save()
+    }
+    fn save(&self) -> String {
         let save = (|| -> Result<(), String> {
             std::fs::create_dir_all(self.path.parent().unwrap()).map_err(|e| e.to_string())?;
             std::fs::write(&self.path, serde_json::to_vec_pretty(&self.saved).map_err(|e| e.to_string())?)
@@ -175,6 +258,40 @@ impl AudioSettings {
             Ok(()) => "Saved".into(),
             Err(e) => format!("Could not save: {e}"),
         }
+    }
+    /// Default settings saved to `path` (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn for_test(path: PathBuf) -> Self {
+        Self { saved: SavedSettings::default(), path, muted: false, volume_overrides: Default::default() }
+    }
+    /// One of retail's option volumes (0..1, the settings object's float).
+    pub(crate) fn retail_volume(&self, volume: RetailVolume) -> f32 {
+        self.saved.retail_volumes.get(volume)
+    }
+    /// Set one of retail's option volumes (clamped to 0..1, as the menu's step rule keeps it) and save.
+    pub(crate) fn set_retail_volume(&mut self, volume: RetailVolume, value: f32) -> String {
+        *self.saved.retail_volumes.field(volume) = if value.is_finite() { value.clamp(0.0, 1.0) } else { 1.0 };
+        self.save()
+    }
+    /// Master.in1..in3 as retail's Master step writes them from the option volumes.
+    pub(crate) fn master_inputs(&self) -> [(usize, i32); 3] {
+        let mut volumes = self.saved.retail_volumes;
+        let o = self.volume_overrides;
+        for (field, value) in [(&mut volumes.sfx, o.sfx), (&mut volumes.dialog, o.dialog), (&mut volumes.music, o.music)] {
+            if let Some(value) = value {
+                *field = if value.is_finite() { value.clamp(0.0, 1.0) } else { 1.0 };
+            }
+        }
+        volumes.master_inputs()
+    }
+    /// Hold (`Some`) or drop (`None`) a runtime value for one option volume; nothing is saved.
+    pub(crate) fn override_retail_volume(&mut self, volume: RetailVolume, value: Option<f32>) {
+        let o = &mut self.volume_overrides;
+        *match volume {
+            RetailVolume::Sfx => &mut o.sfx,
+            RetailVolume::Dialog => &mut o.dialog,
+            RetailVolume::Music => &mut o.music,
+        } = value;
     }
     pub(crate) fn label(&self, row: AudioRow) -> String {
         let (name, value) = match row {
@@ -405,6 +522,17 @@ fn silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::R
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retail_volumes_feed_the_master_inputs_as_sub_824d5160() {
+        assert_eq!(RetailVolumes::default().master_inputs(), [(1, 32767), (2, 32767), (3, 32767)], "free-skate capture");
+        let v = RetailVolumes { sfx: 0.5, dialog: 0.0, music: 0.9 };
+        // trunc(v * 32767.0) in f32: 0.9 -> 29490.3 -> 29490; 0.5 -> 16383.5 -> 16383.
+        assert_eq!(v.master_inputs(), [(1, 29490), (2, 16383), (3, 0)], "in1 Music, in2 SFX, in3 Dialog");
+        assert_eq!((RetailVolumes::master_input(-0.2), RetailVolumes::master_input(1.5), RetailVolumes::master_input(f32::NAN)), (0, 32767, 0));
+        let loaded: SavedSettings = serde_json::from_str(r#"{"retail_volumes":{"music":3.0,"sfx":-1.0}}"#).unwrap();
+        assert_eq!(loaded.validated().retail_volumes, RetailVolumes { sfx: 0.0, dialog: 1.0, music: 1.0 });
+    }
+
     use super::*;
 
     fn settings(master: u32) -> AudioSettings {
@@ -412,6 +540,7 @@ mod tests {
             saved: SavedSettings { master, ..SavedSettings::default() },
             path: std::env::temp_dir().join(format!("skate-audio-test-{}-{master}/audio.json", std::process::id())),
             muted: false,
+            volume_overrides: RetailVolumeOverrides::default(),
         }
     }
 
@@ -451,7 +580,7 @@ mod tests {
         assert_eq!(ModEmitterSlots::in_force(Extra, Some("shared")), Shared);
         assert_eq!(ModEmitterSlots::in_force(Shared, Some("extra")), Extra);
         assert_eq!(ModEmitterSlots::in_force(Shared, Some("1")), Shared, "unknown values are ignored");
-        let s = |slots| AudioSettings { saved: SavedSettings { mod_emitter_slots: slots, ..Default::default() }, path: std::env::temp_dir().join("x.json"), muted: false };
+        let s = |slots| AudioSettings { saved: SavedSettings { mod_emitter_slots: slots, ..Default::default() }, path: std::env::temp_dir().join("x.json"), muted: false, volume_overrides: Default::default() };
         if std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").is_err() {
             assert!(s(Extra).extra_mod_emitter_slots() && !s(Shared).extra_mod_emitter_slots());
         }

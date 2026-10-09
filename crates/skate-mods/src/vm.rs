@@ -557,6 +557,31 @@ pub enum Command {
         key: String,
         options: CaptureOptions,
     },
+    /// Retail menus extension 1 (`sdk.menus`): add or change a pause-menu category.
+    MenuCategory { id: String, #[serde(default)] options: crate::menus::EntryOptions },
+    /// Add or change a pause-menu item.
+    MenuItem { id: String, #[serde(default)] options: crate::menus::EntryOptions },
+    /// Add or change a Game Settings row.
+    MenuSetting { id: String, #[serde(default)] options: crate::menus::EntryOptions },
+    /// Remove an entry from the menus (`modes` empty = everywhere) until the mod stops.
+    MenuHide {
+        entry: String,
+        id: String,
+        #[serde(default, deserialize_with = "list")]
+        modes: Vec<String>,
+    },
+    /// Handle an entry: select / highlight events, a bound value, rules, a confirmation.
+    MenuHandle { entry: String, id: String, #[serde(default)] options: crate::menus::HandleOptions },
+    /// Drop this mod's handler and rules for an entry.
+    MenuUnhandle { entry: String, id: String },
+    /// Write a settings row's value (through its handler: engine or mod).
+    MenuSetValue { id: String, value: crate::menus::MenuValue },
+    /// Supply or replace a front-end APT movie by name (retail import path, e.g.
+    /// `source/controls/panel`) with a player-format JSON file from the mod's folder.
+    MenuMovie { name: String, path: String },
+    /// Replace one bitmap of a front-end APT movie by its stable id (movie import name + bitmap
+    /// character id) with a PNG from the mod's folder.
+    MenuBitmap { movie: String, bitmap: i32, path: String },
     CameraClearCapture {
         key: String,
     },
@@ -877,6 +902,13 @@ impl Command {
             Self::CameraCapture { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
+            Self::MenuCategory { id, options } | Self::MenuItem { id, options } | Self::MenuSetting { id, options } => crate::menus::valid_menu_id(id) && options.validate(),
+            Self::MenuHide { entry, id, modes } => crate::menus::valid_entry_kind(entry) && crate::menus::valid_menu_id(id) && modes.len() <= 16 && modes.iter().all(|m| crate::menus::valid_menu_id(m)),
+            Self::MenuHandle { entry, id, options } => crate::menus::valid_entry_kind(entry) && crate::menus::valid_menu_id(id) && options.validate(),
+            Self::MenuUnhandle { entry, id } => crate::menus::valid_entry_kind(entry) && crate::menus::valid_menu_id(id),
+            Self::MenuSetValue { id, value } => crate::menus::valid_menu_id(id) && value.validate(),
+            Self::MenuMovie { name, path } => !name.is_empty() && name.len() <= 160 && crate::audio_content::valid_content_path(path, &["json"]),
+            Self::MenuBitmap { movie, bitmap, path } => !movie.is_empty() && movie.len() <= 160 && (0..=0xFFFF).contains(bitmap) && crate::graphics_dynamic::valid_texture_path(path),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -989,6 +1021,15 @@ pub(crate) fn command_kind(command: &Command) -> &'static str {
         Command::TriggerUntrack { .. } => "trigger_untrack",
         Command::TriggerConfigure { .. } => "trigger_configure",
         Command::CameraCapture { .. } => "camera_capture",
+        Command::MenuCategory { .. } => "menu_category",
+        Command::MenuItem { .. } => "menu_item",
+        Command::MenuSetting { .. } => "menu_setting",
+        Command::MenuHide { .. } => "menu_hide",
+        Command::MenuHandle { .. } => "menu_handle",
+        Command::MenuUnhandle { .. } => "menu_unhandle",
+        Command::MenuSetValue { .. } => "menu_set_value",
+        Command::MenuMovie { .. } => "menu_movie",
+        Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
 }
@@ -1305,6 +1346,8 @@ impl Vm {
             capabilities.set("audio_events", 3)?;
             // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
             capabilities.set("audio_tuning", 1)?;
+            // Retail menus (sdk.menus): edit the retail menu structure, handle any entry.
+            capabilities.set("retail_menus", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -2839,5 +2882,45 @@ mod empty_table_lists {
             Command::WorldAudioEvent { options, .. } if options.value == Some(json!({}))));
         assert!(matches!(eval("return {kind='ui_canvas', key='c', options={}}"), Command::UiCanvas { options, .. } if options.visible && options.items.is_empty()));
         assert!(matches!(eval("return {kind='world_audio_update', key='k', options={}}"), Command::WorldAudioUpdate { .. }));
+    }
+
+    /// `sdk.menus` commands as the Lua wrappers submit them.
+    #[test]
+    fn menu_commands_from_lua() {
+        let lua = Lua::new();
+        let eval = |src: &str| -> Command { lua.from_value(lua.load(src).eval::<mlua::Value>().unwrap()).unwrap() };
+        let cases = [
+            "return {kind='menu_item', id='m.Races', options={label='Races', icon='map', category='SinglePlayer', modes={'Career'}, position=0}}",
+            "return {kind='menu_item', id='GameSettings', options={label='Settings'}}",
+            "return {kind='menu_category', id='m.Tab', options={image='icons/tab.png', modes={}}}",
+            "return {kind='menu_setting', id='m.Bass', options={widget='slider', screen=3}}",
+            "return {kind='menu_hide', entry='item', id='SkateFeed', modes={'Career', 'FreePlay'}}",
+            "return {kind='menu_hide', entry='setting', id='ID_GAMESETTINGS_SFXPACK'}",
+            "return {kind='menu_handle', entry='item', id='ChallengeMap'}",
+            "return {kind='menu_handle', entry='setting', id='m.Bass', options={value=0.5, enabled={fact='game_mode', ne=4}}}",
+            "return {kind='menu_handle', entry='item', id='m.Races', options={highlight=true, visible={any={true, {modes={'Career'}}}}, confirm={title='Sure?', when={['not']={fact='park_dirty', eq=0}}}}}",
+            "return {kind='menu_unhandle', entry='item', id='m.Races'}",
+            "return {kind='menu_set_value', id='m.Bass', value=1}",
+            "return {kind='menu_set_value', id='ID_GAMESETTINGS_SUBTITLE_TOGGLE', value=true}",
+        ];
+        for case in cases {
+            assert!(eval(case).validate(), "{case}");
+        }
+        for bad in [
+            "return {kind='menu_hide', entry='tab', id='SkateFeed'}",
+            "return {kind='menu_item', id='bad id', options={}}",
+            "return {kind='menu_setting', id='m.x', options={widget='knob'}}",
+            "return {kind='menu_handle', entry='item', id='x', options={enabled={fact='a', gt=1, lt=2}}}",
+        ] {
+            assert!(!eval(bad).validate(), "{bad}");
+        }
+        let movie = eval("return {kind='menu_movie', name='source/controls/panel', path='fe/panel.json'}");
+        assert!(matches!(movie, Command::MenuMovie { .. }) && movie.validate());
+        assert!(!eval("return {kind='menu_movie', name='source/controls/panel', path='../panel.json'}").validate());
+        let bitmap = eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=2, path='fe/glow.png'}");
+        assert!(matches!(bitmap, Command::MenuBitmap { bitmap: 2, .. }) && bitmap.validate());
+        assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=-1, path='fe/glow.png'}").validate());
+        assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=2, path='fe/glow.json'}").validate());
+        assert!(matches!(eval("return {kind='menu_set_value', id='a', value=0.25}"), Command::MenuSetValue { value: crate::menus::MenuValue::Float(v), .. } if v == 0.25));
     }
 }

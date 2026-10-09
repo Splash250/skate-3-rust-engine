@@ -9,6 +9,7 @@ mod apt_display;
 mod apt_movie;
 mod apt_text;
 mod apt_scene;
+mod apt_imports;
 mod hud_runtime;
 mod scoring_runtime;
 mod score_packet;
@@ -36,6 +37,8 @@ mod verification;
 mod performance;
 mod profiling;
 mod graphics_menu;
+mod retail_menus;
+mod retail_menu_movies;
 mod modding;
 mod customiser;
 mod customiser_parts;
@@ -72,6 +75,8 @@ fn main() -> bevy::app::AppExit {
     // Before the crash supervisor, whose report window would block setup on
     // a failed (non-zero) extraction.
     if let Some(code) = extract_ocean_pca() { std::process::exit(code); }
+    // Setup tool mode: `--extract-menu-tables <default.xex> <menu-tables.json>`.
+    if let Some(code) = extract_menu_tables() { std::process::exit(code); }
     if let Some(code) = crash_report::entry() { std::process::exit(code); }
     let _trace = match profiling::init() {
         Ok(guard) => guard,
@@ -201,6 +206,33 @@ fn extract_ocean_pca() -> Option<i32> {
         }
         Err(error) => {
             eprintln!("Ocean PCA extraction failed: {error}");
+            Some(1)
+        }
+    }
+}
+
+/// Writes the retail front-end menu tables for setup (see
+/// skate_data::menu_tables). Runs before any game initialization.
+fn extract_menu_tables() -> Option<i32> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next()? != "--extract-menu-tables" {
+        return None;
+    }
+    let (Some(xex), Some(out), None) = (args.next(), args.next(), args.next()) else {
+        eprintln!("Usage: skate3rust --extract-menu-tables <default.xex> <menu-tables.json>");
+        return Some(2);
+    };
+    let result = std::fs::read(&xex)
+        .map_err(|e| format!("{}: {e}", std::path::Path::new(&xex).display()))
+        .and_then(|bytes| skate_data::menu_tables::json_from_xex(&bytes))
+        .and_then(|json| std::fs::write(&out, json).map_err(|e| format!("{}: {e}", std::path::Path::new(&out).display())));
+    match result {
+        Ok(()) => {
+            println!("MENU_TABLES_READY");
+            Some(0)
+        }
+        Err(error) => {
+            eprintln!("Menu table extraction failed: {error}");
             Some(1)
         }
     }

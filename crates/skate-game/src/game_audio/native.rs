@@ -739,7 +739,7 @@ pub(crate) fn hold_flag_inputs(m: &mut MixMap) {
 /// The host pass of a frame (spec §1: inputs → components' process → tick → components' update),
 /// on frames that took physics steps ([`HostClock::pass`]: as many host ticks as steps, at most
 /// [`MAX_STEPS_PER_FRAME`]; none on a frame without a step, none while silenced). Written here:
-/// Master.in1–4, Music.in1/2/5, Reverb.in0..6 (free-skate values, §7.4); through `player_audio`:
+/// Master.in1–4 (in1..3 = the option volumes, `super::RetailVolumes`), Music.in1/2/5, Reverb.in0..6 (free-skate values, §7.4); through `player_audio`:
 /// PlayerPhysics 0–14, the two 3DObjPos blocks (skater COM and board, with relative speeds and the
 /// sign-flip bits), Jitter, Contacts 1/2/6, Rail 0/1, OffBoard 0; the board owner inputs
 /// (`grain_bed.rs`). Left at their free-skate 0: VU (no output meter; only the ambience reads it,
@@ -759,6 +759,7 @@ pub(super) fn mixmap_frame(
     replay: Res<crate::replay::Replay>,
     cuts: (Option<Res<crate::presentation::Presentation>>, Option<Res<crate::map_transition::CurrentMap>>),
     teleport: Option<Res<crate::ui_audio::TeleportEffect>>,
+    settings: Option<Res<super::AudioSettings>>,
 ) {
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let silenced = super::silenced(menu.as_deref(), &replay);
@@ -807,9 +808,13 @@ pub(super) fn mixmap_frame(
     }
     let Some(pass) = native.clock.pass(&mut cues, silenced) else { return };
     native.frame_ticks = pass.ticks;
-    for id in 1..=4 {
-        m.set_input(keys::MASTER, id, 32767);
+    // Master.in1..in3 = the option volumes (Settings menu Music / SFX / Dialog) as retail's Master
+    // step `sub_824D5160` writes them every pass; in4 is not an option volume (32767 in free skate).
+    let volumes = settings.as_deref().map_or_else(|| super::RetailVolumes::default().master_inputs(), super::AudioSettings::master_inputs);
+    for (id, value) in volumes {
+        m.set_input(keys::MASTER, id, value);
     }
+    m.set_input(keys::MASTER, 4, 32767);
     for id in [1, 2, 5] {
         m.set_input(keys::MUSIC, id, 32767);
     }

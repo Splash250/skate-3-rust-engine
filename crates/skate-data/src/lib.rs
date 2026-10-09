@@ -21,6 +21,7 @@ pub mod resource_world;
 pub mod retail_collision;
 pub mod xex;
 pub mod ocean_pca;
+pub mod menu_tables;
 pub mod trigger_volumes;
 
 pub mod location_collision;

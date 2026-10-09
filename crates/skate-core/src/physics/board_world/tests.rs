@@ -204,7 +204,10 @@ fn predictive_contacts_and_retention_match_full_scan_for_every_primitive() {
                 collision_group: 0,
                 body: CollisionBody::Attached(i),
                 primitive,
-                linear_velocity: Vector3::new(0., velocity, 0.),
+                motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., velocity, 0.),
+            ..Default::default()
+        },
                 material: material(),
             })
             .collect();
@@ -268,7 +271,10 @@ fn excluded_water_still_reports_its_surface() {
             center: Vector3::new(-1., y, -1.),
             radius: 0.2,
         }),
-        linear_velocity: Vector3::new(0., -1., 0.),
+        motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., -1., 0.),
+            ..Default::default()
+        },
         material: material(),
     };
     let query = WorldContactSettings {
@@ -355,7 +361,10 @@ fn water_collision_depends_on_native_group_not_floor_depth() {
         collision_group: 0,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere { center: Vector3::new(-1., y, -1.), radius: 0.2 }),
-        linear_velocity: Vector3::new(0., -1., 0.),
+        motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., -1., 0.),
+            ..Default::default()
+        },
         material: material(),
     };
     let query = WorldContactSettings {
@@ -377,4 +386,120 @@ fn water_collision_depends_on_native_group_not_floor_depth() {
                 !matches!(group, 7 | 16), "group {group}, floor {floor_y}");
         }
     }
+}
+
+#[test]
+fn volume_query_bounds_follow_82777e70() {
+    let close = |a: f32, b: f32| assert!((a - b).abs() < 1e-5, "{a} != {b}");
+    let sphere = ContactPrimitive::Sphere(Sphere {
+        center: Vector3::ZERO,
+        radius: 0.1,
+    });
+    let bounds = |primitive, motion| {
+        volume_query_bounds(primitive, motion, VOLUME_QUERY_STEP, VOLUME_QUERY_SCALE).unwrap()
+    };
+    // At rest: the shape bounds scaled by 1.05 about their centre, no padding.
+    let b = bounds(sphere, VolumeMotion::default());
+    close(b.min.y, -0.105);
+    close(b.max.x, 0.105);
+    // One 1/60 step of linear motion is unioned in before the scale.
+    let moving = VolumeMotion {
+        linear_velocity: Vector3::new(6., 0., 0.),
+        ..Default::default()
+    };
+    let b = bounds(sphere, moving);
+    close(b.min.x, 0.05 - 0.15 * 1.05);
+    close(b.max.x, 0.05 + 0.15 * 1.05);
+    close(b.min.y, -0.105);
+    // An acceleration only counts while it points along the step.
+    let braking = VolumeMotion {
+        force_acceleration: Vector3::new(-600., 0., 0.),
+        ..moving
+    };
+    let braked = bounds(sphere, braking);
+    assert_eq!((braked.min, braked.max), (b.min, b.max));
+    // Rotation pads by the largest extent difference times min(|step|, 1);
+    // a sphere has equal extents, a long box does not.
+    let spinning = VolumeMotion {
+        angular_velocity: Vector3::new(0., 30., 0.),
+        ..Default::default()
+    };
+    let (spun, rest) = (bounds(sphere, spinning), bounds(sphere, VolumeMotion::default()));
+    assert_eq!((spun.min, spun.max), (rest.min, rest.max));
+    let long = ContactPrimitive::RoundedBox {
+        center: Vector3::ZERO,
+        basis: Basis3 {
+            columns: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        },
+        half_extents: Vector3::new(0.4, 0.05, 0.1),
+        radius: 0.,
+    };
+    let b = bounds(long, spinning);
+    let pad = 0.7 * 0.5; // (0.8 - 0.1) * min(30/60, 1)
+    close(b.max.x, (0.4 + pad) * 1.05);
+    close(b.min.y, -(0.05 + pad) * 1.05);
+}
+
+#[test]
+fn volume_query_rotation_pad_uses_refined_reciprocal_square_root() {
+    // 82777E70 takes |angular step| as x * rsqrt(x) after vrsqrtefp128 and two
+    // Newton refinements. For a 3.09 rad/s spin over 1/60 the step length is
+    // 0x3D52F1AB that way; a host sqrt gives 0x3D52F1AA. A 1 m long box with
+    // zero width makes the rotation pad exactly that length.
+    let rod = ContactPrimitive::RoundedBox {
+        center: Vector3::ZERO,
+        basis: Basis3 {
+            columns: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        },
+        half_extents: Vector3::new(0.5, 0., 0.),
+        radius: 0.,
+    };
+    let motion = VolumeMotion {
+        angular_velocity: Vector3::new(0., 3.09, 0.),
+        ..Default::default()
+    };
+    let b = volume_query_bounds(rod, motion, VOLUME_QUERY_STEP, VOLUME_QUERY_SCALE).unwrap();
+    let refined = f32::from_bits(0x3D52_F1AB);
+    let host_sqrt = (3.09f32 * VOLUME_QUERY_STEP).abs();
+    assert_eq!(host_sqrt.to_bits(), 0x3D52_F1AA);
+    assert_eq!(b.max.y.to_bits(), (refined * VOLUME_QUERY_SCALE).to_bits());
+    assert_eq!(b.min.y.to_bits(), (-refined * VOLUME_QUERY_SCALE).to_bits());
+    assert_ne!(
+        b.max.y.to_bits(),
+        (host_sqrt * VOLUME_QUERY_SCALE).to_bits()
+    );
+}
+
+#[test]
+fn volume_query_shape_bounds_follow_the_retail_bounds_slots() {
+    // Capsule 82AD97A0: centre +- fma(|axis|, half length, radius).
+    let axis = Vector3::new(0.6, 0.8, 0.);
+    let capsule = ContactPrimitive::Capsule {
+        center: Vector3::new(1., 2., 3.),
+        axis,
+        half_length: 0.3,
+        radius: 0.07,
+    };
+    let b = volume_query_bounds(capsule, VolumeMotion::default(), VOLUME_QUERY_STEP, 1.).unwrap();
+    let e = 0.6f32.mul_add(0.3, 0.07);
+    assert_eq!(b.max.x.to_bits(), (1. + e).to_bits());
+    assert_eq!(b.min.x.to_bits(), (1. - e).to_bits());
+    assert_eq!(b.max.z.to_bits(), (3f32 + 0.07).to_bits());
+    // Box 82AD9558: |a1| * h1, fma |a0| * h0, fma |a2| * h2, then + radius.
+    let (c0, c1, c2) = ([0.6, -0.8, 0.], [0.8, 0.6, 0.], [0., 0., 1.]);
+    let rounded_box = ContactPrimitive::RoundedBox {
+        center: Vector3::ZERO,
+        basis: Basis3 {
+            columns: [c0, c1, c2],
+        },
+        half_extents: Vector3::new(0.41, 0.13, 0.2),
+        radius: 0.03,
+    };
+    let b =
+        volume_query_bounds(rounded_box, VolumeMotion::default(), VOLUME_QUERY_STEP, 1.).unwrap();
+    let ex = 0f32.mul_add(0.2, 0.6f32.mul_add(0.41, 0.8 * 0.13)) + 0.03;
+    let ey = 0f32.mul_add(0.2, 0.8f32.mul_add(0.41, 0.6 * 0.13)) + 0.03;
+    assert_eq!(b.max.x.to_bits(), ex.to_bits());
+    assert_eq!(b.min.y.to_bits(), (-ey).to_bits());
+    assert_eq!(b.max.z.to_bits(), (0.2f32 + 0.03).to_bits());
 }

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tools.asset_pipeline import install
@@ -115,7 +116,9 @@ class HeadlessSetupTests(unittest.TestCase):
 
     def test_windows_retains_pinned_fallback(self):
         fallback = self.root/'extract-xiso.exe'
-        with mock.patch.object(install, 'WINDOWS', True), mock.patch.dict(os.environ, {}, clear=True), \
+        with mock.patch.object(install, 'os', SimpleNamespace(name='nt', environ=os.environ)), \
+             mock.patch.object(install, 'TOOLS', self.root/'tools'), \
+             mock.patch.dict(os.environ, {}, clear=True), \
              mock.patch.object(install, 'dependency', return_value=fallback) as dependency:
             self.assertEqual(install.xiso_extractor(self.base, self.game, print), fallback)
             dependency.assert_called_once_with(self.base/'tools', 'extract-xiso', install.XISO_URL, install.XISO_SHA, print)
@@ -124,7 +127,7 @@ class HeadlessSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as checkout, \
              mock.patch.object(install, 'TOOLS', Path(checkout)/'tools'), \
              mock.patch.dict(os.environ, {}, clear=True), \
-             mock.patch.object(install, 'WINDOWS', False):
+             mock.patch.object(install, 'os', SimpleNamespace(name='posix', environ=os.environ)):
             with self.assertRaisesRegex(RuntimeError, r'cargo build --locked -p skate-xiso'):
                 install.xiso_extractor(self.base, self.game, print)
 

@@ -87,6 +87,10 @@ def environment(game_root, stage, work, report, log, converted=None, game_exe=No
         report('Extracting the original water animation')
         from .ocean_pca import convert as write_ocean_pca
         attempt('ocean',lambda assets:write_ocean_pca(game_exe,game_root/'default.xex',assets,log))
+        # Front-end menu tables (pause menu, Game Settings), also held only in the executable.
+        report('Extracting the original menu tables')
+        from .menu_tables import convert as write_menu_tables
+        attempt('menus',lambda assets:write_menu_tables(game_exe,game_root/'default.xex',assets,log))
     report('Extracting original travel destinations and location names')
     from .teleports import convert as write_teleports
     attempt('teleports',lambda assets:write_teleports(game_root,assets,converted))

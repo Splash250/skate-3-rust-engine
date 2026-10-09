@@ -88,6 +88,20 @@ Diagnostics only; nothing in retail Skate 3 to match. The proof obligation is th
 `cargo test -p skate-game --release --bin skate3rust -- frame_timing graphics_menu`, plus skate-mods
 `frame_statistics_have_defaults_and_keep_host_values`. Listed in "Verification" below.
 
+### Follow-up: Simple and Verbose modes
+
+The full readout covers a lot of the screen for everyday play. The GRAPHICS row "Frame-time counter" now cycles
+Off / Simple / Verbose instead of Off / On.
+- Verbose is the readout above, unchanged.
+- Simple: fps, frame time, 1 % low and worst frame on two short lines in a smaller font (11 px instead of 14 px),
+  with a small spike graph of the last 2 s (40 bars, 14 px high).
+- Saved as `frame_stats_simple` next to `frame_stats` in `settings/graphics.json`. Files saved before this
+  change have no such field and open as Verbose when the counter was on, so nobody's counter changes by itself.
+- Files: `frame_timing/mod.rs` (`readout_simple`, layout switch in `show`, done once per mode change),
+  `graphics_menu.rs` (setting, row cycle, label).
+- Test: `frame_counter_setting_defaults_off_and_round_trips` also checks the old file and a Simple round trip.
+- Diagnostics only; the same proofs as above apply (only the overlay nodes change).
+
 ---
 
 ## Part 2: setup speed, phases 4–5

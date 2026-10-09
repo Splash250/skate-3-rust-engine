@@ -121,7 +121,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var alpha = 1.0;
     var lin = vec3<f32>(0.0);
     var baked = lm*lm;
-    if frame_state.shadow.w>0.0 && (fam<=8u || fam==13u) {
+    if frame_state.shadow.w>0.0 && (fam<=8u || fam==13u || fam==16u) {
         let view_z=(frame::view.view_from_world*i.world_position).z;
         for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
             // The lightmapped receiver source contains only player/board casters.
@@ -289,7 +289,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         }
         var lml = baked;
         lin = lml*kd*d;
-        if fam == 13u { lin = lml*d*a.a; }
+        // transparentenvironment_defaultPS 39, 43: diffuse^2 * lightmap * alpha, no kd.
+        if fam == 13u || fam == 16u { lin = lml*d*a.a; }
         if (flags & 16u) != 0u {
             let lit = vec3<f32>(-0.14,0.5,0.9);
             let reflected = lit-2.0*wn*dot(wn,lit);
@@ -306,12 +307,13 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             lin += cube*lum*masks.z*1.5;
         }
         if fam >= 7u { alpha = a.a; }
-        if fam == 13u { alpha *= alpha; }
+        // transparentenvironment_defaultPS 53: oC0.w = alpha * alpha.
+        if fam == 13u || fam == 16u { alpha *= alpha; }
     }
     var f = saturate(length(rpos)*p.fog_ramp.x+p.fog_ramp.y);
     if p.fog_ramp.z != 1.0 { f = pow(max(f,1e-6),p.fog_ramp.z); }
     var fog_a = 1.0+p.fog_color.a*f;
-    if fam <= 8u || fam == 13u { fog_a *= p.surface.w; }
+    if fam <= 8u || fam == 13u || fam == 16u { fog_a *= p.surface.w; }
     var xe = max((lin*fog_a+p.fog_color.rgb*f)*p.mode.w,vec3<f32>(0.0));
     // Reduced curve is the full curve with the linear input capped at one.
     if fam == 8u { xe = min(xe,vec3<f32>(1.0)); }

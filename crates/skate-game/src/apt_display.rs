@@ -22,7 +22,52 @@ pub struct Control {
     pub filter_pointer: u32,
     #[serde(default)]
     pub actions_offset: u32,
+    /// Decoded clip-event table of a placement with flag 0x80 (doc 31, Milestone 3d).
+    #[serde(default)]
+    pub clip_actions: Vec<ClipAction>,
 }
+
+/// One onClipEvent handler of a placement (retail [TU3]: placement+60 points at
+/// `{u32 count, u32 events}`, each event 12 bytes `{u32 flags, u32 key_code, u32 actions}`;
+/// sub_82E7B340 passes it on, sub_82E7B090 stores it at display object +24).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct ClipAction {
+    pub flags: u32,
+    #[serde(default)]
+    pub key_code: u32,
+    pub actions_offset: u32,
+}
+
+/// Clip-event flag bits, the SWF ClipEventFlags values (retail [TU3]: placement sub_82E7AF18
+/// dispatches 0x200 and 0x40000, the tick sub_82E5B640 dispatches 2 and 1, removal
+/// sub_82E55DA8 dispatches 4; the dynamic-handler table 0x82FC9A3C maps 1 / 2 / 4 / 0x40 /
+/// 0x80 / 0x100 to onLoad / onEnterFrame / onUnload / onKeyDown / onKeyUp / onData).
+// Input-driven events (mouse, key, press...) are dispatched by the host's input later.
+#[allow(dead_code)]
+pub mod clip_event {
+    pub const LOAD: u32 = 0x1;
+    pub const ENTER_FRAME: u32 = 0x2;
+    pub const UNLOAD: u32 = 0x4;
+    pub const MOUSE_MOVE: u32 = 0x8;
+    pub const MOUSE_DOWN: u32 = 0x10;
+    pub const MOUSE_UP: u32 = 0x20;
+    pub const KEY_DOWN: u32 = 0x40;
+    pub const KEY_UP: u32 = 0x80;
+    pub const DATA: u32 = 0x100;
+    pub const INITIALIZE: u32 = 0x200;
+    pub const PRESS: u32 = 0x400;
+    pub const RELEASE: u32 = 0x800;
+    pub const RELEASE_OUTSIDE: u32 = 0x1000;
+    pub const ROLL_OVER: u32 = 0x2000;
+    pub const ROLL_OUT: u32 = 0x4000;
+    pub const DRAG_OVER: u32 = 0x8000;
+    pub const DRAG_OUT: u32 = 0x1_0000;
+    pub const KEY_PRESS: u32 = 0x2_0000;
+    pub const CONSTRUCT: u32 = 0x4_0000;
+}
+
+/// Most clip events per placement we accept (NOT RETAIL, safety limit for mod movies).
+pub const MAX_CLIP_ACTIONS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
@@ -31,8 +76,13 @@ pub struct Placement {
     pub color: [u8; 8],
     pub ratio: f32,
     pub name: String,
+    /// Clip depth (-1 = none). Retail [TU3] stores it but its renderer never reads it: the
+    /// only reader is the bounds walk sub_82E59C28, which leaves out children with a clip
+    /// depth >= 0. So a clip-depth shape is drawn like any other shape and masks nothing
+    /// (doc 31, Milestone 3f); apt_scene.rs draws it the same way.
     pub clip_depth: i32,
     pub blend_mode: i32,
+    pub clip_actions: Vec<ClipAction>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,8 +99,15 @@ impl DisplayList {
                 if control.filter_pointer != 0 {
                     return Err("APT placement filter is not implemented".into());
                 }
-                if control.flags & 0x80 != 0 && control.actions_offset != 0 {
-                    return Err("APT placement clip actions are not implemented".into());
+                if control.flags & 0x80 != 0
+                    && control.actions_offset != 0
+                    && control.clip_actions.is_empty()
+                {
+                    // Movie exported before Milestone 3d: the table was not decoded.
+                    return Err("APT placement clip actions were not exported".into());
+                }
+                if control.clip_actions.len() > MAX_CLIP_ACTIONS {
+                    return Err("APT placement has too many clip actions".into());
                 }
                 let mut placement = if control.flags & 1 != 0 {
                     self.depths.get(&control.depth).cloned().ok_or_else(|| {
@@ -68,6 +125,7 @@ impl DisplayList {
                         name: String::new(),
                         clip_depth: -1,
                         blend_mode: -1,
+                        clip_actions: Vec::new(),
                     }
                 };
                 if control.flags & 2 != 0 {
@@ -89,10 +147,18 @@ impl DisplayList {
                 if control.flags & 0x20 != 0 {
                     placement.name = control.name.clone().ok_or("APT name flag lacks value")?;
                 }
-                if control.flags & 0x40 != 0 {
-                    placement.clip_depth = control
-                        .clip_depth
-                        .ok_or("APT clip-depth flag lacks value")?;
+                // Retail [TU3] (doc 31, Milestone 3f): sub_82E7B340 hands the record's clip
+                // depth (+56) to every placement that creates a display object (flag 2) without
+                // testing flag 0x40, and sub_82E7A950 stores it as a 16-bit value (sth props+22).
+                // A move of an existing object passes -1 and sub_82E7B090 keeps the stored value,
+                // so flag 0x40 on a move changes nothing.
+                if control.flags & 2 != 0 {
+                    placement.clip_depth = control.clip_depth.map_or(-1, |d| d as i16 as i32);
+                }
+                // Retail sub_82E7B090 stores the table only when the placement carries one
+                // (flag 0x80), on a new placement and on a move alike.
+                if control.flags & 0x80 != 0 {
+                    placement.clip_actions = control.clip_actions.clone();
                 }
                 if control.type_name == "place_object3" {
                     placement.blend_mode = control.blend_mode.unwrap_or(-1);

@@ -228,11 +228,11 @@ fn composed_names_localize_every_component() {
         .language
         .insert("ID_TRICK_AUTHENTIC_FS_HALFCAB".into(), "FS Half-Cab".into());
     assert_eq!(
-        crate::hud_runtime::localize_trick("ID_TRICK_KICKFLIP 360", Some(&assets)),
+        crate::apt_text::localize_trick("ID_TRICK_KICKFLIP 360", Some(&assets)),
         "Kickflip 360"
     );
     assert_eq!(
-        crate::hud_runtime::localize_trick(
+        crate::apt_text::localize_trick(
             "ID_TRICK_KICKFLIP ID_TRICK_AUTHENTIC_FS_HALFCAB",
             Some(&assets)
         ),

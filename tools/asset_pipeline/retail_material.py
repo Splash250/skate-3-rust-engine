@@ -13,6 +13,10 @@ def _retail_shader_family(shader_name: str) -> int:
         return 3
     if shader.startswith("environment.default"):
         return 1
+    if shader == "environment.transparent":
+        # transparentenvironment_defaultPS: alpha-scaled lightmapped diffuse,
+        # alpha squared out (chain-link fences, wire mesh).
+        return 16
     if shader.startswith("environmentsimple.alphatest"):
         return 7
     if shader.startswith("environmentsimple.diffuse"):

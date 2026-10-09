@@ -138,6 +138,7 @@ pub(crate) fn build(
     app.add_plugins((crate::session_marker::SessionMarkerPlugin, crate::customiser::CustomiserPlugin));
     app.add_plugins(crate::custom_models::CustomModelsPlugin);
     app.add_plugins(crate::trigger_volumes::TriggerVolumesPlugin);
+    app.add_plugins(crate::retail_menus::RetailMenusPlugin);
     app.add_plugins(crate::modding::ModdingPlugin);
     crate::teleport_menu::install(&mut app);
     app.add_plugins(crate::updater::UpdaterPlugin);

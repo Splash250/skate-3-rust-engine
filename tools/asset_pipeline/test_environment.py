@@ -3,6 +3,7 @@ import struct
 import unittest
 from .environment import Collections, field, key_hash, sky_parameters, world_environment, fog_parameters
 from .render_parameters import exposure_parameters
+from .retail_material import _retail_render_flags, _retail_shader_family
 
 
 def raw(*values):
@@ -80,6 +81,14 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(sky_parameters(c, 'sky.default')['multiplier'], .25)
         with self.assertRaises(KeyError):
             sky_parameters(c, 'sky.missing')
+
+
+class TransparentEnvironmentMaterialTests(unittest.TestCase):
+    def test_transparent_environment_has_its_own_family(self):
+        # transparentenvironment_defaultPS (chain-link fences), blended.
+        self.assertEqual(_retail_shader_family('environment.transparent'), 16)
+        self.assertEqual(_retail_render_flags('environment.transparent', 2) & 2, 2)
+        self.assertEqual(_retail_shader_family('environment.reflective_trans'), 13)
 
 
 if __name__ == '__main__':

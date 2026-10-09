@@ -591,6 +591,10 @@ mod wipeout_tests;
 mod water_drop_tests;
 
 #[cfg(test)]
+#[path = "tests/grind_bail.rs"]
+mod grind_bail_tests;
+
+#[cfg(test)]
 #[path = "tests/audio_state_capture.rs"]
 mod audio_state_capture_tests;
 

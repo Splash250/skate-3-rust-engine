@@ -587,6 +587,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "map_view": crate::map_view::status(world),
         "locations": crate::locations::status(world),
         "triggers": triggers::snapshot(world),
+        "menus": crate::retail_menus::snapshot(world),
         "tick": physics.ticks,
         "keys": keys,
         "actions": actions,
@@ -856,6 +857,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.debug_owners.clear();
     player_physics::clear(world,None);
     mods.custom_menus.clear();
+    crate::retail_menus::clear_mods(world);
     participation::clear(world, mods);
     mods.remote_cameras.clear();
     mods.session.reset();
@@ -911,6 +913,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         clear_camera_angle(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
+        crate::retail_menus::clear_owner(world, id);
         canvas::clear_owner(world, &mut mods.canvases, Some(id));
         detach_if_owner(world, mods, id);
         if mods.camera.owner.as_ref() == Some(id) {
@@ -987,6 +990,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
+            crate::retail_menus::clear_owner(world, &id);
             continue;
         }
         commands.sort_by_key(|command| match command {
@@ -1017,9 +1021,14 @@ fn apply(world: &mut World, mods: &mut Mods) {
             clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
+            crate::retail_menus::clear_owner(world, &id);
         }
     }
     sync_audio_content(world, mods);
+    let menu_events = world.get_resource_mut::<crate::retail_menus::RetailMenus>().map(|mut m| m.drain_events()).unwrap_or_default();
+    for (owner, payload) in menu_events {
+        mods.manager.call(&owner, "on_event", payload);
+    }
     layout_overlays(world, mods.overlays.values().copied());
 }
 
@@ -1571,6 +1580,30 @@ fn apply_one(
         Command::TriggerUntrack { key } => triggers::untrack(world, id, &key),
         Command::TriggerConfigure { options } => triggers::configure(world, id, options)?,
         Command::CameraCapture { key, options } => { capture::set(world, id, key, options)?; }
+        c @ (Command::MenuCategory { .. } | Command::MenuItem { .. } | Command::MenuSetting { .. } | Command::MenuHide { .. }
+            | Command::MenuHandle { .. } | Command::MenuUnhandle { .. } | Command::MenuSetValue { .. }) => {
+            let mut menus = world.get_resource_mut::<crate::retail_menus::RetailMenus>().ok_or("menus are not ready")?;
+            crate::retail_menus::apply_command(&mut menus, id, c)?;
+        }
+        Command::MenuMovie { name, path } => {
+            let package = mods.manager.packages.get(id).ok_or("missing package")?;
+            let root = package.root.canonicalize().map_err(|e| e.to_string())?;
+            let full = root.join(&path).canonicalize().map_err(|e| e.to_string())?;
+            if !full.starts_with(&root) { return Err("menu movie escapes its package".into()); }
+            if std::fs::metadata(&full).map_err(|e| e.to_string())?.len() > crate::retail_menu_movies::MAX_MOD_MOVIE_BYTES {
+                return Err("menu movie file is too large".into());
+            }
+            let json = serde_json::from_slice(&std::fs::read(&full).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let mut movies = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>().ok_or("menu movies are not ready")?;
+            movies.set_mod_movie(id, &name, json)?;
+        }
+        Command::MenuBitmap { movie, bitmap, path } => {
+            let package = mods.manager.packages.get(id).ok_or("missing package")?;
+            let input = skate_mods::read_bounded(&package.root, &path, crate::retail_menu_movies::MAX_MOD_BITMAP_BYTES)?;
+            let image = crate::retail_menu_movies::decode_mod_bitmap(&input)?;
+            let mut movies = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>().ok_or("menu movies are not ready")?;
+            movies.set_mod_bitmap(id, &movie, bitmap, image)?;
+        }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

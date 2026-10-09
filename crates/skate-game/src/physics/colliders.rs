@@ -6,7 +6,7 @@ use skate_core::{
         board::BodyId,
         board_runtime::BoardRuntime,
         board_step::CollisionBody,
-        board_world::BoardWorldVolume,
+        board_world::{BoardWorldVolume, VolumeMotion},
         collision::Sphere,
         contact::RetailContactMaterial,
         drive_frames::RetailAffineTransform,
@@ -34,7 +34,7 @@ pub(crate) fn world_volumes(
                 body: CollisionBody::Board(id),
                 primitive,
                 material,
-                linear_velocity: body.rates.linear_velocity,
+                motion: VolumeMotion::of(&body.rates),
             });
         };
         match id {

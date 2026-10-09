@@ -835,7 +835,7 @@ mod tests {
         world.init_resource::<super::super::mod_rules::AudioRules>();
         // `extra` = the default settings (own instances since 2026-10-04); else the "shared" option.
         let saved = if extra { super::super::SavedSettings::default() } else { super::super::SavedSettings { mod_emitter_slots: super::super::ModEmitterSlots::Shared, ..Default::default() } };
-        world.insert_resource(super::super::AudioSettings { saved, path: std::env::temp_dir().join("skate-emitter-test-audio.json"), muted: true });
+        world.insert_resource(super::super::AudioSettings { saved, path: std::env::temp_dir().join("skate-emitter-test-audio.json"), muted: true, volume_overrides: Default::default() });
         let listener = world.spawn((super::super::GameAudioListener, Transform::default(), GlobalTransform::default())).id();
         (world, listener)
     }

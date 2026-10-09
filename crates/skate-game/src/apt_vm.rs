@@ -122,6 +122,9 @@ pub trait Host {
     fn property_changed(&mut self, _vm: &mut Vm, _object: usize, _key: &str) -> Result<(), String> {
         Ok(())
     }
+    /// ActionScript `trace` (opcode 0x26). Retail prints "AptTrace: %s" to the
+    /// debug output (handler 82E6D958); hosts may log it, the default drops it.
+    fn trace(&mut self, _message: &str) {}
     fn call(
         &mut self,
         vm: &mut Vm,
@@ -138,6 +141,81 @@ pub struct Vm {
     pub global: usize,
     remaining: usize,
     depth: usize,
+    /// State of the script `random` generator (opcode 0x30). Seeded, so a run
+    /// is deterministic (replays, multiplayer); see `seed_random`.
+    random_state: u64,
+}
+
+/// Retail ToInteger (82E5F2A8): int as is, float clamped to the i32 range
+/// and truncated (NaN gives i32::MIN like `fctiwz`), bool 0 / 1, strings via
+/// strtol base 16 when longer than 2 chars and starting "0x", else atoi;
+/// undefined 0, any other value (objects) 1.
+pub fn to_integer(value: &Value) -> i32 {
+    match value {
+        Value::Undefined => 0,
+        Value::Bool(v) => *v as i32,
+        Value::Object(_) => 1,
+        Value::Number(n) => {
+            if n.is_nan() {
+                i32::MIN
+            } else {
+                n.clamp(i32::MIN as f64, i32::MAX as f64) as i32
+            }
+        }
+        Value::Text(s) => {
+            let b = s.as_bytes();
+            if b.len() > 2 && b[0] == b'0' && b[1] == b'x' {
+                c_parse(&s[2..], 16)
+            } else {
+                c_parse(s, 10)
+            }
+        }
+    }
+}
+/// C `strtol` / `atoi` subset: leading spaces, optional sign, digits until the
+/// first non-digit, saturating instead of undefined overflow.
+fn c_parse(s: &str, radix: u32) -> i32 {
+    let s = s.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+    let (negative, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let mut value: i64 = 0;
+    for c in digits.chars() {
+        let Some(d) = c.to_digit(radix) else { break };
+        value = (value * radix as i64 + d as i64).min(1 << 32);
+    }
+    let value = if negative { -value } else { value };
+    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+/// Retail ToNumber action (0x4A, handler 82E702F0): numbers stay; values the
+/// retail NaN test (82E67400) rejects (undefined, objects, empty or
+/// non-numeric strings) become NaN; a string without '.' becomes an integer
+/// via ToInteger, one with '.' a float; bools become 0 / 1.
+pub fn to_number(value: &Value) -> Value {
+    match value {
+        Value::Number(n) => Value::Number(*n),
+        Value::Bool(v) => Value::Number(*v as i32 as f64),
+        Value::Undefined | Value::Object(_) => Value::Number(f64::NAN),
+        Value::Text(s) => {
+            let t = s.trim();
+            let b = t.as_bytes();
+            let hex = b.len() > 2 && b[0] == b'0' && b[1] == b'x';
+            let numeric = if hex {
+                t[2..].chars().all(|c| c.is_ascii_hexdigit())
+            } else {
+                !t.is_empty() && t.parse::<f64>().is_ok_and(|n| n.is_finite())
+            };
+            if !numeric {
+                Value::Number(f64::NAN)
+            } else if hex || !t.contains('.') {
+                Value::Number(to_integer(&Value::Text(t.into())) as f64)
+            } else {
+                Value::Number(t.parse::<f32>().map_or(f64::NAN, |n| n as f64))
+            }
+        }
+    }
 }
 impl Vm {
     fn variable(&self, scope: &Scope, key: &str) -> Value {
@@ -236,6 +314,25 @@ impl Vm {
             current = o.prototype;
         }
         Value::Undefined
+    }
+    /// Seed for the script `random` generator. Hosts that replay or share a
+    /// session seed it from session data; the default seed is fixed.
+    pub fn seed_random(&mut self, seed: u64) {
+        self.random_state = seed;
+    }
+    /// Next value of the deterministic generator (xorshift64*). Retail uses
+    /// its own runtime generator (82E82528, Mersenne-Twister style) whose seed
+    /// is not reproducible, so only the `% n` contract is retail's.
+    fn next_random(&mut self) -> u32 {
+        if self.random_state == 0 {
+            self.random_state = 0x9E37_79B9_7F4A_7C15;
+        }
+        let mut x = self.random_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.random_state = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
     }
     pub fn begin_update(&mut self) {
         self.remaining = 100_000;
@@ -486,9 +583,66 @@ impl Vm {
                 }
                 0xa2 | 0xa3 => stack.push(constant(operand)?),
                 0xae => stack.push(self.variable(scope, &constant(operand)?.text())),
-                0x4e | 0xaf => {
+                // EA trace (82E6D958): pop one value, print it.
+                0x26 => {
+                    let v = pop(&mut stack)?;
+                    host.trace(&v.text());
+                }
+                // EA random (82E6DDD0): replace the top with rand % n, n by
+                // ToInteger and divided unsigned (divwu); retail traps on
+                // n == 0, untrusted scripts get 0 instead.
+                0x30 => {
+                    let n = to_integer(&pop(&mut stack)?) as u32;
+                    let r = self.next_random();
+                    let value = if n == 0 { 0 } else { r % n };
+                    stack.push(Value::Number(value as i32 as f64));
+                }
+                // EA toNumber (82E702F0): replace the top with its number.
+                0x4a => {
+                    let v = pop(&mut stack)?;
+                    stack.push(to_number(&v));
+                }
+                // initArray (82E6E9C0) / initObject (82E6EB00): count by
+                // ToInteger, <= 0 gives an empty object. Array element i is
+                // the i-th value from the top (length = count); object pairs
+                // are (value on top, name below), set from the top pair down,
+                // so the deepest duplicate name wins like retail.
+                0x42 | 0x43 => {
+                    let n = to_integer(&pop(&mut stack)?).max(0) as usize;
+                    let width = if op == 0x43 { 2 } else { 1 };
+                    if n > 256 {
+                        return Err("APT initializer limit".into());
+                    }
+                    if n * width > stack.len() {
+                        return Err("APT stack underflow".into());
+                    }
+                    let id = self.object(ObjectKind::Plain);
+                    for j in 0..n {
+                        let v = pop(&mut stack)?;
+                        if op == 0x42 {
+                            self.set(id, j.to_string(), v)?;
+                        } else {
+                            let k = pop(&mut stack)?.text();
+                            self.set(id, k, v)?;
+                        }
+                    }
+                    if op == 0x42 {
+                        self.set(id, "length", Value::Number(n as f64))?;
+                    }
+                    stack.push(Value::Object(id));
+                }
+                0x4e | 0xa5 | 0xaf => {
+                    // 0xa5 (82E73F50) pushes its string operand, then runs the
+                    // getMember handler 82E705C0 (0x4e).
                     let name = if op == 0xaf {
                         constant(operand)?
+                    } else if op == 0xa5 {
+                        Value::Text(
+                            i.operand
+                                .as_str()
+                                .ok_or("APT string operand missing")?
+                                .into(),
+                        )
                     } else {
                         pop(&mut stack)?
                     }
@@ -513,8 +667,19 @@ impl Vm {
                     let k = pop(&mut stack)?.text();
                     stack.push(self.variable(scope, &k));
                 }
-                0x1d | 0x3c => {
-                    let v = pop(&mut stack)?;
+                0x1d | 0x3c | 0xa6 => {
+                    // 0xa6 (82E74028) pushes its string operand, then runs the
+                    // setVariable handler 82E6D248 (0x1d).
+                    let v = if op == 0xa6 {
+                        Value::Text(
+                            i.operand
+                                .as_str()
+                                .ok_or("APT string operand missing")?
+                                .into(),
+                        )
+                    } else {
+                        pop(&mut stack)?
+                    };
                     let k = pop(&mut stack)?.text();
                     if (op == 0x3c && scope.local_definitions) || scope.locals.contains_key(&k) {
                         scope.locals.insert(k, v);
@@ -661,5 +826,205 @@ impl Vm {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Stub(Vec<String>);
+    impl Host for Stub {
+        fn trace(&mut self, message: &str) {
+            self.0.push(message.into());
+        }
+        fn call(&mut self, _: &mut Vm, _: usize, _: &str, _: Vec<Value>) -> Result<Value, String> {
+            Ok(Value::Undefined)
+        }
+    }
+    fn op(opcode: u8) -> Instruction {
+        ins(opcode, serde_json::Value::Null)
+    }
+    fn ins(opcode: u8, operand: serde_json::Value) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode,
+            next: 0,
+            operand,
+            target: None,
+            values: vec![],
+            body: vec![],
+            flags: 0,
+            parameters: vec![],
+            name: String::new(),
+        }
+    }
+    fn text(s: &str) -> Instruction {
+        ins(0xa1, serde_json::json!(s))
+    }
+    fn int(n: i32) -> Instruction {
+        ins(0xb7, serde_json::json!(n as u32))
+    }
+    fn run(code: Vec<Instruction>) -> (Vm, Stub, Result<Value, String>) {
+        let mut vm = Vm::new();
+        let mut host = Stub(vec![]);
+        let mut code = code;
+        code.push(op(0x3e));
+        let r = vm.run(&code, &mut host);
+        (vm, host, r)
+    }
+
+    #[test]
+    fn trace_pops_and_reports() {
+        let (_, host, r) = run(vec![int(7), text("hi"), op(0x26)]);
+        assert_eq!(r, Ok(Value::Number(7.0)));
+        assert_eq!(host.0, vec!["hi".to_string()]);
+    }
+    #[test]
+    fn random_is_in_range_deterministic_and_safe() {
+        let draw = |seed| {
+            let mut vm = Vm::new();
+            vm.seed_random(seed);
+            let code = [int(10), op(0x30), op(0x3e)];
+            (0..50)
+                .map(|_| vm.run(&code, &mut Stub(vec![])).unwrap().number())
+                .collect::<Vec<_>>()
+        };
+        let a = draw(5);
+        assert!(
+            a.iter()
+                .all(|v| (0.0..10.0).contains(v) && v.fract() == 0.0)
+        );
+        assert_eq!(a, draw(5));
+        assert_ne!(a, draw(6));
+        // Retail traps on 0; untrusted scripts get 0.
+        assert_eq!(run(vec![int(0), op(0x30)]).2, Ok(Value::Number(0.0)));
+        assert!(run(vec![op(0x30)]).2.is_err());
+    }
+    #[test]
+    fn to_number_follows_retail() {
+        let n = |v: Value| to_number(&v).number();
+        assert_eq!(n(Value::Text("42".into())), 42.0);
+        assert_eq!(n(Value::Text("0x1F".into())), 31.0);
+        assert_eq!(n(Value::Text("2.5".into())), 2.5);
+        assert_eq!(n(Value::Bool(true)), 1.0);
+        assert!(n(Value::Text("abc".into())).is_nan());
+        assert!(n(Value::Text(String::new())).is_nan());
+        assert!(n(Value::Undefined).is_nan());
+        let (_, _, r) = run(vec![text("12"), op(0x4a)]);
+        assert_eq!(r, Ok(Value::Number(12.0)));
+        assert_eq!(to_integer(&Value::Number(1e20)), i32::MAX);
+        assert_eq!(to_integer(&Value::Text(" -9x".into())), -9);
+    }
+    #[test]
+    fn init_array_orders_from_top() {
+        let (vm, _, r) = run(vec![text("c"), text("b"), text("a"), int(3), op(0x42)]);
+        let Ok(Value::Object(id)) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(vm.get(id, "0"), Value::Text("a".into()));
+        assert_eq!(vm.get(id, "2"), Value::Text("c".into()));
+        assert_eq!(vm.get(id, "length"), Value::Number(3.0));
+        assert!(run(vec![int(2), op(0x42)]).2.is_err());
+        assert!(run(vec![int(100_000), op(0x42)]).2.is_err());
+        let (vm, _, r) = run(vec![int(-4), op(0x42)]);
+        let Ok(Value::Object(id)) = r else { panic!() };
+        assert_eq!(vm.get(id, "length"), Value::Number(0.0));
+    }
+    #[test]
+    fn init_object_pairs_and_duplicates() {
+        // { x: 1, y: 2, x: 3 } pushed in source order: name, value pairs.
+        let (vm, _, r) = run(vec![
+            text("x"),
+            int(1),
+            text("y"),
+            int(2),
+            text("x"),
+            int(3),
+            int(3),
+            op(0x43),
+        ]);
+        let Ok(Value::Object(id)) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(vm.get(id, "y"), Value::Number(2.0));
+        // Retail sets from the top pair down, so the first-written pair wins.
+        assert_eq!(vm.get(id, "x"), Value::Number(1.0));
+        assert!(run(vec![int(1), int(1), op(0x43)]).2.is_err());
+    }
+    #[test]
+    fn get_string_member() {
+        let (_, _, r) = run(vec![
+            text("k"),
+            int(9),
+            int(1),
+            op(0x43),
+            ins(0xa5, serde_json::json!("k")),
+        ]);
+        assert_eq!(r, Ok(Value::Number(9.0)));
+        let (_, _, r) = run(vec![int(4), ins(0xa5, serde_json::json!("k"))]);
+        assert_eq!(r, Ok(Value::Undefined));
+        assert!(run(vec![ins(0xa5, serde_json::Value::Null)]).2.is_err());
+    }
+
+    /// Runs every action stream of the decoded retail front-end movies (local
+    /// data from `apt_actions_json.py`, never committed). Skips when absent.
+    #[test]
+    fn retail_menu_movies_use_no_unknown_opcode() {
+        let dir = std::env::var("SKATE3_FE_ACTIONS").unwrap_or_else(|_| {
+            crate::apt_imports::main_checkout()
+                .join(".local/research/fe-menus/actions")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("skipped: no decoded menu movies in {dir}");
+            return;
+        };
+        fn walk(code: &[Instruction], out: &mut std::collections::BTreeSet<u8>) {
+            for i in code {
+                out.insert(i.opcode);
+                walk(&i.body, out);
+            }
+        }
+        let mut movies = 0;
+        for entry in entries.flatten() {
+            let json: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap();
+            let streams: BTreeMap<String, Vec<Instruction>> =
+                serde_json::from_value(json["actions"].clone()).unwrap();
+            movies += 1;
+            let mut ops = std::collections::BTreeSet::new();
+            for (name, code) in &streams {
+                walk(code, &mut ops);
+                let mut vm = Vm::new();
+                let this = vm.object(ObjectKind::Plain);
+                vm.begin_update();
+                if let Err(e) = vm.run_on(this, code, &mut Stub(vec![])) {
+                    assert!(
+                        !e.contains("Unsupported APT opcode"),
+                        "{:?} {name}: {e}",
+                        entry.path()
+                    );
+                }
+            }
+            for op in ops {
+                let mut code = vec![int(0); 8];
+                code.push(ins(op, serde_json::json!(0)));
+                let mut vm = Vm::new();
+                vm.begin_update();
+                if let Err(e) = vm.run(&code, &mut Stub(vec![])) {
+                    assert!(
+                        !e.contains("Unsupported APT opcode"),
+                        "{:?}: {e}",
+                        entry.path()
+                    );
+                }
+            }
+            for label in json["labels"].as_array().into_iter().flatten() {
+                assert!(label.as_str().is_some_and(|s| !s.is_empty()));
+            }
+        }
+        eprintln!("checked {movies} decoded menu movies");
+    }
+}
+
+#[cfg(test)]
 #[path = "apt_vm_tests.rs"]
-mod tests;
+mod construction_tests;

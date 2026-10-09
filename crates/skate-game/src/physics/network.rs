@@ -339,7 +339,7 @@ impl Proxies {
                 collision_group: template.collision_group,
                 body: CollisionBody::Attached(base + i),
                 primitive: transform(template.primitive, matrix(body_pose(b))),
-                linear_velocity: b.rates.linear_velocity,
+                motion: skate_core::physics::board_world::VolumeMotion::of(&b.rates),
                 material: template.material,
             });
         }

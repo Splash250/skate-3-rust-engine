@@ -178,6 +178,14 @@ fn a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor()
         contact.body_b.inverse_mass = 1.0 / 1400.0;
         contact.body_b.linear_velocity = [14.0, 0.0, 0.0, 0.0];
         let mut collision = SkeletonCollisionFeedback::new(settings());
+        if offboard {
+            // Floor-level reports are deliberately suppressed while offboard.
+            collision.update(&input, &[contact]);
+            assert!(!collision.flags.group_8 && !collision.flags.has_impulse);
+            assert_eq!(collision.maximum_group_8_force, 0.0);
+        }
+        // A body impact must be above the offboard ground-filter threshold.
+        contact.point = [0.0, 1.0, 0.0, 0.0];
         collision.update(&input, &[contact]);
         assert!(collision.flags.group_8 && collision.flags.has_impulse);
         assert!((collision.maximum_group_8_force - 14.0).abs() < 1e-5);

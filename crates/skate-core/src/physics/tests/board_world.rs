@@ -143,11 +143,20 @@ fn approaching_velocity_padding_and_world_fatness_control_real_contact_acceptanc
     assert_eq!(world.query(&board, settings).len(), 4);
     settings.query.maximum_separating_distance = 0.004;
     assert!(world.query(&board, settings).is_empty());
+    // Still approaching, but the limit alone (0.004) no longer covers the
+    // 0.01 gap: the volume padding (+112) and the triangle fatness must.
+    settings.query.volume_padding = 0.02;
+    assert_eq!(world.query(&board, settings).len(), 4);
+    // 8277BC58 BE94..BF38 tests the triangle's bare vertex box against the
+    // 82777E70 volume box (shape bounds swept along the velocity, no +112
+    // padding): a rising volume 0.01 above the plane is culled first.
     for body in board.bodies_mut() {
         body.rates.linear_velocity.y = 1.0;
     }
-    settings.query.volume_padding = 0.02;
-    assert_eq!(world.query(&board, settings).len(), 4);
+    assert!(world.query(&board, settings).is_empty());
+    for body in board.bodies_mut() {
+        body.rates.linear_velocity.y = -1.0;
+    }
     settings.query.volume_padding = 0.0;
     let mut thick = triangle();
     thick.triangle.fatness = 0.02;
@@ -236,7 +245,10 @@ fn attached_volume_contact_reaches_its_actual_solver_body() {
             center: attached.rates.position,
             radius: RETAIL_WHEEL_RADIUS,
         }),
-        linear_velocity: attached.rates.linear_velocity,
+        motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: attached.rates.linear_velocity,
+            ..Default::default()
+        },
         material: material(0.0, 0.0, 0.0),
     };
     let mut world = BoardWorld::new(vec![triangle(), triangle()]);

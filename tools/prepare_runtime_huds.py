@@ -1,4 +1,4 @@
-"""Export the two HUDs used by the engine, as one automatic setup stage.
+"""Export the two HUDs and the front-end menu movies used by the engine, as one automatic setup stage.
 
 Only runtime manifests and referenced RGBA payloads enter the installation.
 Extraction intermediates stay in setup's conversion workspace and are removed
@@ -45,6 +45,21 @@ def prepare_in_workspace(game, assets, work):
             continue
         files.update(install(assets,None if is_marker else source,source if is_marker else None,replace=True))
         availability.unlink(missing_ok=True)
+    # Front-end menu movies (APT) for the retail menus, same disc archives and fonts.
+    import prepare_menu_movies as menus
+    availability=assets/'private'/'menu-movies-availability.json'
+    try:
+        menus.prepare(game, work/'menus', assets/'private/stock/skater-collections.json')
+        files.update(menus.install(assets, work/'menus'/'runtime'))
+        availability.unlink(missing_ok=True)
+    except CONTENT_ERRORS as error:
+        try:
+            menus.runtime_files(assets/'private'/'menu-movies')
+            retained=True
+        except CONTENT_ERRORS:
+            retained=False
+            (assets/'private'/'menu-movies'/'manifest.json').unlink(missing_ok=True)
+        note(availability,'menu-movies',error,retained)
     print(f'Original runtime HUDs ready: {len(files)} verified files', flush=True)
     return files
 
