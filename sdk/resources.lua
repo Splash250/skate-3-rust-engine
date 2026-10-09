@@ -145,3 +145,11 @@ function resource.settings.all() end
 ---@param permission string Existing account permission name (1–64 ASCII name characters).
 ---@return boolean
 function resource.authorized(sender,permission) end
+
+---Server-owned live-map settings and layers. Requires resource.map.
+resource.map = {}
+---@param snapshot table See MAP.md; server-only publication.
+function resource.map.set(snapshot) end
+function resource.map.clear() end
+---@return table|nil
+function resource.map.get() end

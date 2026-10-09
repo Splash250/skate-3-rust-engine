@@ -64,9 +64,11 @@ fn voice_result_retirement_rejects_drained_commands_and_dependent_batches() {
             asset_root: root.0.join("assets"),
             verification_capture: None,
             map: None,
-            map_path: None,
+            map_path: None, locations: None,
             difficulty: Default::default(),
             check_assets: false,
+            validate_maps: false,
+            mute: false,
             start_paused: false,
             multiplayer: crate::multiplayer::Options {
                 connect: Some("127.0.0.1:31030".parse().unwrap()),

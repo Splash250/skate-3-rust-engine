@@ -87,7 +87,7 @@ mod tests {
         std::fs::write(&path, b"hash-only fixture, deliberately not a SKATE header").unwrap();
         let map = Map::File(path.clone());
         assert!(spawn(&map).is_err());
-        let host = crate::Host::bind(crate::Options {
+        let host = crate::Host::bind(crate::Options { locations:None,
             bind: "127.0.0.1:0".parse().unwrap(), session: 91, max_players: 2,
             map, resources: None, accounts: None,
         operations: None,

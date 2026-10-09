@@ -1,6 +1,8 @@
 //! Transport-independent, capability-granted Lua resources. The host supplies
 //! connection identities; scripts can neither select their owner nor generation.
 use crate::{Command, SnapshotFields, vm::Vm};
+#[path="resource_map.rs"] mod map_api;
+#[path="resource_locations.rs"] mod locations_api;
 pub use crate::runtime_metrics::RuntimeMetrics;
 pub use crate::runtime_profile::{ProfileSnapshot,ProfileSpan,ProfileSummary,ProfileScope};
 #[path="resource_settings.rs"]
@@ -196,6 +198,8 @@ struct Shared {
     output_bytes: usize,
     events: VecDeque<(String, u64, String, Value, std::time::Instant)>,
     states: BTreeMap<(String, String), BTreeMap<String, Value>>,
+    location_publications: BTreeMap<String, VecDeque<std::time::Instant>>,
+    map_publications: BTreeMap<String, VecDeque<std::time::Instant>>,
     settings: BTreeMap<String, BTreeMap<String, Value>>,
     exports: BTreeMap<(String, String), Export>,
     commands: BTreeMap<String, RegisteredCommand>,
@@ -262,6 +266,10 @@ impl Bootstrap {
             );
         } else if kind.starts_with("physics_") {
             "engine.physics"
+        } else if kind.starts_with("locations_") {
+            "engine.locations"
+        } else if kind.starts_with("map_") {
+            "engine.map"
         } else if kind.starts_with("graphics_") {
             "engine.graphics"
         } else if kind.starts_with("camera_") {
@@ -476,7 +484,7 @@ impl Bootstrap {
         state.set("set",lua.create_function(move |lua,(key,value,scope):(String,mlua::Value,mlua::Value)| {
             if ctx.side!=Side::Server {return Err(lua_error("replicated state is owned by the server"));}
             ctx.require("resource.state")?;ctx.action()?;valid_name(&key).map_err(lua_error)?;
-            if key=="__settings" {return Err(lua_error("reserved host settings state key"));}
+            if key=="__settings" || key==crate::map::STATE_KEY || key=="__locations_v1" {return Err(lua_error("reserved host state key"));}
             let (scope_key,scope)=normalize_scope(bounded_value(lua,scope,128)?).map_err(lua_error)?;
             let value=bounded_value(lua,value,ctx.limits.max_payload_bytes)?;
             let output=Output::State{resource:ctx.installed.manifest.id.clone(),generation:ctx.installed.generation,key:key.clone(),value:value.clone(),scope};
@@ -488,6 +496,8 @@ impl Bootstrap {
             shared.push_output(output,&ctx.limits)
         })?)?;
         api.set("state", state)?;
+        self.install_map(lua, &api)?;
+        self.install_locations(lua, &api)?;
         self.install_storage(lua, &api)?;
         let settings=lua.create_table()?;
         let ctx=self.clone();
@@ -1388,6 +1398,8 @@ impl Host {
             .filter_map(|key| shared.commands.remove(&key))
             .collect::<Vec<_>>();
         shared.states.retain(|(owner,_),_|owner!=id);
+        shared.map_publications.remove(id);
+        shared.location_publications.remove(id);
         shared.events.retain(|(owner, _, _, _, _)| owner != id);
         shared.outputs.retain(|output| match output {
             Output::Event { resource, .. }
@@ -1765,6 +1777,8 @@ fn supported_capability(cap: &str) -> bool {
             | "resource.events"
             | "resource.network"
             | "resource.state"
+            | "resource.locations"
+            | "resource.map"
             | "resource.settings"
             | "resource.storage"
             | "resource.commands"
@@ -1777,6 +1791,8 @@ fn supported_capability(cap: &str) -> bool {
             | "resource.database"
             | "resource.http"
             | "engine.ui"
+            | "engine.locations"
+            | "engine.map"
             | "engine.audio"
             | "engine.voice"
             | "engine.photos"

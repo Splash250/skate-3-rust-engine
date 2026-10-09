@@ -675,3 +675,16 @@ function sdk.graphs.set_enabled(graph,target,index,enabled) submit{kind="graph_g
 
 function sdk.rig.configure_part(index,options) submit{kind="rig_part",index=index,options=options} end
 function sdk.rig.reset_part(index) sdk.rig.configure_part(index,nil) end
+
+-- Native live-map layers, owned by this mod and never replicated by these calls.
+sdk.map = {version=1}
+function sdk.map.set(snapshot) submit{kind="map_snapshot_set",snapshot=snapshot} end
+function sdk.map.clear() submit{kind="map_snapshot_clear"} end
+function sdk.map.status() return sdk._map_status() end
+
+-- Interior geometry and travel remain native engine services.
+sdk.locations = {version=1}
+function sdk.locations.load(catalog) submit{kind="locations_load",catalog=catalog} end
+function sdk.locations.set(snapshot) submit{kind="locations_set",snapshot=snapshot} end
+function sdk.locations.clear() submit{kind="locations_clear"} end
+function sdk.locations.status() return sdk._locations_status() end

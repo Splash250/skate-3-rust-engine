@@ -39,6 +39,7 @@ fn installed(
             settings: Default::default(),
             requires_features: vec![],
             world: None,
+            locations: None,
             format: 1,
             api: 1,
             id: id.into(),
@@ -1588,4 +1589,102 @@ fn resource_settings_failure_preserves_durable_update_and_grants_are_enforced() 
     let app=with_settings(installed(&temp,"notify_fail","return {on_settings=function()error('callback rejected')end}",&[],&["resource.settings"]));h.install(vec![app.clone()]).unwrap();h.start_all().unwrap();
     let result=h.set_setting("notify_fail","round",json!(77)).unwrap();assert!(result.applied);assert!(result.notification_error.is_some());assert!(!h.running("notify_fail"));
     let mut restart=host(&temp,Side::Server,"settings-failure");restart.install(vec![app]).unwrap();assert_eq!(restart.settings_snapshot("notify_fail").unwrap()["round"].value,json!(77));
+}
+
+#[test]
+fn resource_map_state_is_server_owned_validated_and_reserved() {
+    let temp=Temp::new();
+    let script=r#"
+      return {on_load=function()
+        resource.map.set({layers={{key='spots',items={{kind='marker',key='a',position={1,2,3},label='Spot'}}}}})
+        local bad={layers={ {key='bad', items={ {kind='marker',key='a',position={100001,0,0}} } } }}
+        local ok=pcall(resource.map.set,bad)
+        assert(not ok)
+        assert(not pcall(resource.state.set,'__map_v1',{}))
+      end}
+    "#;
+    let mut h=host(&temp,Side::Server,"map");
+    h.install(vec![installed(&temp,"map",script,&[],&["resource.map","resource.state"])]).unwrap();
+    h.start_all().unwrap();
+    assert!(h.running("map"),"{:?}",h.diagnostics);
+    let value=h.state("map","__map_v1").unwrap();
+    assert_eq!(value["layers"][0]["key"],"spots");
+    assert_eq!(h.drain_outputs().len(),1);
+    h.stop("map").unwrap(); assert!(h.state("map","__map_v1").is_none());
+    let mut client=host(&temp,Side::Client,"map-client");
+    client.install(vec![installed(&temp,"map",r#"return {on_load=function() assert(not pcall(resource.map.set,{layers={}})) end}"#,&[],&["resource.map"])]).unwrap();
+    client.start_all().unwrap(); assert!(client.running("map")); assert!(client.drain_outputs().is_empty());
+}
+
+#[test]
+fn map_command_client_layers_require_grant_and_produce_valid_native_commands() {
+    let temp=Temp::new();
+    let script=r#"return {on_load=function()
+      sdk.map.set({layers={{key='local',items={{kind='label',key='x',position={0,0,0},text='Private'}}}}})
+      assert(type(sdk.map.status())=='table')
+    end}"#;
+    let mut h=host(&temp,Side::Client,"local-map");
+    h.install(vec![installed(&temp,"map",script,&[],&["engine.map"])]).unwrap();
+    h.start_all().unwrap(); assert!(h.running("map"),"{:?}",h.diagnostics);
+    let commands=h.drain_commands(); assert_eq!(commands.len(),1);
+    assert!(matches!(&commands[0].1, skate_mods::Command::MapSnapshotSet { snapshot } if snapshot.layers[0].key=="local"));
+    let mut denied=host(&temp,Side::Client,"denied-map");
+    denied.install(vec![installed(&temp,"map",script,&[],&[])]).unwrap();
+    let _=denied.start_all(); assert!(!denied.running("map")); assert!(denied.drain_commands().is_empty());
+}
+
+#[test]
+fn resource_map_throttle_retains_the_fifth_valid_snapshot() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"map-throttle");
+    let script=r#"return {on_load=function()
+      for i=1,5 do resource.map.set({settings={title=tostring(i)},layers={}}) end
+      assert(not pcall(resource.map.set,{settings={title='six'},layers={}}))
+      assert(resource.map.get().settings.title=='5')
+    end}"#;
+    h.install(vec![installed(&temp,"map",script,&[],&["resource.map"])]).unwrap();h.start_all().unwrap();
+    assert_eq!(h.state("map","__map_v1").unwrap()["settings"]["title"],"5");assert_eq!(h.drain_outputs().len(),5);
+    let mut denied=host(&temp,Side::Server,"map-denied");
+    denied.install(vec![installed(&temp,"other",r#"return {on_load=function() assert(not pcall(resource.map.set,{layers={}})) end}"#,&[],&[])]).unwrap();
+    denied.start_all().unwrap();assert!(denied.running("other"));assert!(denied.drain_outputs().is_empty());
+}
+
+#[test]
+fn resource_map_example_runs_real_update_payload_and_publishes_route() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"map-example");
+    h.install(vec![installed(&temp,"map",include_str!("../../../resources/programmable-map/server.lua"),&[],&["resource.map"])]).unwrap();
+    h.start_all().unwrap();h.tick(2.1,json!({"players":[{"id":"2","position":[0,45,0]}]}));
+    assert!(h.running("map"),"{:?}",h.diagnostics);
+    assert_eq!(h.state("map","__map_v1").unwrap()["layers"][0]["items"].as_array().unwrap().len(),3);
+}
+
+#[test]
+fn resource_map_private_example_toggles_from_client_keys() {
+    let temp = Temp::new();
+    let mut h = host(&temp, Side::Client, "private-map-example");
+    h.install(vec![installed(&temp, "map", include_str!("../../../resources/programmable-map/client.lua"), &[], &["engine.map"])]).unwrap();
+    h.start_all().unwrap();
+    h.tick(0.016,json!({"keys":{"KeyK":true},"player":{"position":[0,45,0]}}));
+    assert!(h.running("map"),"{:?}",h.diagnostics);
+    let cmds = h.drain_commands();
+    assert!(matches!(&cmds[..], [(_, skate_mods::Command::MapSnapshotSet { snapshot })] if snapshot.layers[0].items.len()==1));
+    h.tick(0.016,json!({"keys":{},"player":{"position":[0,45,0]}}));
+    h.tick(0.016,json!({"keys":{"KeyK":true},"player":{"position":[0,45,0]}}));
+    assert!(matches!(&h.drain_commands()[..],[(_, skate_mods::Command::MapSnapshotClear {})]));
+}
+
+#[test]
+fn resource_locations_are_owned_bounded_and_reserved() {
+    let temp=Temp::new();let mut h=host(&temp,Side::Server,"locations");
+    let script=r#"return {on_load=function()
+      local s={generation='1',locations={{key='entry',label='Apartment',enabled=true,style={color={1,0.8,0.15},opacity=0.35,radius=1,height=2}}}}
+      resource.locations.set(s)
+      assert(resource.locations.get().locations[1].label=='Apartment')
+      s.locations[1].style.radius=0
+      assert(not pcall(resource.locations.set,s))
+      assert(resource.locations.get().locations[1].style.radius==1)
+      assert(not pcall(resource.state.set,'__locations_v1',{}))
+    end}"#;
+    h.install(vec![installed(&temp,"rooms",script,&[],&["resource.locations"])]).unwrap();
+    h.start_all().unwrap();assert!(h.running("rooms"),"{:?}",h.diagnostics);
+    assert_eq!(h.state("rooms","__locations_v1").unwrap()["locations"][0]["label"],"Apartment");
 }

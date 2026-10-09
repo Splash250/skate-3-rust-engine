@@ -257,6 +257,14 @@ impl PublishedSet {
                 return Err(Error("published blob content mismatch".into()));
             }
         }
+        for resource in &self.set.resources {
+            if let Some(path) = &resource.manifest.locations {
+                let file = resource.files.get(path).ok_or_else(|| Error("missing location catalog".into()))?;
+                let bytes = self.blobs.get(&file.digest).ok_or_else(|| Error("missing location catalog blob".into()))?;
+                let catalog = crate::locations::Catalog::parse(bytes).map_err(Error)?;
+                catalog.validate_files(&resource.manifest.files).map_err(Error)?;
+            }
+        }
         Ok(())
     }
 }
@@ -346,4 +354,16 @@ pub fn build_set_with_limits(
     let published = PublishedSet { set, blobs };
     published.validate()?;
     Ok(published)
+}
+
+impl PublishedSet {
+    /// Build a native provider through the same manifest, digest and budget checks
+    /// as disk-backed resources. No executable script or privileged grant is implied.
+    pub fn from_memory(manifest: Manifest, generation:u64, files:BTreeMap<String,Vec<u8>>) -> Result<Self> {
+        manifest.validate()?;
+        let mut blobs=BTreeMap::new();let mut index=BTreeMap::new();
+        for (path,bytes) in files {crate::validate_path(&path)?;let digest=digest_bytes(&bytes);index.insert(path,FileDigest{digest:digest.clone(),size:bytes.len() as u64});blobs.insert(digest,bytes);}
+        let content_digest=resource_digest(&manifest,&index)?;
+        Self::from_resources(vec![Resource{manifest,files:index,generation,content_digest}],blobs)
+    }
 }

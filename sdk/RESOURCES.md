@@ -740,3 +740,15 @@ check its own permission. Recheck before returning results, including after an
 export or asynchronous completion, and scope results
 to that same actor and request generation. See the shipped
 `resources/call-diagnostics` dashboard for separate read/test permissions.
+
+## Programmable live map
+
+See [MAP.md](MAP.md) for the native 3D map, Lua vector layers, server/client sides, grants, limits, and lifecycle.
+
+## Interior catalogs
+
+The optional manifest `locations` field names public catalog JSON; list its GLB
+and authored collision shell in `files`. Native clients mount this terrain before
+resource readiness. `resource.locations` grants server publication of bounded
+marker settings; `engine.locations` grants native client status/commands.
+See [LOCATIONS.md](LOCATIONS.md) for ownership, generation and loading rules.

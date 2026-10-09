@@ -13,6 +13,7 @@ pub mod scene;
 mod assets;
 mod lua_list;
 pub mod model;
+pub mod map;
 mod query;
 mod schema;
 mod vm;

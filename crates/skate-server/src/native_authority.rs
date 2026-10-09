@@ -61,6 +61,7 @@ impl Config {
 struct World {
     revision: String,
     bytes: Arc<Vec<u8>>,
+    catalogs:Vec<skate_resources::locations::PreparedCatalog>,
     spawn: [f32; 3],
     heading: f32,
 }
@@ -196,8 +197,18 @@ fn worker_io(
     if cancelled.load(Ordering::Acquire) {
         return Ok(());
     }
+    let locations=scratch.0.join("locations");std::fs::create_dir_all(&locations).map_err(|e|e.to_string())?;
+    let mut index=Vec::new();
+    for (n,p) in world.catalogs.iter().enumerate(){
+        let root=locations.join(n.to_string());std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
+        for (path,bytes) in &p.files {let target=root.join(path);if let Some(parent)=target.parent(){std::fs::create_dir_all(parent).map_err(|e|e.to_string())?;}std::fs::write(target,bytes).map_err(|e|e.to_string())?;}
+        std::fs::write(root.join("catalog.json"),serde_json::to_vec(&p.catalog).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;index.push(n.to_string());
+    }
+    std::fs::write(locations.join("index.json"),serde_json::to_vec(&index).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     let mut child = Command::new(&config.executable)
         .arg("--native-authority")
+        .arg("--locations")
+        .arg(&locations)
         .arg("--assets")
         .arg(&config.assets)
         .arg("--map")
@@ -295,7 +306,7 @@ impl NativeAuthority {
         if self
             .world
             .as_ref()
-            .is_some_and(|old| old.revision == file.digest)
+            .is_some_and(|old| old.revision == if published.set.resources.iter().any(|r|r.manifest.locations.is_some()){published.set.revision.clone()}else{file.digest.clone()})
         {
             return Ok(());
         }
@@ -303,7 +314,8 @@ impl NativeAuthority {
         let terrain =
             crate::world::Terrain::from_published(published)?.ok_or("Native world unavailable")?;
         self.world = Some(World {
-            revision: file.digest.clone(),
+            revision: terrain.revision.clone(),
+            catalogs:{let mut resources=published.set.resources.iter().collect::<Vec<_>>();resources.sort_by_key(|r| &r.manifest.id);resources.into_iter().filter_map(|r|skate_resources::locations::PreparedCatalog::from_resource(r,&published.blobs).transpose()).collect::<Result<_,_>>()?},
             bytes: Arc::new(
                 published
                     .blobs
@@ -685,6 +697,7 @@ mod tests {
             },
             World {
                 revision: "fixture".into(),
+                catalogs:vec![],
                 bytes: Arc::new(vec![]),
                 spawn: [0.; 3],
                 heading: 0.,

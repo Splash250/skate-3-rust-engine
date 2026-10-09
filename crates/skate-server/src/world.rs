@@ -28,7 +28,14 @@ impl Terrain {
             let far=skate_data::skate_map::SkateMap::parse_budgeted(bytes,&mut remaining,true)?;
             skate_data::resource_world::validate_render(&far)?;
         }
-        Ok(Some(Self {revision:file.digest.clone(),spawn:map.spawn,heading:map.heading,
-            triangles:Arc::new(map.geometry.collision.into_iter().map(|t|t.points).collect())}))
+        let mut triangles:Vec<_>=map.geometry.collision.into_iter().map(|t|t.points).collect();
+        let mut has_locations=false;
+        for resource in &published.set.resources {
+            if let Some(catalog)=skate_resources::locations::PreparedCatalog::from_resource(resource,&published.blobs)? {
+                has_locations=true;
+                for i in &catalog.catalog.interiors {triangles.extend(skate_data::location_collision::decode(&catalog.files[&i.collision],i.transform)?);}
+            }
+        }
+        Ok(Some(Self {revision:if has_locations{published.set.revision.clone()}else{file.digest.clone()},spawn:map.spawn,heading:map.heading,triangles:Arc::new(triangles)}))
     }
 }

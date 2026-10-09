@@ -208,7 +208,7 @@ fn shipped_calls_create_private_channels_only_after_acceptance_and_route_encoded
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: 16,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(temp.0.join("server.json")),
         accounts: Some(temp.0.join("accounts.json")),
         operations: None,

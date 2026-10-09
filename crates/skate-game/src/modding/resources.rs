@@ -52,6 +52,7 @@ pub(super) struct ClientResources {
     diagnostic_sample: Option<std::time::Instant>,
     pending: Option<Download>,
     mounting: Option<DownloadReport>,
+    catalog_revisions: BTreeMap<String, String>,
     active: Option<Active>,
     initializing: Option<Initializing>,
     deferred: Vec<skate_net::resources::Message>,
@@ -82,6 +83,7 @@ impl ClientResources {
                 .then(std::time::Instant::now),
             pending: None,
             mounting: None,
+            catalog_revisions: BTreeMap::new(),
             active: None,
             initializing: None,
             deferred: Vec::new(),
@@ -120,7 +122,7 @@ fn safe_default(capability: &str) -> bool {
     capability.starts_with("resource.")
         || matches!(
             capability,
-            "engine.ui" | "engine.audio" | "engine.graphics" | "engine.inspect" | "engine.voice"
+            "engine.map" | "engine.ui" | "engine.audio" | "engine.graphics" | "engine.inspect" | "engine.voice"
         )
 }
 fn grants_for(set: &ResourceSet, source: &str, policy: &Policy) -> Result<Grants, String> {
@@ -179,6 +181,7 @@ fn retire(world: &mut World, mods: &mut Mods, client: &mut ClientResources, unpi
     client.cancel();
     if let Err(error)=super::resource_world::clear(world) {warn!("Resource native rail cleanup: {error}");}
     client.mounting=None;
+    client.catalog_revisions.clear();
     client.initializing=None;
     client.deferred.clear();
     crate::map_transition::unmount_resource(world);
@@ -345,6 +348,7 @@ fn poll_inner(
             .unwrap_or_else(|_| Err("resource download worker failed".to_string()));
         if current {
             let report = result?;
+            client.catalog_revisions.clear();
             client.mounting=Some(report);
         }
     }
@@ -352,7 +356,7 @@ fn poll_inner(
         return Ok(());
     }
     if let Some(report)=&client.mounting {
-        let ready=if let Some(resource)=report.set.resources.iter().find(|r|r.manifest.world.is_some()) {
+        let mut ready=if let Some(resource)=report.set.resources.iter().find(|r|r.manifest.world.is_some()) {
             let spec=resource.manifest.world.as_ref().unwrap();
             let root=report.roots.get(&resource.manifest.id).ok_or("Required world root is absent")?;
             let digest=&resource.files.get(&spec.map).ok_or("Required world file is absent")?.digest;
@@ -362,6 +366,25 @@ fn poll_inner(
                 spec.max_decoded_bytes as usize,spec.lods.iter().map(|lod|(root.join(&lod.map),lod.distance)).collect(),
                 crate::map_render::streaming::Options::read(&client.root)?)?
         } else {crate::map_transition::resource_world_idle(world)?};
+        if ready {
+            let allowed = report.set.resources.iter().filter(|r| r.manifest.locations.is_some()).map(|r| r.manifest.id.as_str()).collect::<BTreeSet<_>>();
+            ready &= crate::locations::retain_admitted(world, &allowed);
+            for resource in &report.set.resources {
+                if let Some(path)=&resource.manifest.locations {
+                    if let Some(revision)=client.catalog_revisions.get(&resource.manifest.id) {
+                        if let Some(loaded)=crate::locations::load_status(world,&resource.manifest.id,resource.generation,revision){ready &= loaded;continue;}
+                    }
+                    let root=report.roots.get(&resource.manifest.id).ok_or("Interior resource root missing")?;
+                    let package=skate_resources::locations::PreparedCatalog::read(root,path)?;
+                    let revision=package.revision.clone();
+                    match crate::locations::load(world,&resource.manifest.id,resource.generation,package) {
+                        Ok(value)=>{client.catalog_revisions.insert(resource.manifest.id.clone(),revision);ready &= value;},
+                        Err(error) if error=="Interior owner is still retiring"=>ready=false,
+                        Err(error)=>return Err(error),
+                    }
+                }
+            }
+        }
         if ready {let report=client.mounting.take().unwrap();activate(world,mods,client,report)?;}
     }
     if !client.channel.ready() && client.pending.is_none() && client.mounting.is_none() {
@@ -428,6 +451,26 @@ fn poll_inner(
                     && host.running(&message.resource) && host.generation(&message.resource)==Some(message.generation);
                 if !allowed {return Err("Native rail state requires a live resource.world grant".into());}
                 super::resource_world::apply(world,message.resource.clone(),message.generation,message.value.clone())?;
+            }
+            if message.kind==Kind::State && message.name==skate_mods::map::STATE_KEY {
+                let allowed=message.scope==Default::default() && client.active.as_ref().is_some_and(|active|active.grants.get(&message.resource)
+                    .is_some_and(|grants|grants.iter().any(|cap|cap=="resource.map")))
+                    && host.running(&message.resource) && host.generation(&message.resource)==Some(message.generation);
+                if allowed {
+                    if let Err(error)=crate::map_view::set_server(world,&message.resource,message.generation,message.value.clone()) {
+                        warn!("Map layer update rejected for {}: {}",message.resource,error);
+                        continue;
+                    }
+                } else { warn!("Map layer update rejected: resource.map grant or generation unavailable"); continue; }
+            }
+            if message.kind==Kind::Event && message.name=="location_result" {
+                crate::locations::approval(world,&message.resource,message.generation,&message.value);
+                continue;
+            }
+            if message.kind==Kind::State && message.name=="__locations_v1" {
+                let allowed=message.scope==Default::default() && client.active.as_ref().is_some_and(|a|a.grants.get(&message.resource).is_some_and(|g|g.iter().any(|c|c=="resource.locations"))) && host.running(&message.resource) && host.generation(&message.resource)==Some(message.generation);
+                if !allowed {return Err("Location state requires a live resource.locations grant".into());}
+                if message.value.is_null(){crate::locations::clear(world,&message.resource);}else{crate::locations::set(world,&message.resource,skate_resources::locations::LocationSnapshot::parse(message.value.clone())?)?;}
             }
             match message.kind {
                 Kind::Event => host.receive(
@@ -830,9 +873,11 @@ mod tests {
             asset_root: root.join("assets"),
             verification_capture: None,
             map: None,
-            map_path: None,
+            map_path: None, locations: None,
             difficulty: Default::default(),
             check_assets: false,
+            validate_maps: false,
+            mute: false,
             start_paused: false,
             multiplayer: crate::multiplayer::Options {
                 connect: Some("127.0.0.1:31030".parse().unwrap()),
@@ -970,4 +1015,16 @@ mod tests {
         }
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+pub(crate) fn location_event(world:&mut World,owner:&str,generation:u64,name:&str,value:serde_json::Value)->Result<(),String>{
+    world.resource_scope(|world,mut client:Mut<ClientResources>|{
+        if !client.channel.ready()||client.initializing.is_some(){return Err("Interior resources are not admitted".into());}
+        if !client.active.as_ref().is_some_and(|a|a.set.resources.iter().any(|r|r.manifest.id==owner&&r.generation==generation&&r.manifest.locations.is_some())){return Err("Interior catalog is not in the admitted set".into());}
+        client.channel.emit(owner,generation,name,value)?;publish(world,&client)
+    })
+}
+pub(crate) fn location_world_revision(world:&World)->Option<String>{
+    let active=world.get_resource::<ClientResources>()?.active.as_ref()?;
+    active.set.resources.iter().any(|r|r.manifest.locations.is_some()).then(||active.set.revision.clone())
 }

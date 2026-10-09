@@ -131,16 +131,17 @@ pub trait ExternalQueries: Send + Sync {
 
 /// World geometry remains in supplied order. Each query reuses output storage;
 /// the returned contacts are valid until the next mutable call.
+#[derive(Clone)]
 pub struct BoardWorld {
-    triangles: Vec<WorldTriangle>,
+    triangles: std::sync::Arc<Vec<WorldTriangle>>,
     external: Option<std::sync::Arc<dyn ExternalQueries>>,
-    triangle_bounds: Vec<Bounds>,
-    query_metadata: Option<QueryMetadata>,
-    query_index: query_index::QueryIndex,
+    triangle_bounds: std::sync::Arc<Vec<Bounds>>,
+    query_metadata: Option<std::sync::Arc<QueryMetadata>>,
+    query_index: std::sync::Arc<query_index::QueryIndex>,
     maximum_fatness: f32,
     maximum_triangle_margin: f32,
     /// Indices of water triangles, for `water_surface_at`.
-    water: Vec<usize>,
+    water: std::sync::Arc<Vec<usize>>,
     contacts: Vec<BoardCollision>,
     buffer: ContactBuffer,
 }
@@ -181,12 +182,12 @@ impl BoardWorld {
             .filter(|&i| is_water_tag(triangles[i].tag))
             .collect();
         Self {
-            water,
-            triangles,
+            water: std::sync::Arc::new(water),
+            triangles: std::sync::Arc::new(triangles),
             external: None,
-            triangle_bounds,
+            triangle_bounds: std::sync::Arc::new(triangle_bounds),
             query_metadata: None,
-            query_index: query_index::QueryIndex::default(),
+            query_index: std::sync::Arc::new(query_index::QueryIndex::default()),
             maximum_fatness,
             maximum_triangle_margin,
             contacts: Vec::new(),
@@ -218,14 +219,33 @@ impl BoardWorld {
     ) -> Result<Self, &'static str> {
         metadata.validate(&triangles)?;
         let mut world = Self::new(triangles);
-        world.query_index = query_index::QueryIndex::new(&metadata.meshes);
-        world.query_metadata = Some(metadata);
+        world.query_index = std::sync::Arc::new(query_index::QueryIndex::new(&metadata.meshes));
+        world.query_metadata = Some(std::sync::Arc::new(metadata));
         Ok(world)
+    }
+
+    /// Rebuild static geometry while retaining the host's moving-query provider.
+    /// Immutable base geometry remains usable by the live simulation while a
+    /// background loader builds the replacement world.
+    pub fn rebuild_static(
+        &self,
+        triangles: Vec<WorldTriangle>,
+        metadata: QueryMetadata,
+    ) -> Result<Self, &'static str> {
+        let mut replacement = Self::with_query_metadata(triangles, metadata)?;
+        replacement.external = self.external.clone();
+        Ok(replacement)
+    }
+
+    /// Publication keeps the live moving-query provider, which may have changed
+    /// while a static replacement was being prepared on another thread.
+    pub fn inherit_external_queries(&mut self, live: &Self) {
+        self.external = live.external.clone();
     }
 
     pub fn query_metadata(&self) -> Result<&QueryMetadata, &'static str> {
         self.query_metadata
-            .as_ref()
+            .as_deref()
             .ok_or("Canonical world has no authored query metadata")
     }
 
@@ -439,7 +459,7 @@ impl BoardWorld {
     /// surface at or above the point wins.
     pub fn water_surface_at(&self, point: Vector3, above: f32, max_depth: f32) -> Option<f32> {
         let mut best: Option<f32> = None;
-        for &index in &self.water {
+        for &index in self.water.iter() {
             let [a, b, c] = self.triangles[index].triangle.vertices;
             let det = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z);
             if det.abs() < 1e-8 {

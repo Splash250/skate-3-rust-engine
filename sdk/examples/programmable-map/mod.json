@@ -1,0 +1,1 @@
+{"id":"examples.programmable-map","api":2,"name":"Private map marker","version":"1.0.0","author":"Skate3clone","description":"Adds a local-only meeting marker to the native live map.","entry":"main.lua","enabled_by_default":false}

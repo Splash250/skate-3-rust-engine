@@ -1,3 +1,4 @@
+mod locations;
 mod frame_timing;
 mod animation;
 mod crash_report;
@@ -21,6 +22,7 @@ mod setup;
 mod updater;
 mod map_library;
 mod map_render;
+mod map_view;
 mod map_transition;
 mod difficulty;
 mod custom_difficulty;

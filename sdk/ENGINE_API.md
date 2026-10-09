@@ -341,3 +341,14 @@ Game rules and label aliases remain in Lua. The existing localized
 `landed_trick` remains available for display.
 
 See [GENERAL_API.md](GENERAL_API.md) for native bodies, joint and part overrides, contact lifecycle, input overrides, graph access and acknowledged commands.
+
+## Programmable live map
+
+See [MAP.md](MAP.md) for the native 3D map, Lua vector layers, server/client sides, grants, limits, and lifecycle.
+
+## Native interiors
+
+`sdk.locations.load/set/clear/status` expose the engine-owned location service.
+Catalogs supply immutable models, matching terrain and destinations; the engine
+owns preparation, marker intersection, floor selection, travel and safe unload.
+See [LOCATIONS.md](LOCATIONS.md) and the synthetic two-floor example.

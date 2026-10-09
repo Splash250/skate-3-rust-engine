@@ -140,6 +140,7 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let config = world.resource::<Config>();
     let root = config.asset_root.clone();
     let difficulty = config.difficulty;
+    let location_override=config.locations.clone();
     let graphs = world.resource::<crate::graph_runtime::StockGraphs>().clone();
     let source = world.resource::<SkaterRuntime>().animation.source.clone();
     let preferences = world.resource::<PlayerControls>().preferences;
@@ -178,7 +179,9 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
                 skate_data::resource_world::validate_render(&lod)?;lods.push((lod,*distance));
             }
         }
-        let map_fingerprint = crate::config::map_fingerprint(selected.path.as_deref())?;
+        let base_fingerprint = crate::config::map_fingerprint(selected.path.as_deref())?;
+        let catalog=skate_resources::locations::PreparedCatalog::discover(selected.path.as_deref(),location_override.as_deref())?;
+        let map_fingerprint=skate_resources::locations::world_fingerprint(base_fingerprint,catalog.as_ref().map(|p|p.revision.as_str()));
         let read_time = started.elapsed();
         let validation_started = Instant::now();
         if let Some(map) = &map { crate::skate_world::validate_runtime(map)?; }

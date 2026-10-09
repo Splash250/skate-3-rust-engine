@@ -69,3 +69,19 @@ resource.settings = {}
 function resource.settings.get(key) end
 ---@return table<string, boolean|number|string>
 function resource.settings.all() end
+
+---Server-owned map state. Requires resource.map; see MAP.md for schema/limits.
+resource.map = {}
+---@param snapshot table Settings and keyed vector layers (8 KiB maximum).
+function resource.map.set(snapshot) end
+function resource.map.clear() end
+---@return table|nil
+function resource.map.get() end
+
+---Native location settings; publication is server-only and requires resource.locations.
+resource.locations = {version=1}
+---@param snapshot LocationSnapshot owned keys from the admitted catalog
+function resource.locations.set(snapshot) end
+---@return LocationSnapshot|nil
+function resource.locations.get() end
+function resource.locations.clear() end

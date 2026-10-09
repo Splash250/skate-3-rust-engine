@@ -28,3 +28,5 @@ mod http;
 pub use cache::*;
 pub use content::*;
 pub use http::*;
+
+pub mod locations;

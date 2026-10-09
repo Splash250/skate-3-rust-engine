@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "map": "test-world",
+  "interiors": [
+    {
+      "key": "example-studio",
+      "model": "room.glb",
+      "collision": "room-shell.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          64,
+          0,
+          64,
+          1
+        ]
+      ],
+      "spawn": [
+        64,
+        0,
+        64
+      ],
+      "heading": 3.141593,
+      "exit": {
+        "position": [
+          64,
+          0,
+          66.5
+        ],
+        "style": {
+          "color": [
+            0.2,
+            0.75,
+            1
+          ],
+          "opacity": 0.3,
+          "radius": 0.6,
+          "height": 2
+        }
+      }
+    },
+    {
+      "key": "example-loft",
+      "model": "room.glb",
+      "collision": "room-shell.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          96,
+          0,
+          64,
+          1
+        ]
+      ],
+      "spawn": [
+        96,
+        0,
+        64
+      ],
+      "heading": 3.141593,
+      "exit": {
+        "position": [
+          96,
+          0,
+          66.5
+        ],
+        "style": {
+          "color": [
+            0.2,
+            0.75,
+            1
+          ],
+          "opacity": 0.3,
+          "radius": 0.6,
+          "height": 2
+        }
+      }
+    }
+  ],
+  "locations": [
+    {
+      "key": "example-building",
+      "label": "Example building",
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "return_position": [
+        3,
+        0,
+        0
+      ],
+      "return_heading": 0,
+      "style": {
+        "color": [
+          0.2,
+          0.75,
+          1
+        ],
+        "opacity": 0.3,
+        "radius": 1,
+        "height": 2
+      },
+      "floors": [
+        {
+          "key": "studio",
+          "label": "Studio",
+          "interior": "example-studio"
+        },
+        {
+          "key": "loft",
+          "label": "Loft",
+          "interior": "example-loft"
+        }
+      ]
+    }
+  ]
+}

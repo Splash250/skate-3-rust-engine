@@ -26,6 +26,37 @@ This is a source-development fork. The upstream downloads below do not contain
 this fork's platform additions. Fork release packaging and updater identity
 still need configuration before distributing fork binaries.
 
+## Live maps and interiors
+
+The engine now includes a live 3D map built from the active world's geometry,
+textures and colors. The compact minimap follows the skater's position and
+heading with a fixed angled view. Press **M** or **D-pad Left** to open the
+expanded map, with pan, rotate, tilt, zoom, top-down view and recenter controls.
+Local and multiplayer player markers use world-space positions, including
+height, and the map updates when the active world changes.
+
+Lua mods and server resources can add owner-scoped markers, labels, paths and
+region outlines, with configurable colors and sizes. They can also set map
+visibility, opacity, title and opening zoom. Server layers are distributed to
+admitted clients; local layers remain private to that client. See the
+[map API and controls](sdk/MAP.md), [server example](resources/programmable-map/)
+and [local mod example](sdk/examples/programmable-map/).
+
+Native interior catalogs provide building entrances, floor selection, static
+GLB models, authored collision shells and return destinations. Clients and
+the dedicated authority use matching collision; multiplayer travel is
+server-approved. Catalogs can come from an installed package, `--locations`,
+a local mod or an admitted server resource. See the
+[interior and location API](sdk/LOCATIONS.md) and
+[synthetic two-floor example](sdk/examples/interior-catalog/).
+The [interior preparation tool](tools/prepare_interior.py) prepares models
+within resource budgets while retaining provenance; third-party interior
+models are not bundled with this repository.
+
+Map presentation remains experimental. Player direction arrows, a top-screen
+waypoint compass, comprehensive plugin themes and automatic skateable-route
+guidance are planned improvements, not implemented features.
+
 ## History
 
 Before this rewrite existed, **dumbad** spent more than two years reverse

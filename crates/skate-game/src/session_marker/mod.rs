@@ -260,6 +260,7 @@ mod authority_tests {
             spawn: [0.; 3],
             heading: 0.,
             generation: 0,
+            audio_tag: None,
         });
         world.insert_resource(crate::replay::Replay::default());
         world.insert_resource(Time::<Real>::default());

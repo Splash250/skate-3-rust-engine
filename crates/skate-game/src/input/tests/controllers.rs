@@ -179,6 +179,8 @@ fn controller_identity_is_metadata_and_never_changes_gameplay_actions() {
     let mut input = with;
     input.collect(std::array::from_fn(|_| Err(DeviceError::Disconnected)));
     assert!(input.kind(0).is_none());
+}
+
 #[test]
 fn trusted_consumed_buttons_keep_physical_voice_input_without_manual_marker_actions() {
     let mut input = ControllerInput::default();
@@ -217,7 +219,7 @@ fn one_physical_frame_serves_interface_before_gameplay_collection() {
         packet(4, 0x100, [16000, 0]),
         Err(DeviceError::Disconnected),
         Err(DeviceError::Disconnected),
-    ]));
+    ]), Default::default());
     assert_eq!(frame.raw_input().buttons, 0x100);
     assert_eq!(frame.raw_input().left, [16000.0 / 32768.0, 0.0]);
     let mut input = ControllerInput::default();
@@ -227,4 +229,22 @@ fn one_physical_frame_serves_interface_before_gameplay_collection() {
     assert_eq!(input.packet_numbers[1], Some(4));
     assert!(input.mapped_actions[1][0] > 0.0);
     assert_eq!(input.session_marker_actions(), (false, false, false));
+}
+
+#[test]
+fn live_map_can_read_physical_buttons_after_gameplay_consumes_the_frame() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut world = bevy::prelude::World::new();
+    world.init_resource::<ControllerInput>();
+    world.insert_resource(crate::input::ControllerFrame(Some([
+        packet(1, 4, [0, 0]),
+        Err(DeviceError::Disconnected), Err(DeviceError::Disconnected), Err(DeviceError::Disconnected),
+    ]), Default::default()));
+    world.run_system_once(crate::input::poll_controllers).unwrap();
+    let frame = world.resource::<crate::input::ControllerFrame>();
+    assert!(frame.0.is_none(), "gameplay consumes packets exactly once");
+    assert_eq!(frame.raw_input().buttons, 4, "the live map still sees D-pad Left");
+    world.resource_mut::<crate::input::ControllerFrame>().0 = Some(std::array::from_fn(|_| Err(DeviceError::Disconnected)));
+    world.run_system_once(crate::input::poll_controllers).unwrap();
+    assert_eq!(world.resource::<crate::input::ControllerFrame>().raw_input().buttons, 0, "disconnect clears retained input");
 }

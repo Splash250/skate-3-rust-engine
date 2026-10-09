@@ -1101,3 +1101,35 @@ function sdk.photos.mode(enabled) end
 function sdk.photos.gallery() end
 ---@param id string Opaque ID issued to this owner/generation by the host.
 function sdk.photos.thumbnail(id) end
+
+---Native map capability 1. Client-local, owner-scoped presentation layers.
+sdk.map = {}
+---@param snapshot table Settings and keyed marker/label/path/region layers; see MAP.md.
+function sdk.map.set(snapshot) end
+function sdk.map.clear() end
+---@return table Frame-current map identity, bounds, players, zoom_level and expanded state.
+function sdk.map.status() end
+
+---Engine-owned interior catalogs, terrain, interaction and native travel. See LOCATIONS.md.
+sdk.locations = {version=1}
+---@param catalog string contained package-relative catalog JSON; local singleplayer only
+function sdk.locations.load(catalog) end
+---@class LocationMarkerStyle
+---@field color number[] RGB 0..1
+---@field opacity number 0..1
+---@field radius number 0.1..10 metres; must exclude safe return
+---@field height number 0.1..20 metres
+---@class LocationSetting
+---@field key string catalog-owned entry key
+---@field label string 1..64 bytes
+---@field enabled boolean
+---@field style LocationMarkerStyle
+---@field interaction? string
+---@class LocationSnapshot
+---@field generation string canonical positive owner generation
+---@field locations LocationSetting[]
+---@param snapshot LocationSnapshot
+function sdk.locations.set(snapshot) end
+function sdk.locations.clear() end
+---@return table phase, ready, error, interior, catalog_revision, catalogs
+function sdk.locations.status() end

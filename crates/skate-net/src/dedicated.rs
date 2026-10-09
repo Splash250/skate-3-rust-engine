@@ -520,8 +520,13 @@ impl Server {
     }
     pub fn set_resource_budgets(&mut self, budgets: crate::resources::Budgets) -> Result<(), String> { self.resources.set_budgets(budgets) }
     pub fn configure_resources(&mut self, revision: String, port: u16, generations: BTreeMap<String,u64>) -> Result<(),String> {
+        self.configure_resources_returning(revision,port,generations,Default::default())
+    }
+    /// Retain only already-authorized pending returns selected by the trusted
+    /// location host. Their resets are reissued under the new admission epoch.
+    pub fn configure_resources_returning(&mut self, revision:String, port:u16, generations:BTreeMap<String,u64>, returning:std::collections::BTreeSet<u64>) -> Result<(),String> {
         self.resources.configure(revision,port,generations)?;
-        self.session.require_resources();
+        self.session.require_resources(&returning)?;
         // Require a new readiness claim even if a resource changed without reconnecting.
         for player in self.players.values_mut() {
             self.epoch = self.epoch.checked_add(1).ok_or("Resource epoch exhausted")?;

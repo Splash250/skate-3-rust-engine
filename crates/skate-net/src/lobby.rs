@@ -376,7 +376,11 @@ impl Session {
         if reset.actor == self.local { self.local_reset = Some(reset);self.entities.reset(reset.epoch,reset.destination.instance); }
     }
     pub fn is_dedicated(&self) -> bool { self.dedicated }
-    pub(crate) fn require_resources(&mut self) {
+    pub(crate) fn require_resources(&mut self, returning: &BTreeSet<u64>) -> Result<(), String> {
+        // Only the host-selected return resets survive this boundary. Reissue
+        // them with fresh epochs; never retain old acknowledgements or packets.
+        let returns: Vec<_> = self.resets.iter().filter(|(id,_)| returning.contains(id))
+            .map(|(&id,reset)| (id,reset.destination)).collect();
         self.resources_required = true;
         // service() publishes membership before the new resource authority
         // writes its first offer. Retire old ACK/effect snapshots before that
@@ -398,7 +402,11 @@ impl Session {
             actor.body = Stream::default(); actor.pose = Stream::default();
             for key in [crate::dedicated::TELEPORT_KEY,crate::dedicated::SHOVE_KEY,crate::dedicated::EFFECT_ACK_KEY,crate::resources::CLIENT_KEY,crate::native_authority::INPUT_KEY] { actor.application.remove(key); }
         }
+        for (actor, destination) in returns {
+            self.reset_movement(actor, destination, self.last_service)?;
+        }
         self.last_roster = 0;
+        Ok(())
     }
     pub(crate) fn resource_admission(&mut self, actor:u64, ready:bool) {
         if ready { self.resource_ready.insert(actor); } else { self.resource_ready.remove(&actor); }

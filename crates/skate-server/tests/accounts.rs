@@ -84,7 +84,7 @@ fn verified_identity_is_required_and_real_admin_kick_revokes_live_udp() {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
         max_players: 16,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: None,
         accounts: Some(config_file),
         operations: None,
@@ -257,7 +257,7 @@ fn private_settings_actions_are_authorized_redacted_and_rechecked_over_tls() {
     fs::write(resource.join("resource.json"),serde_json::to_vec(&json!({"format":1,"api":1,"id":"settings","version":"1.0.0","language":"lua","server_scripts":["main.lua"],"settings":{"private_note":{"type":"string","default":"synthetic-private-default","max_bytes":128,"visibility":"private"}}})).unwrap()).unwrap();
     fs::write(resource.join("main.lua"),"return {}").unwrap();
     let resources=temp.0.join("server.json");fs::write(&resources,serde_json::to_vec(&json!({"root":"resources","storage":"store","ensure":["settings"]})).unwrap()).unwrap();
-    let mut host=Host::bind(Options {bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld,resources:Some(resources),accounts:Some(config_file),operations:None}).unwrap();
+    let mut host=Host::bind(Options {bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld, locations:None,resources:Some(resources),accounts:Some(config_file),operations:None}).unwrap();
     let password=auth.join("password");fs::write(&password,"test-password-12345").unwrap();
     #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;fs::set_permissions(&password,fs::Permissions::from_mode(0o600)).unwrap();}
     let mut config=ClientCredentials {endpoint:format!("https://localhost:{}",host.account_address().unwrap().port()),ca_certificate:auth.join("certificate.pem"),username:"administrator".into(),password_file:password};

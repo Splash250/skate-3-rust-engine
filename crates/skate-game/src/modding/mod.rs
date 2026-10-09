@@ -584,6 +584,8 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "detach_error": mods.detach_error,
         "detach_pending": mods.detach_pending.is_some(),
         "map": {"name": map.name, "generation": map.generation},
+        "map_view": crate::map_view::status(world),
+        "locations": crate::locations::status(world),
         "triggers": triggers::snapshot(world),
         "tick": physics.ticks,
         "keys": keys,
@@ -815,6 +817,7 @@ fn camera_angle_snapshot(world: &World) -> Value {
 }
 
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
+    crate::map_view::clear_layers(world);
     animation::clear(world,None);
     browser::clear(world,mods,None);
     interactions::clear(world);
@@ -887,6 +890,8 @@ fn apply(world: &mut World, mods: &mut Mods) {
     let _span = bevy::log::tracing::info_span!("mods.apply").entered();
     let retired = std::mem::take(&mut mods.manager.retired);
     for id in &retired {
+        crate::map_view::remove_owner(world,id,None);
+        crate::locations::retire(world,id);
         animation::clear(world,Some(id));
         browser::clear(world,mods,Some(id));
         interactions::clear_owner(world,id);
@@ -1517,6 +1522,16 @@ fn apply_one(
                 mods.camera.watch = Some(pid);
             }
         }
+        Command::LocationsSet {snapshot} => crate::locations::set(world,id,snapshot)?,
+        Command::LocationsClear {} => crate::locations::clear(world,id),
+        Command::LocationsLoad {catalog} => {
+            if world.resource::<crate::multiplayer::Multiplayer>().connected() || world.resource::<crate::config::Config>().multiplayer.connect.is_some() {return Err("Connected interior catalogs must come from the admitted server resources".into());}
+            let package=mods.manager.packages.get(id).ok_or("Missing interior package owner")?;
+            let prepared=skate_resources::locations::PreparedCatalog::read(&package.root,&catalog)?;
+            crate::locations::load(world,id,1,prepared)?;
+        },
+        Command::MapSnapshotSet { snapshot } => crate::map_view::set_local(world,id,snapshot)?,
+        Command::MapSnapshotClear {} => crate::map_view::remove_owner(world,id,Some(false)),
         Command::NetworkState { key, value } => {
             let slot = (id.to_owned(), key);
             if value.is_null() {
@@ -2030,3 +2045,10 @@ fn dispatch_profiled(manager: &mut skate_mods::Manager, callback: &str, payload:
         manager.call(&id, callback, payload.clone());
     }
 }
+
+/// Native interiors share the downloaded-resource import policy.
+pub(crate) fn validate_interior_model(bytes:&[u8])->Result<(),String> {
+    graphics::validate_resource_glb_with_limits(bytes,graphics::asset_limits::Limits::default()).map(|_|())
+}
+
+pub(crate) use resources::{location_event,location_world_revision};

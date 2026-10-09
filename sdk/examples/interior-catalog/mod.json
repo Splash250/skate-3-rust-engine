@@ -1,0 +1,10 @@
+{
+  "id": "examples.interior-catalog",
+  "api": 2,
+  "name": "Native interior catalog",
+  "version": "1.0.0",
+  "author": "Skate3clone",
+  "description": "Two engine-owned rooms and a native floor chooser on test-world.",
+  "entry": "main.lua",
+  "enabled_by_default": false
+}

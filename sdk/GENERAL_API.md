@@ -357,3 +357,7 @@ never a filesystem pathname. See the guide for Desktop resolution and budgets.
 
 JavaScript and C# use these same validated command schemas through `sdk.submit`
 and `Resource.Submit`; no separate language-specific permission path exists.
+
+## Programmable live map
+
+See [MAP.md](MAP.md) for the native 3D map, Lua vector layers, server/client sides, grants, limits, and lifecycle.

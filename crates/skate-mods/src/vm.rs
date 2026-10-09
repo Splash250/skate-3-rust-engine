@@ -490,6 +490,11 @@ pub enum Command {
         #[serde(default)]
         patch: Option<crate::presentation::CameraShotTuning>,
     },
+    MapSnapshotSet { snapshot: crate::map::MapSnapshot },
+    MapSnapshotClear {},
+    LocationsSet { snapshot: skate_resources::locations::LocationSnapshot },
+    LocationsClear {},
+    LocationsLoad { catalog: String },
     NetworkState {
         key: String,
         #[serde(default)]
@@ -841,6 +846,11 @@ impl Command {
             Self::CameraAngle { .. } => true,
             Self::CameraShotTune { shot, patch } => valid_shot_name(shot)
                 && patch.as_ref().is_none_or(|p| p.validate()),
+            Self::MapSnapshotSet { snapshot } => crate::map::validate_snapshot(snapshot).is_ok(),
+            Self::MapSnapshotClear {} => true,
+            Self::LocationsSet {snapshot} => serde_json::to_value(snapshot).ok().is_some_and(|v|skate_resources::locations::LocationSnapshot::parse(v).is_ok()),
+            Self::LocationsClear {} => true,
+            Self::LocationsLoad {catalog} => skate_resources::validate_path(catalog).is_ok() && catalog.ends_with(".json"),
             Self::NetworkState { key, value } => {
                 crate::schema::valid_id(key)
                     && serde_json::to_vec(value).is_ok_and(|v| v.len() <= 512)
@@ -954,6 +964,11 @@ pub(crate) fn command_kind(command: &Command) -> &'static str {
         Command::CameraWatch { .. } => "camera_watch",
         Command::CameraAngle { .. } => "camera_angle",
         Command::CameraShotTune { .. } => "camera_shot_tune",
+        Command::MapSnapshotSet { .. } => "map_snapshot_set",
+        Command::MapSnapshotClear {} => "map_snapshot_clear",
+        Command::LocationsSet {..} => "locations_set",
+        Command::LocationsClear {} => "locations_clear",
+        Command::LocationsLoad {..} => "locations_load",
         Command::NetworkState { .. } => "network_state",
         Command::UiMenu { .. } => "ui_menu",
         Command::UiRemoveMenu { .. } => "ui_remove_menu",
@@ -1244,6 +1259,7 @@ impl Vm {
             capabilities.set("scene_transforms", 2)?;
             capabilities.set("skater", 4)?;
             capabilities.set("menus", 3)?;
+            capabilities.set("map", 1)?;
             capabilities.set("player_physics", 2)?;
             capabilities.set("engine_access", 1)?;
             capabilities.set("animation", 1)?;
@@ -1314,6 +1330,25 @@ impl Vm {
                     Ok(())
                 })?,
             )?;
+            let permission = resource.cloned();
+            sdk.set("_map_status", lua.create_function(move |lua,():()| {
+                if let Some(permission)=&permission {permission.native_query("engine.map")?;}
+                let sdk:Table=lua.globals().get("sdk")?;
+                let snapshot:Table=sdk.get("snapshot")?;
+                let status=lua.create_table()?;
+                if let Ok(source)=snapshot.get::<Table>("map_view") {
+                    for pair in source.pairs::<mlua::Value,mlua::Value>() {let (k,v)=pair?;status.set(k,v)?;}
+                }
+                status.set("players",snapshot.get::<mlua::Value>("players")?)?;
+                Ok(status)
+            })?)?;
+            let permission = resource.cloned();
+            sdk.set("_locations_status", lua.create_function(move |lua,():()| {
+                if let Some(permission)=&permission {permission.native_query("engine.locations")?;}
+                let sdk:Table=lua.globals().get("sdk")?;
+                let snapshot:Table=sdk.get("snapshot")?;
+                Ok(snapshot.get::<mlua::Value>("locations").unwrap_or(mlua::Value::Nil))
+            })?)?;
             let asset_root = root.to_path_buf();
             let asset_root_objects = asset_root.clone();
             sdk.set(

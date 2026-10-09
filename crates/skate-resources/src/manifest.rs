@@ -19,6 +19,8 @@ pub struct Manifest {
     pub language: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world: Option<World>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locations: Option<String>,
     #[serde(default)]
     pub client_scripts: Vec<String>,
     #[serde(default)]
@@ -124,6 +126,12 @@ impl Manifest {
                     return Err(Error("World LODs need distinct public .skate files and increasing distances10..10000m".into()));
                 }
                 distance=lod.distance;
+            }
+        }
+        if let Some(path) = &self.locations {
+            validate_path(path)?;
+            if !path.ends_with(".json") || !self.files.contains(path) {
+                return Err(Error("locations requires a public JSON catalog".into()));
             }
         }
         // A file may not also be another file's directory (portable materialization).

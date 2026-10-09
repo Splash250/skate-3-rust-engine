@@ -615,7 +615,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(crate::config::Config {
             asset_root: "unused".into(), verification_capture: None,
-            map: None, map_path: None, difficulty: crate::difficulty::Difficulty::Hardcore,
+            map: None, map_path: None, locations: None, difficulty: crate::difficulty::Difficulty::Hardcore,
             check_assets: false, validate_maps: false, start_paused: false, teleport: None, mute: false,
             multiplayer: Default::default(), map_fingerprint: 0,
         });

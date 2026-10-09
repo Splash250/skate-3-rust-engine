@@ -72,7 +72,7 @@ impl Fixture {
             bind: "127.0.0.1:0".parse().unwrap(),
             session: dedicated::SESSION,
             max_players: 16,
-            map: Map::TestWorld,
+            map: Map::TestWorld, locations:None,
             resources: Some(self.0.join("resources.json")),
             accounts: Some(self.0.join("accounts.json")),
         operations: None,

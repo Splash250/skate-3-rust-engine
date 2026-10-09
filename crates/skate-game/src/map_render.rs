@@ -140,6 +140,7 @@ pub(crate) struct PreparedScene {
     commands: SceneCommands,
     pub stats: crate::skate_world::SceneStats,
     pub retail: bool,
+    overview_prepared: bool,
 }
 
 impl PreparedScene {
@@ -154,11 +155,24 @@ impl PreparedScene {
             commands: SceneCommands::default(),
             stats: default(),
             retail: false,
+            overview_prepared: false,
         }
     }
 
     /// Worker-thread body. Builds all geometry, materials and images for the map.
     pub(crate) fn prepare(&mut self, map: Option<&SkateMap>, asset_root: &Path) {
+        // Capture the entire primary scene before streaming removes mesh residency.
+        // Resource LOD passes reuse this scene and must not duplicate the overview.
+        if !self.overview_prepared {
+            crate::map_view::prepare(
+                map,
+                &mut self.commands,
+                &mut self.meshes,
+                &mut self.standard,
+                &mut self.images,
+            );
+            self.overview_prepared = true;
+        }
         let Some(map) = map else {
             crate::world::spawn_test_world(&mut self.commands, &mut self.meshes, &mut self.standard);
             return;

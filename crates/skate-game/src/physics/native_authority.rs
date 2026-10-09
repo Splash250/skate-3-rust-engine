@@ -33,6 +33,13 @@ impl Simulation {
         difficulty: Difficulty,
         admission: Admission,
     ) -> Result<Self, String> {
+        Self::load_world_catalogs(root,map,difficulty,admission,&[])
+    }
+    pub fn load_catalogs(root:&Path,map:Option<&Path>,difficulty:Difficulty,admission:Admission,catalogs:&[std::sync::Arc<skate_resources::locations::PreparedCatalog>])->Result<Self,String>{
+        let map=map.map(skate_data::skate_map::SkateMap::load).transpose()?;
+        Self::load_world_catalogs(root,map.as_ref(),difficulty,admission,catalogs)
+    }
+    fn load_world_catalogs(root:&Path,map:Option<&skate_data::skate_map::SkateMap>,difficulty:Difficulty,admission:Admission,catalogs:&[std::sync::Arc<skate_resources::locations::PreparedCatalog>])->Result<Self,String>{
         let log = InputLog::new(admission)?;
         let assets = skate_data::GameAssets::load(root).map_err(|e| e.to_string())?;
         let graphs = StockGraphs::load(root, &assets)?;
@@ -40,6 +47,9 @@ impl Simulation {
             skate_data::resource_world::validate(map)?;
         }
         let mut physics = GamePhysics::load_with_difficulty(root, map, difficulty)?;
+        let mut shells=Vec::new();
+        for p in catalogs {for i in &p.catalog.interiors{shells.push(skate_data::location_collision::decode(&p.files[&i.collision],i.transform)?);}}
+        if !shells.is_empty(){physics.world=skate_data::location_collision::compose(physics.world(),&shells,physics.settings.floor_material)?;}
         physics.network_active = true;
         // This contract is exactly sixty physical ticks per host second.
         if (physics.settings.step.simulation.time_step - 1. / 60.).abs() > 1e-7 {
@@ -163,6 +173,7 @@ pub(crate) fn entry() -> Option<i32> {
 fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
     let mut root = None;
     let mut map = None;
+    let mut locations = None;
     let mut difficulty = Difficulty::Easy;
     let mut selected_world = false;
     let mut seen = std::collections::BTreeSet::new();
@@ -173,6 +184,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         }
         match arg.to_str() {
             Some("--assets") => root = Some(PathBuf::from(args.next().ok_or("--assets requires a path")?)),
+            Some("--locations") => locations=Some(PathBuf::from(args.next().ok_or("--locations requires a directory")?)),
             Some("--map") => {
                 if selected_world { return Err("Select one native authority world".into()); }
                 selected_world = true;
@@ -196,6 +208,13 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
         return Err("Native authority supports stock easy, normal and hardcore only".into());
     }
     let root = root.ok_or("Native authority requires --assets PATH")?;
+    let mut catalogs=Vec::new();
+    if let Some(root)=locations {
+        let bytes=skate_mods::read_bounded(&root,"index.json",4096)?;
+        let index:Vec<String>=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+        if index.len()>16{return Err("Too many authority interior catalogs".into());}
+        for path in index {skate_resources::validate_id(&path).map_err(|e|e.to_string())?;catalogs.push(std::sync::Arc::new(skate_resources::locations::PreparedCatalog::read(&root.join(path),"catalog.json")?));}
+    }
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
@@ -221,7 +240,7 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
             Ok(Request::Stop) => break,
             Ok(Request::Start { admission }) if !started => {
                 started = true;
-                Simulation::load(&root, map.as_deref(), difficulty, admission).map(|loaded| {
+                Simulation::load_catalogs(&root, map.as_deref(), difficulty, admission,&catalogs).map(|loaded| {
                     let snapshot = loaded.snapshot();
                     simulation = Some(loaded);
                     Reply::Ready { snapshot }
@@ -258,6 +277,81 @@ fn run(args: Vec<std::ffi::OsString>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires owned SKATE3_ASSET_ROOT and prepared SKATE_LOCATION_RUNTIME"]
+    fn apartment_shell_native_input_replay_matches_authority() {
+        let root = PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("asset root"));
+        let package = std::sync::Arc::new(
+            skate_resources::locations::PreparedCatalog::read(
+                &PathBuf::from(std::env::var_os("SKATE_LOCATION_RUNTIME").expect("catalog root")),
+                "catalog.json",
+            )
+            .unwrap(),
+        );
+        let mut map = skate_data::skate_map::SkateMap::parse(include_bytes!(
+            "../../../../resources/community-park/park.skate"
+        ))
+        .unwrap();
+        let packages = [package.clone()];
+        for interior in &package.catalog.interiors {
+            map.spawn = interior.spawn;
+            map.heading = interior.heading;
+            let admission = Admission {
+                version: 1,
+                epoch: 19,
+                instance: 0,
+                generation: 1,
+            };
+            let mut predicted = Simulation::load_world_catalogs(
+                &root,
+                Some(&map),
+                Difficulty::Normal,
+                admission,
+                &packages,
+            )
+            .unwrap();
+            let mut authority = Simulation::load_world_catalogs(
+                &root,
+                Some(&map),
+                Difficulty::Normal,
+                admission,
+                &packages,
+            )
+            .unwrap();
+            for tick in 1..=180 {
+                let input = Input {
+                    epoch: 19,
+                    tick,
+                    actions: [0.; 18],
+                };
+                let a = predicted.step(input.clone()).unwrap();
+                let b = authority.step(input).unwrap();
+                assert_eq!(
+                    a.state_digest(),
+                    b.state_digest(),
+                    "native interior tick {tick}"
+                );
+                assert!(
+                    a.root.p[1] > interior.spawn[1] - 0.5,
+                    "actor must remain supported by {} shell",
+                    interior.key
+                );
+            }
+            let history = predicted.log.inputs().to_vec();
+            let expected = predicted.snapshot().state_digest();
+            let mut replay = Simulation::load_world_catalogs(
+                &root,
+                Some(&map),
+                Difficulty::Normal,
+                admission,
+                &packages,
+            )
+            .unwrap();
+            replay.replay(&history).unwrap();
+            assert_eq!(expected, replay.snapshot().state_digest());
+            println!("NATIVE_INTERIOR_REPLAY_OK {} ticks=180", interior.key);
+        }
+    }
     #[test]
     #[ignore = "requires owned stock native data via SKATE3_ASSET_ROOT"]
     fn ordinary_inputs_derive_grab_grind_landings_and_banked_combo_totals() {

@@ -144,7 +144,7 @@ fn authenticated_resource_admin_uses_real_actor_and_private_typed_settings() {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
         max_players: 16,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(temp.0.join("server.json")),
         accounts: Some(temp.0.join("accounts.json")),
         operations: None,

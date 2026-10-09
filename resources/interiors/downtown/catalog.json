@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "map": "downtown",
+  "interiors": [
+    {
+      "key": "mezzanine-flat",
+      "model": "mezzanine-flat/apartment.glb",
+      "collision": "mezzanine-flat/collision.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          4096,
+          100,
+          4096,
+          1
+        ]
+      ],
+      "spawn": [
+        4103.422,
+        102.5,
+        4098.907
+      ],
+      "heading": 0.0,
+      "exit": {
+        "position": [
+          4104.922,
+          102.5,
+          4098.907
+        ],
+        "style": {
+          "color": [
+            0.15,
+            0.75,
+            1.0
+          ],
+          "opacity": 0.2,
+          "radius": 0.5,
+          "height": 1.8
+        }
+      }
+    },
+    {
+      "key": "office-loft",
+      "model": "office-loft/apartment.glb",
+      "collision": "office-loft/collision.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          4352,
+          100,
+          4096,
+          1
+        ]
+      ],
+      "spawn": [
+        4355.3553,
+        100.0,
+        4099.4177
+      ],
+      "heading": 0.0,
+      "exit": {
+        "position": [
+          4353.8553,
+          100.0,
+          4099.4177
+        ],
+        "style": {
+          "color": [
+            0.15,
+            0.75,
+            1.0
+          ],
+          "opacity": 0.2,
+          "radius": 0.5,
+          "height": 1.8
+        }
+      }
+    },
+    {
+      "key": "haussmann-apartment",
+      "model": "haussmann-apartment/apartment.glb",
+      "collision": "haussmann-apartment/collision.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          4608,
+          100,
+          4096,
+          1
+        ]
+      ],
+      "spawn": [
+        4613.9713,
+        100.0,
+        4104.491
+      ],
+      "heading": 0.0,
+      "exit": {
+        "position": [
+          4612.4713,
+          100.0,
+          4105.491
+        ],
+        "style": {
+          "color": [
+            0.15,
+            0.75,
+            1.0
+          ],
+          "opacity": 0.2,
+          "radius": 0.5,
+          "height": 1.8
+        }
+      }
+    },
+    {
+      "key": "mezzanine-studio",
+      "model": "mezzanine-studio/apartment.glb",
+      "collision": "mezzanine-studio/collision.json",
+      "transform": [
+        [
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          4864,
+          100,
+          4096,
+          1
+        ]
+      ],
+      "spawn": [
+        4866.389,
+        100.0,
+        4097.7467
+      ],
+      "heading": 0.0,
+      "exit": {
+        "position": [
+          4865.889,
+          100.0,
+          4099.2467
+        ],
+        "style": {
+          "color": [
+            0.15,
+            0.75,
+            1.0
+          ],
+          "opacity": 0.2,
+          "radius": 0.5,
+          "height": 1.8
+        }
+      }
+    }
+  ],
+  "locations": [
+    {
+      "key": "exchange-apartments",
+      "label": "Exchange Apartments",
+      "position": [
+        142,
+        22.376642,
+        297
+      ],
+      "return_position": [
+        148,
+        22.439693,
+        297
+      ],
+      "return_heading": -1.492,
+      "style": {
+        "color": [
+          0.15,
+          0.75,
+          1.0
+        ],
+        "opacity": 0.2,
+        "radius": 0.8,
+        "height": 1.4
+      },
+      "floors": [
+        {
+          "key": "flat",
+          "label": "Floor 2 - Mezzanine Flat",
+          "interior": "mezzanine-flat"
+        },
+        {
+          "key": "studio",
+          "label": "Floor 3 - Mezzanine Studio",
+          "interior": "mezzanine-studio"
+        }
+      ]
+    },
+    {
+      "key": "downtown-loft",
+      "label": "Aletown Loft",
+      "position": [
+        -183,
+        11.632001,
+        427.5
+      ],
+      "return_position": [
+        -183,
+        11.632001,
+        430
+      ],
+      "return_heading": -1.492,
+      "style": {
+        "color": [
+          0.15,
+          0.75,
+          1.0
+        ],
+        "opacity": 0.2,
+        "radius": 0.8,
+        "height": 1.4
+      },
+      "floors": [
+        {
+          "key": "loft",
+          "label": "Floor 2 - Office Loft",
+          "interior": "office-loft"
+        },
+        {
+          "key": "haussmann",
+          "label": "Floor 3 - Haussmann Apartment",
+          "interior": "haussmann-apartment"
+        }
+      ]
+    }
+  ]
+}

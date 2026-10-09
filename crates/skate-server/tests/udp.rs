@@ -83,7 +83,7 @@ fn real_udp_discovery_queue_cancellation_and_next_waiter_admission() {
     let mut host = Host::bind(Options {
         accounts: None, operations: None, resources: None,
         bind: "127.0.0.1:0".parse().unwrap(), session: dedicated::SESSION,
-        max_players: 1, map: Map::TestWorld,
+        max_players: 1, map: Map::TestWorld, locations:None,
     }).unwrap();
     let address = host.local_addr().unwrap();
     let query = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -116,7 +116,7 @@ fn real_udp_discovery_queue_cancellation_and_next_waiter_admission() {
 #[test]
 fn real_udp_incompatible_physics_keeps_terminal_rejection_reason() {
     let mut host=Host::bind(Options {accounts:None,operations:None,resources:None,
-        bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld}).unwrap();
+        bind:"127.0.0.1:0".parse().unwrap(),session:dedicated::SESSION,max_players:2,map:Map::TestWorld,locations:None}).unwrap();
     let started=Instant::now();let map=host.map_fingerprint();let mut clients=vec![client(601,map)];
     pump(&mut host,&mut clients,started,|clients|clients[0].session.connected());
     let mut incompatible=client(602,map);
@@ -137,7 +137,7 @@ fn real_udp_host_syncs_players_bodies_pose_tricks_and_departure_without_game_ass
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
         max_players: 16,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
     })
     .unwrap();
     let started = Instant::now();
@@ -243,7 +243,7 @@ fn oversized_and_unknown_datagrams_do_not_prevent_valid_admission() {
         bind: SocketAddr::from(([127, 0, 0, 1], 0)),
         session: dedicated::SESSION,
         max_players: 1,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
     })
     .unwrap();
     let outsider = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -303,7 +303,7 @@ fn real_udp_shoves_and_collisions_are_delivered_as_server_effects() {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: dedicated::SESSION,
         max_players: 2,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
     })
     .unwrap();
     let started = Instant::now();

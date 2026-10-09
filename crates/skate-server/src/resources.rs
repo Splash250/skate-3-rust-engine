@@ -1,7 +1,7 @@
 //! Server-owned resource configuration and runtime. Only the public content
 //! projection reaches HTTP; configuration, grants and persistence stay here.
 #[path = "teleport_leases.rs"]
-mod teleport_leases;
+pub(crate) mod teleport_leases;
 #[path = "resource_admin.rs"]
 pub(crate) mod admin;
 #[path = "resource_authorization.rs"]
@@ -106,6 +106,7 @@ pub fn validate_configuration(path: &Path) -> Result<String, String> {
     let config = read_config(path)?;
     let selected = config.ensure.iter().map(|id|(id.clone(),1)).collect();
     let published = skate_resources::build_set_with_limits(&config.root, &selected, config.content_limits).map_err(|e|e.to_string())?;
+    reject_disk_provider(&published)?;
     crate::world::Terrain::from_published(&published)?;
     for id in &config.world_rotation {
         let map = skate_resources::build_set_with_limits(&config.root,&BTreeMap::from([(id.clone(),1)]),config.content_limits).map_err(|e|e.to_string())?;
@@ -115,6 +116,7 @@ pub fn validate_configuration(path: &Path) -> Result<String, String> {
 }
 pub struct Platform {
     admin: admin::State,
+    locations: crate::locations::Locations,
     teleport_leases: teleport_leases::Leases,
     last_settings: u64,
     authenticated_accounts: BTreeMap<u64,String>,
@@ -142,12 +144,23 @@ impl Platform {
         blocked
     }
     pub fn load(path: &Path, bind: SocketAddr, server: &mut Server) -> Result<Self, String> {
-        let config = read_config(path)?;
+        Self::load_with_locations(Some(path),bind,server,None)
+    }
+    pub fn load_with_locations(path:Option<&Path>,bind:SocketAddr,server:&mut Server,native:Option<&skate_resources::locations::PreparedCatalog>)->Result<Self,String>{
+        let config = if let Some(path)=path {read_config(path)?} else {serde_json::from_value(serde_json::json!({"root":".","storage":std::env::temp_dir().join(format!("skate-native-locations-{}",std::process::id())),"ensure":[]})).map_err(|e|e.to_string())?};
         server.set_resource_budgets(config.network_budgets)?;
         let selected = config.ensure.iter().map(|id| (id.clone(), 1)).collect();
-        let published =
+        let mut published =
             skate_resources::build_set_with_limits(&config.root, &selected, config.content_limits)
                 .map_err(|e| e.to_string())?;
+        reject_disk_provider(&published)?;
+        if let Some(native)=native {
+            let builtin=crate::locations::provider(native)?;
+            let mut resources=published.set.resources;resources.extend(builtin.set.resources);
+            let mut blobs=published.blobs;blobs.extend(builtin.blobs);
+            published=PublishedSet::from_resources(resources,blobs).map_err(|e|e.to_string())?;
+            published.validate_with_limits(config.content_limits).map_err(|e|e.to_string())?;
+        }
         // Decode and validate server-selected collision before scripts can run
         // or clients can receive an admission offer for this world.
         let terrain = crate::world::Terrain::from_published(&published)?;
@@ -155,10 +168,7 @@ impl Platform {
         competition.set_terrain(terrain.as_ref())?;
         let mut native_authority=crate::native_authority::NativeAuthority::new(config.native_authority.clone());
         native_authority.set_world(&published)?;
-        let scope = std::fs::canonicalize(path)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .into_owned();
+        let scope = if let Some(path)=path {std::fs::canonicalize(path).map_err(|e|e.to_string())?.to_string_lossy().into_owned()} else {format!("native-locations:{}",published.set.revision)};
         let mut lua = Host::new_with_limits(
             Side::Server,
             config.storage.clone(),
@@ -187,6 +197,7 @@ impl Platform {
             .map_err(|e| e.to_string())?;
         let mut platform = Self {
             admin: Default::default(),
+            locations: Default::default(),
             teleport_leases: Default::default(),
             last_settings: u64::MAX,
             authenticated_accounts: BTreeMap::new(),
@@ -224,7 +235,7 @@ impl Platform {
             .iter()
             .map(|resource| {
                 let id = &resource.manifest.id;
-                let manifest = Manifest::read(&config.root.join(id)).map_err(|e| e.to_string())?;
+                let manifest = if id==crate::locations::ENGINE_OWNER {resource.manifest.clone()} else {Manifest::read(&config.root.join(id)).map_err(|e| e.to_string())?};
                 known.insert(id.clone(), manifest.clone());
                 Ok(InstalledResource {
                     manifest,
@@ -236,13 +247,20 @@ impl Platform {
             .collect()
     }
     fn advertise(&mut self, server: &mut Server, published: &PublishedSet) -> Result<(), String> {
+        for resource in &published.set.resources {
+            if resource.manifest.locations.is_some() && resource.manifest.id!=crate::locations::ENGINE_OWNER {
+                let allowed=catalog_permissions(&resource.manifest.capabilities, self.config.grants.get(&resource.manifest.id));
+                if !allowed{return Err(format!("{} requires explicit resource.locations and resource.teleport declarations and grants for its catalog",resource.manifest.id));}
+            }
+        }
         let world_identity=|set:&PublishedSet|set.set.resources.iter().find_map(|resource|resource.manifest.world.as_ref().and_then(|world|resource.files.get(&world.map).map(|file|(resource.manifest.id.clone(),file.digest.clone()))));
         if world_identity(&self.published)!=world_identity(published) {self.teleport_leases.world_changed(server);}
+        let returning=self.locations.publish(published,server,&mut self.teleport_leases)?;
         server.set_world_spawn(self.entities.terrain().map(|terrain|skate_net::dedicated::TeleportDestination {
             position:terrain.spawn,heading:terrain.heading,velocity:[0.;3],instance:0,
         }))?;
         let lease_epochs=self.teleport_leases.verifier_snapshot(server);
-        let result=server.configure_resources(
+        let result=server.configure_resources_returning(
             published.set.revision.clone(),
             self.address().port(),
             published
@@ -251,6 +269,7 @@ impl Platform {
                 .iter()
                 .map(|r| (r.manifest.id.clone(), r.generation))
                 .collect(),
+            returning.into_iter().collect(),
         );
         self.teleport_leases.readmission_finished(lease_epochs,server);
         result
@@ -498,8 +517,10 @@ impl Platform {
             }
         }
         self.lua.tick(dt,serde_json::json!({"players":players,"entities":server.entity_observations(),"network":{"active":true,"is_host":true}}));
+        self.locations.prune(server);
         for event in server.drain_resource_events() {
             let m = event.message;
+            if self.locations.event(event.sender,&m,server,&mut self.teleport_leases){continue;}
             if self.intercept_admin(event.sender, &m, server) { continue; }
             if let Err(error) =
                 self.lua
@@ -511,6 +532,7 @@ impl Platform {
                 );
             }
         }
+        for (owner,generation,payload) in self.locations.notifications(){let _=self.lua.host_event(&owner,generation,"location",payload);}
         self.lua
             .dispatch("on_fixed_update", serde_json::json!({"dt":dt}));
         self.flush(server);
@@ -632,6 +654,7 @@ impl Platform {
                     value,
                     scope,
                 } => {
+                    if key=="__locations_v1" {if let Err(error)=self.locations.state(&resource,generation,&value){eprintln!("Location state {resource}: {error}");continue;}}
                     let Ok(scope) = serde_json::from_value(scope) else {
                         eprintln!("Resource {resource}: invalid state visibility scope");
                         continue;
@@ -960,6 +983,7 @@ impl Platform {
             self.config.content_limits,
         )
         .map_err(|e| e.to_string())?;
+        reject_disk_provider(&published)?;
         let mut entries = Self::installed(&self.config, &published, &mut self.known)?;
         for entry in &mut entries {
             if let Some(generation) = self.lua.generation(&entry.manifest.id) {
@@ -1031,6 +1055,7 @@ impl Platform {
             );
         }
         let id = words[1];
+        if id==crate::locations::ENGINE_OWNER {return Err("Native catalog provider follows the map lifecycle".into());}
         if words[0] == "start" && self.lua.running(id) {
             return Ok(format!("{id} already started"));
         }
@@ -1072,6 +1097,7 @@ impl Platform {
                 .lua
                 .running_ids()
                 .iter()
+                .filter(|id| id.as_str() != crate::locations::ENGINE_OWNER)
                 .map(|id| (id.clone(), self.lua.generation(id).unwrap()))
                 .collect();
             skate_resources::build_set_with_limits(
@@ -1152,7 +1178,7 @@ mod status_tests {
         let config = root.join("server.json");
         std::fs::write(&config, r#"{"root":"resources","storage":"store","ensure":["broken"]}"#).unwrap();
         let mut host = crate::Host::bind(crate::Options {accounts:None,operations:None, bind:"127.0.0.1:0".parse().unwrap(),
-            session:7, max_players:16, map:crate::Map::TestWorld, resources:Some(config)}).unwrap();
+            session:7, max_players:16, map:crate::Map::TestWorld, locations:None, resources:Some(config)}).unwrap();
         let platform = host.resources.as_mut().unwrap();
         platform.step(0.016, &mut host.server);
         assert!(!platform.lua.running("broken"));
@@ -1177,7 +1203,7 @@ mod status_tests {
         let dir=root.join("resources/dependent");std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("resource.json"),r#"{"format":1,"api":1,"id":"dependent","version":"1.0.0","language":"lua","dependencies":{"old-map":"1.0.0"}}"#).unwrap();
         let config=root.join("server.json");std::fs::write(&config,r#"{"root":"resources","storage":"store","ensure":["dependent"],"world_rotation":["old-map","new-map"]}"#).unwrap();
-        let mut host=crate::Host::bind(crate::Options{accounts:None,operations:None,bind:"127.0.0.1:0".parse().unwrap(),session:7,max_players:16,map:crate::Map::TestWorld,resources:Some(config)}).unwrap();
+        let mut host=crate::Host::bind(crate::Options{accounts:None,operations:None,bind:"127.0.0.1:0".parse().unwrap(),session:7,max_players:16,map:crate::Map::TestWorld, locations:None,resources:Some(config)}).unwrap();
         let platform=host.resources.as_mut().unwrap();
         let failure=platform.select_world("new-map",&mut host.server).unwrap_err();
         assert!(failure.contains("deliberate target startup failure"),"{failure}");
@@ -1201,4 +1227,63 @@ mod status_tests {
         assert_eq!(status["runtime_metrics_omitted"], 3);
         assert_eq!(status["logs"][0][0], "source");
     }
+}
+
+fn catalog_permissions(capabilities: &[String], grants: Option<&std::collections::BTreeSet<String>>) -> bool {
+    ["resource.locations", "resource.teleport"].iter().all(|required|
+        capabilities.iter().any(|c| c == required) && grants.is_some_and(|g| g.contains(*required)))
+}
+#[cfg(test)]
+mod catalog_permission_tests {
+    #[test]
+    fn catalog_travel_requires_separate_teleport_declaration_and_grant() {
+        let locations = vec!["resource.locations".to_string()];
+        let both = vec!["resource.locations".to_string(), "resource.teleport".to_string()];
+        let location_grants = locations.iter().cloned().collect();
+        let both_grants = both.iter().cloned().collect();
+        assert!(!super::catalog_permissions(&locations, Some(&location_grants)));
+        assert!(!super::catalog_permissions(&both, Some(&location_grants)));
+        assert!(!super::catalog_permissions(&locations, Some(&both_grants)));
+        assert!(super::catalog_permissions(&both, Some(&both_grants)));
+    }
+}
+
+#[cfg(test)]
+mod native_catalog_lifecycle_tests {
+    #[test]
+    fn native_provider_survives_other_resource_restart() {
+        let root=std::env::temp_dir().join(format!("skate-interior-restart-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("resources/helper")).unwrap();
+        std::fs::write(root.join("resources/helper/resource.json"),r#"{"format":1,"api":1,"id":"helper","version":"1.0.0","language":"lua","server_scripts":["server.lua"]}"#).unwrap();
+        std::fs::write(root.join("resources/helper/server.lua"),"return {}").unwrap();
+        std::fs::write(root.join("server.json"),r#"{"root":"resources","storage":"store","ensure":["helper"]}"#).unwrap();
+        let package=skate_resources::locations::PreparedCatalog::read(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/examples/interior-catalog"),"catalog.json").unwrap();
+        let mut server=skate_net::dedicated::Server::new(skate_net::dedicated::Config{session:7,server_id:99,map:1,max_players:4}).unwrap();
+        let mut platform=super::Platform::load_with_locations(Some(&root.join("server.json")),"127.0.0.1:0".parse().unwrap(),&mut server,Some(&package)).unwrap();
+        platform.command("restart helper",&mut server).unwrap();
+        assert!(platform.published.set.resources.iter().any(|r|r.manifest.id==crate::locations::ENGINE_OWNER));
+        assert_eq!(platform.lua.generation("helper"),Some(2));
+        drop(platform);std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod native_provider_identity_tests {
+    #[test]
+    fn disk_resource_cannot_impersonate_native_provider_without_installed_catalog() {
+        let root=std::env::temp_dir().join(format!("skate-native-provider-name-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("resources/engine-locations")).unwrap();
+        std::fs::write(root.join("resources/engine-locations/resource.json"),r#"{"format":1,"api":1,"id":"engine-locations","version":"1.0.0","language":"lua"}"#).unwrap();
+        std::fs::write(root.join("server.json"),r#"{"root":"resources","storage":"store","ensure":["engine-locations"]}"#).unwrap();
+        let mut server=skate_net::dedicated::Server::new(skate_net::dedicated::Config{session:7,server_id:99,map:1,max_players:4}).unwrap();
+        let result=super::Platform::load(&root.join("server.json"),"127.0.0.1:0".parse().unwrap(),&mut server);
+        assert!(result.is_err(),"disk resources cannot claim engine-owned identity");
+        drop(result);std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+fn reject_disk_provider(published: &PublishedSet) -> Result<(), String> {
+    if published.set.resources.iter().any(|r| r.manifest.id == crate::locations::ENGINE_OWNER) {
+        Err("engine-locations is reserved for the native provider".into())
+    } else { Ok(()) }
 }

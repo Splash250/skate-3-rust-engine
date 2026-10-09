@@ -125,6 +125,8 @@ fn begin_replay(
         return Err("Unsupported native authority difficulty".into());
     }
     let expected = state.clone();
+    let catalogs=crate::locations::catalogs(world);
+    let revision=crate::modding::location_world_revision(world);
     let mut inputs = prediction
         .log
         .as_ref()
@@ -146,10 +148,10 @@ fn begin_replay(
     prediction.state = Some(state.clone());
     prediction.job = Some(std::thread::Builder::new().name("native-replay".into()).spawn(move || {
         let bytes = std::fs::read(&map).map_err(|e|format!("Native authority world: {e}"))?;
-        if skate_resources::digest_bytes(&bytes) != expected.world {
+        if revision.unwrap_or_else(||skate_resources::digest_bytes(&bytes)) != expected.world {
             return Err("Native authority world identity differs from the mounted world".into());
         }
-        let mut simulation = Simulation::load(&root, Some(&map), difficulty, expected.admission)?;
+        let mut simulation = Simulation::load_catalogs(&root, Some(&map), difficulty, expected.admission,&catalogs)?;
         let mut proofs = vec![simulation.snapshot().state_digest()];
         for input in inputs { proofs.push(simulation.step(input)?.state_digest()); }
         if proofs.get(expected.tick as usize) != Some(&expected.state_digest) {

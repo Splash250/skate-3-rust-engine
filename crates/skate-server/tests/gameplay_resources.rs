@@ -1281,7 +1281,7 @@ fn resource_stop_and_restart_restore_temporary_travel_through_real_udp_readmissi
             bind: "127.0.0.1:0".parse().unwrap(),
             session: 7,
             max_players: 4,
-            map: Map::TestWorld,
+            map: Map::TestWorld, locations:None,
             resources: Some(config),
             accounts: None,
             operations: None,

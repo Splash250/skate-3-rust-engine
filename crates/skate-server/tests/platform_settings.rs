@@ -52,7 +52,7 @@ fn make_host(path: PathBuf) -> Host {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: 2,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(path),
         accounts: None,
         operations: None,

@@ -123,7 +123,7 @@ cannot collide just because their labels match. Cached immutable bytes are share
 Lua state, persisted data and permission decisions are scoped separately.
 
 The client default grant policy permits requested `resource.*` capabilities and
-`engine.ui`, `engine.audio`, `engine.graphics`, `engine.inspect` and
+`engine.map`, `engine.ui`, `engine.audio`, `engine.graphics`, `engine.inspect` and
 `engine.voice`. Voice device use still requires the client's `--voice` opt-in. Sensitive
 player, physics, camera, input, world and animation grants require explicit
 source-specific additions in `grants.json` inside the cache root. For example:
@@ -198,3 +198,7 @@ See [resource authoring](../../sdk/RESOURCES.md), the
 the limits of Hybrid Authority, see [dedicated multiplayer](README.md).
 
 Explicit bulk transfer keys, progress, deadlines and cancellation are documented in [Large resource messages](large-messages.md). Browser inventory and voice examples are described in [Browser interfaces](browser-interfaces.md) and [Voice](voice.md).
+
+## Live map resources
+
+Grant `resource.map` to publish server-owned settings and vector layers through the existing state transport. Client-local layers require `engine.map`. See [the map SDK](../../sdk/MAP.md) and the [Lua server example](../../resources/programmable-map/).

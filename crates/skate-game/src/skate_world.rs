@@ -652,6 +652,27 @@ pub(crate) fn collision_world(
 mod tests {
     use super::*;
 
+    #[test]
+    fn authored_and_rwcm_queries_survive_location_composition() {
+        let material=RetailContactMaterial {static_friction:0.8,dynamic_friction:0.6,restitution:0.};
+        let retail=retail_collision_world(include_bytes!("../../skate-data/tests/fixtures/retail-collision.rwcmset"),material).unwrap();
+        let authored=crate::physics::ground::Terrain::Flat.world(material);
+        for base in [retail,authored] {
+            let start=Vector3::new(0.2,5.,0.2);let end=Vector3::new(0.2,-5.,0.2);
+            let before=base.query_thin_line(start,end).unwrap().expect("fixture ground");
+            let shell=vec![[[4096.,100.,4096.],[4096.,100.,4098.],[4098.,100.,4096.]],[[4096.,100.,4096.],[4096.,102.,4096.],[4096.,100.,4098.]]];
+            let client=skate_data::location_collision::compose(&base,&[shell.clone()],material).unwrap();
+            let authority=skate_data::location_collision::compose(&base,&[shell],material).unwrap();
+            assert_eq!(client.query_thin_line(start,end).unwrap().unwrap(),before);
+            assert_eq!(client.query_metadata().unwrap().packed_surfaces[..base.triangles().len()],base.query_metadata().unwrap().packed_surfaces);
+            for (a,b) in [(Vector3::new(4096.5,102.,4096.5),Vector3::new(4096.5,99.,4096.5)),(Vector3::new(4097.,100.5,4096.5),Vector3::new(4095.,100.5,4096.5))] {
+                let hit=client.query_thin_line(a,b).unwrap().expect("interior floor/wall contact");
+                assert_eq!(Some(hit),authority.query_thin_line(a,b).unwrap());
+            }
+        }
+    }
+
+
     /// Measures the static draw budget on a real installed map. This is the
     /// check that the whole architecture exists to pass, so it reports the class
     /// mix rather than only the total: if the budget is ever missed, the mix says

@@ -488,6 +488,13 @@ pub(crate) fn debug(mods:Res<Mods>,mut gizmos:Gizmos) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires SKATE_INTERIOR_GLB pointing to the locally prepared runtime asset"]
+    fn installed_interior_fits_default_resource_budget() {
+        let path=std::env::var_os("SKATE_INTERIOR_GLB").expect("SKATE_INTERIOR_GLB required");
+        let bytes=std::fs::read(path).unwrap();
+        validate_resource_glb(&bytes).expect("runtime interior must fit unchanged default import policy");
+    }
     fn resource_glb(document:serde_json::Value)->Vec<u8> {
         resource_glb_with_bin(document,vec![0u8;4])
     }
@@ -509,6 +516,28 @@ mod tests {
         assert!(validate_resource_glb(&resource_glb(external)).unwrap_err().contains("embed"));
         let mut image=embedded;image["images"]=serde_json::json!([{"uri":"../other/texture.png"}]);
         assert!(validate_resource_glb(&resource_glb(image)).unwrap_err().contains("embed"));
+    }
+    #[test]
+    #[ignore = "requires prepared SKATE_LOCATION_RUNTIME"]
+    fn apartment_catalog_fits_combined_resource_budget() {
+        let root =
+            std::path::PathBuf::from(std::env::var_os("SKATE_LOCATION_RUNTIME").expect("catalog root"));
+        let package = skate_resources::locations::PreparedCatalog::read(&root, "catalog.json").unwrap();
+        let limits = asset_limits::Limits::default();
+        let mut used = 0;
+        for (path, bytes) in package
+            .files
+            .iter()
+            .filter(|(path, _)| path.ends_with(".glb"))
+        {
+            let decoded = validate_resource_glb_with_limits(bytes, limits).unwrap();
+            println!("CATALOG_MODEL_BUDGET {path} decoded={decoded}");
+            limits.charge(&mut used, decoded).unwrap();
+        }
+        println!(
+            "CATALOG_SET_BUDGET decoded={used} limit={}",
+            limits.set_decoded_bytes
+        );
     }
     #[test]
     fn configured_import_accepts_larger_embedded_texture_and_charges_the_set() {

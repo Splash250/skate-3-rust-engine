@@ -50,6 +50,7 @@ fn installed(
             settings: Default::default(),
             requires_features: vec![],
             world: None,
+            locations: None,
             format: 1,
             api: 1,
             id: id.into(),

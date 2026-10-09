@@ -55,7 +55,7 @@ fn host(config: PathBuf) -> Host {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: 16,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(config),
     })
     .unwrap()
@@ -811,4 +811,43 @@ fn explicit_bulk_script_handles_report_delivery_cancellation_and_deadlines_over_
     assert!(metrics["lua_heap_bytes"].as_u64().unwrap()>0);
     assert!(server.resource_command("metrics absent").is_err());
     server.shutdown();
+}
+
+#[test]
+fn resource_map_reaches_two_admitted_udp_clients() {
+    let temp=Temp::new(); let config=fixture(&temp);
+    let manifest=temp.0.join("resources/challenge/resource.json");
+    let mut value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    value["capabilities"].as_array_mut().unwrap().push(json!("resource.map"));
+    std::fs::write(&manifest,serde_json::to_vec(&value).unwrap()).unwrap();
+    let mut value:serde_json::Value=serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    value["grants"]["challenge"].as_array_mut().unwrap().push(json!("resource.map"));
+    std::fs::write(&config,serde_json::to_vec(&value).unwrap()).unwrap();
+    let script=temp.0.join("resources/challenge/private.lua");
+    let mut code=std::fs::read_to_string(&script).unwrap();
+    code.push_str("\nresource.map.set({layers={{key='course',items={{kind='marker',key='start',position={1,2,3},label='Start'}}}}})\n");
+    std::fs::write(&script,code).unwrap();
+    let mut server=host(config);
+    let cache=Cache::open(&temp.0.join("cache"),Limits::default()).unwrap();
+    let mut a=Guest::new(server.local_addr().unwrap(),2);a.wait_offer(&mut server);
+    let (mut alua,_)=a.activate(&cache,"map-a");
+    let mut b=Guest::new(server.local_addr().unwrap(),3);b.wait_offer(&mut server);
+    let (mut blua,_)=b.activate(&cache,"map-b");
+    let until=Instant::now()+Duration::from_secs(4);
+    while alua.state("challenge",skate_mods::map::STATE_KEY).is_none()||blua.state("challenge",skate_mods::map::STATE_KEY).is_none() {
+        assert!(Instant::now()<until,"map state did not reach both clients");
+        for (client,lua) in [(&mut a,&mut alua),(&mut b,&mut blua)] {
+            client.step(&mut server);
+            for message in client.wire.take_incoming() {
+                if message.kind==Kind::State {lua.apply_state(&message.resource,message.generation,&message.name,message.value).unwrap();}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let av=alua.state("challenge",skate_mods::map::STATE_KEY).unwrap();
+    assert_eq!(av,blua.state("challenge",skate_mods::map::STATE_KEY).unwrap());
+    assert_eq!(av["layers"][0]["items"][0]["position"],json!([1.0,2.0,3.0]));
+    assert_eq!(server.player_count(),2);
+    alua.disconnect();blua.disconnect();
+    assert!(alua.state("challenge",skate_mods::map::STATE_KEY).is_none());
 }

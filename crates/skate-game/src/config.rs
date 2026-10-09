@@ -7,6 +7,7 @@ pub(crate) struct Config {
     pub verification_capture: Option<PathBuf>,
     pub map: Option<skate_data::skate_map::SkateMap>,
     pub map_path: Option<PathBuf>,
+    pub locations: Option<PathBuf>,
     pub difficulty: crate::difficulty::Difficulty,
     pub check_assets: bool,
     /// `--validate-maps`: validate map paths read from stdin (see map_validation).
@@ -26,6 +27,7 @@ impl Config {
             verification_capture: None,
             map: None,
             map_path: None,
+            locations: None,
             difficulty: crate::difficulty::Difficulty::default(),
             check_assets: false,
             validate_maps: false,
@@ -78,6 +80,7 @@ impl Config {
                     config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
                     explicit_map = true;
                 }
+                Some("--locations") => config.locations=Some(args.next().ok_or("--locations requires a package directory")?.into()),
                 Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; }
                 Some("--check-assets") => config.check_assets = true,
                 // Maps arrive on stdin; never load the saved default map.
@@ -122,6 +125,10 @@ impl Config {
             return Err("--validate-maps reads maps from stdin; do not combine it with --map or --check-assets".into());
         }
         config.map_fingerprint = map_fingerprint(config.map_path.as_deref())?;
+        if config.multiplayer.connect.is_none() {
+        let locations=skate_resources::locations::PreparedCatalog::discover(config.map_path.as_deref(),config.locations.as_deref())?;
+        config.map_fingerprint=skate_resources::locations::world_fingerprint(config.map_fingerprint,locations.as_ref().map(|p|p.revision.as_str()));
+        }
         if config.multiplayer.direct.is_some() && config.multiplayer.session==0 {return Err("Direct multiplayer requires --net-session (a nonzero number shared by both players)".into());}
         if let Some(id) = &config.teleport {
             let destinations = crate::teleport_menu::load(&config.asset_root)?;

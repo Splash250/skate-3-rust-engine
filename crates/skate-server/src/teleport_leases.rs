@@ -13,9 +13,9 @@ struct Lease {
     return_deadline: Option<u64>,
 }
 #[derive(Default)]
-pub(super) struct Leases(BTreeMap<u64, Lease>);
+pub(crate) struct Leases(BTreeMap<u64, Lease>);
 impl Leases {
-    pub(super) fn world_changed(&mut self, server: &mut Server) {
+    pub(crate) fn world_changed(&mut self, server: &mut Server) {
         // Saved coordinates belong to the old world. Rejoining chooses the new
         // approved spawn and public instance; never strand private-instance actors.
         for (actor, lease) in &self.0 {
@@ -33,7 +33,7 @@ impl Leases {
         server.movement_epoch_of(actor) == Some(lease.epoch)
             && server.instance_of(actor) == Some(lease.instance)
     }
-    pub(super) fn command(
+    pub(crate) fn command(
         &mut self,
         server: &mut Server,
         resource: &str,
@@ -99,7 +99,15 @@ impl Leases {
         }
         Ok(())
     }
-    pub(super) fn request_return(
+    /// Native catalog travel shares the resource lease lifecycle, but uses the
+    /// catalog's validated doorway return rather than the intersecting pose.
+    pub(crate) fn location_entry(&mut self,server:&mut Server,resource:&str,generation:u64,actor:u64,destination:TeleportDestination,original:TeleportDestination)->Result<(),String>{
+        if !original.valid(){return Err("Invalid catalog return destination".into());}
+        self.command(server,resource,generation,actor,destination,true)?;
+        self.0.get_mut(&actor).expect("successful reversible travel owns a lease").original=original;
+        Ok(())
+    }
+    pub(crate) fn request_return(
         &mut self,
         server: &Server,
         resource: &str,
@@ -121,7 +129,7 @@ impl Leases {
             .get_or_insert(server.now_ms().saturating_add(30_000));
         Ok(())
     }
-    pub(super) fn sync(&mut self, server: &mut Server, owners: &BTreeMap<String, u64>) {
+    pub(crate) fn sync(&mut self, server: &mut Server, owners: &BTreeMap<String, u64>) {
         for (actor, (previous, next)) in server.drain_resource_readmission_resets() {
             if let Some(lease) = self.0.get_mut(&actor) {
                 if lease.epoch == previous
@@ -163,7 +171,7 @@ impl Leases {
             true
         });
     }
-    pub(super) fn verifier_snapshot(&self, server: &Server) -> BTreeMap<u64, u64> {
+    pub(crate) fn verifier_snapshot(&self, server: &Server) -> BTreeMap<u64, u64> {
         self.0
             .iter()
             .filter(|(actor, lease)| Self::current(server, **actor, lease))
@@ -173,13 +181,13 @@ impl Leases {
     /// Only call around the trusted verifier itself. Baseline resets/corrections
     /// inside a competition retain the original return point; outside teleports
     /// and reconnects must never advance the stored lease epoch.
-    pub(super) fn verifier_finished(&mut self, before: BTreeMap<u64, u64>, server: &Server) {
+    pub(crate) fn verifier_finished(&mut self, before: BTreeMap<u64, u64>, server: &Server) {
         self.advance_owned_epochs(before, server);
     }
     /// Resource content publication deliberately rotates each connection epoch.
     /// The host snapshots only still-current leases immediately around that
     /// operation, so a previous outside teleport cannot become eligible again.
-    pub(super) fn readmission_finished(&mut self, before: BTreeMap<u64, u64>, server: &Server) {
+    pub(crate) fn readmission_finished(&mut self, before: BTreeMap<u64, u64>, server: &Server) {
         self.advance_owned_epochs(before, server);
     }
     fn advance_owned_epochs(&mut self, before: BTreeMap<u64, u64>, server: &Server) {

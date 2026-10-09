@@ -119,12 +119,15 @@ fn start_controllers(config: Res<crate::config::Config>) {
 #[derive(Resource, Default)]
 pub(crate) struct ControllerFrame(
     Option<[Result<platform::DevicePacket, platform::DeviceError>; 4]>,
+    // Physical sample remains readable by frame-end UI after gameplay takes packets.
+    RawInput,
 );
 impl ControllerFrame {
     fn packet(&self) -> Option<&platform::DevicePacket> {
         self.0.as_ref()?.iter().find_map(|value| value.as_ref().ok())
     }
     pub(crate) fn raw_input(&self) -> RawInput {
+        if self.0.is_none() { return self.1; }
         self.packet().map_or_else(RawInput::default, |packet| RawInput {
             buttons: packet.state.buttons,
             triggers: packet.state.triggers.map(|v| f32::from(v) / 255.0),
@@ -143,6 +146,7 @@ pub(crate) fn sample_controllers(
 ) {
     let focused = windows.iter().any(|w| w.focused);
     let active = net.is_some_and(|n| n.active());
+    frame.1 = RawInput::default();
     frame.0 = Some(std::array::from_fn(|slot| {
         if active && ((!focused && config.multiplayer.controller.is_none())
             || config.multiplayer.controller.is_some_and(|selected| selected as usize != slot)) {
@@ -166,6 +170,7 @@ pub(crate) fn poll_controllers(
     } else {
         0
     };
+    frame.1 = frame.raw_input();
     input.collect_masked(
         frame
             .0
@@ -199,8 +204,11 @@ pub(crate) fn publish_actions(
     camera: Res<crate::camera::CameraRuntime>,
     mods: Option<Res<crate::modding::Mods>>,
     interfaces: Option<Res<crate::modding::interactions::Interfaces>>,
+    map: Option<Res<crate::map_view::MapViewState>>,
+    locations: Option<Res<crate::locations::LocationRegistry>>,
 ) {
-    let blocked = !crate::graphics_menu::gameplay_active(menu)
+    let blocked = crate::locations::blocked(locations.as_deref()) || map.is_some_and(|m| m.expanded && m.visible)
+        || !crate::graphics_menu::gameplay_active(menu)
         || debug.suppress_gameplay(&camera)
         || crate::modding::browser_focused(mods.as_deref())
         || crate::modding::interactions::blocked(interfaces.as_deref());

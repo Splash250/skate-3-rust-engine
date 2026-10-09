@@ -212,6 +212,7 @@ impl Multiplayer {
                 .collect()
         })
     }
+    pub(crate) fn movement_epoch(&self)->Option<u64>{let lobby=self.lobby.as_ref()?;Some(lobby.actors.get(&lobby.local)?.movement_epoch)}
     pub(crate) fn is_dedicated(&self) -> bool {
         self.lobby.as_ref().is_some_and(Session::is_dedicated)
     }

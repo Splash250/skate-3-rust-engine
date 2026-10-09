@@ -362,7 +362,7 @@ fn sixty_four_real_udp_owners_exchange_movement_shared_state_and_large_resource_
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: PLAYERS,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(fixture.0.join("server.json")),
     })
     .unwrap();
@@ -601,7 +601,7 @@ fn impaired_workload(players: usize, seconds: u64) {
         bind: "127.0.0.1:0".parse().unwrap(),
         session: 7,
         max_players: players,
-        map: Map::TestWorld,
+        map: Map::TestWorld, locations:None,
         resources: Some(fixture.0.join("server.json")),
     })
     .unwrap();

@@ -62,6 +62,28 @@ glibc is the normal development target. On musl hosts `BUILD.sh` preserves
 existing `RUSTFLAGS` and disables static CRT linkage so system X11, Wayland,
 audio, Vulkan, and udev libraries can remain dynamically linked.
 
+## Live map
+
+The compact live 3D map is enabled during gameplay in singleplayer and
+multiplayer. Press **M** or **D-pad Left** to toggle the larger live map. It
+shows the active world, **YOU**, and connected players with their available
+names. In the expanded map, left-drag or arrow keys pan freely. Drag the compass
+or use Alt + Left/Right to rotate; click it or press Shift + Ctrl + Up to face
+north. The 2D/3D button or Ctrl + D switches to/from top-down; its vertical
+slider adjusts tilt. Double-click zooms in (Alt-double-click zooms out);
+wheel, +/- buttons, Ctrl + +/- and D-pad Up/Down also zoom. YOU or Ctrl + L
+recenters on the skater. Pixel trackpad scrolling pans; Linux's current backend
+does not expose native pinch/rotation gestures.
+
+Expanded navigation blocks local skating input while the simulation continues.
+Opening a menu collapses it; map controls are inactive during menus, replay,
+loading, and browser input. View switching preserves the free center and zoom,
+and closing returns to the player-following compact map.
+
+The overview is generated from the loaded geometry, including distant streamed
+areas, and is replaced when a map change commits. Dense geometry is reduced to
+keep its cost bounded. Worlds without usable geometry show **Map unavailable**.
+
 ## Optional Steam lobbies
 
 The existing Steam lobby mode can use a separate native helper on x86-64 Linux
@@ -119,3 +141,27 @@ worker from `crates/skate-mods/managed-host`, and configure `SKATE_DOTNET_ROOT` 
 A downloaded C# resource contains source, not arbitrary DLL/SO plugins. The
 worker requires unprivileged user namespaces and its sandbox prerequisites; it
 fails closed when they are unavailable.
+
+Server Lua and local Lua mods can customize the map through the [map SDK](../sdk/MAP.md).
+
+## Native interior packages
+
+The native location loader discovers a catalog beside a map at
+`locations/<lowercase-map-stem>/catalog.json`; for `maps/DownTown.skate` this is
+`maps/locations/downtown/catalog.json`. Use `--locations DIRECTORY` on the game
+or dedicated server to select an explicit package. An absent optional catalog
+leaves the map usable. Dedicated clients receive the server's catalog through
+required resource admission; their local package cannot override it.
+
+See [the interior SDK](../sdk/LOCATIONS.md) and
+[the two-floor example](../sdk/examples/interior-catalog/). Engine code owns model
+loading, native collision, input, markers, minimap context and travel. Mods supply
+bounded catalogs; server resources must declare and receive both
+`resource.locations` and `resource.teleport` for catalog travel.
+
+The Downtown placement configuration is in
+[`resources/interiors/downtown`](../resources/interiors/downtown/). Large source and
+runtime payloads remain in ignored local storage. The supplied apartment's source
+JPEGs visibly contain diagonal distortion; a successful GLB validation does not
+establish texture correctness. Do not treat that runtime candidate as a visually
+accepted apartment installation until an unmodified source is available.

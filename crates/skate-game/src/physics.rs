@@ -251,6 +251,13 @@ impl GamePhysics {
         &self.world
     }
 
+    pub(crate) fn replace_location_collision(&mut self, skater: &mut SkaterRuntime, mut world: BoardWorld) -> Result<(),String> {
+        player_state::retire_world_queries(self,skater)?;
+        world.inherit_external_queries(&self.world);
+        self.world=world;
+        Ok(())
+    }
+
     /// Flat-world convenience used by private-asset integration tests.
     #[cfg(test)]
     pub fn load(asset_root: &std::path::Path) -> Result<Self, String> {

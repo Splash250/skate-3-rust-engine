@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "api": 1,
+  "id": "programmable-map",
+  "version": "1.0.0",
+  "language": "lua",
+  "server_scripts": [
+    "server.lua"
+  ],
+  "client_scripts": [
+    "client.lua"
+  ],
+  "shared_scripts": [],
+  "files": [],
+  "dependencies": {},
+  "exports": [],
+  "capabilities": [
+    "resource.map",
+    "engine.map"
+  ]
+}

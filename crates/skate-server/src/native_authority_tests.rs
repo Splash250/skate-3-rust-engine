@@ -31,7 +31,7 @@ impl Run {
         let mut native = NativeAuthority::new(Some(config));
         let bytes = include_bytes!("../../../resources/community-park/park.skate").to_vec();
         let map = skate_data::skate_map::SkateMap::parse(&bytes).unwrap();
-        native.world = Some(World {
+        native.world = Some(World { catalogs:vec![],
             revision: "test-world-identity".into(),
             bytes: Arc::new(bytes),
             spawn: map.spawn,
@@ -491,4 +491,40 @@ fn actual_native_worker_completes_full_length_with_delayed_lossy_input_windows()
         peak_packets,
         peak_lead
     );
+}
+
+#[test]
+#[ignore = "requires SKATE_NATIVE_EXE, owned SKATE3_ASSET_ROOT and prepared SKATE_LOCATION_RUNTIME"]
+fn actual_native_worker_runs_with_apartment_shell() {
+    use skate_net::native_authority::{INPUT_KEY, Input, InputPacket};
+    let config=Config{executable:PathBuf::from(std::env::var_os("SKATE_NATIVE_EXE").unwrap()),assets:PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap()),max_workers:1};
+    let package=skate_resources::locations::PreparedCatalog::read(&PathBuf::from(std::env::var_os("SKATE_LOCATION_RUNTIME").unwrap()),"catalog.json").unwrap();
+    let spawn=package.catalog.interiors[0].spawn;
+    let heading=package.catalog.interiors[0].heading;
+    let mut run=Run::new(config);
+    let world=run.native.world.as_mut().unwrap();
+    let mut bytes=world.bytes.as_ref().clone();
+    // SKATE header: magic, endian marker, length-prefixed name, spawn, heading.
+    let offset=16+u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    for (n,v) in spawn.into_iter().chain([heading]).enumerate(){bytes[offset+n*4..offset+n*4+4].copy_from_slice(&v.to_le_bytes());}
+    let parsed=skate_data::skate_map::SkateMap::parse(&bytes).unwrap();
+    skate_data::resource_world::validate(&parsed).unwrap();
+    assert_eq!(parsed.spawn,spawn);
+    world.bytes=Arc::new(bytes);world.spawn=spawn;world.heading=heading;
+    world.revision=package.revision.clone();world.catalogs=vec![package];
+    run.start(120);run.wait_running();
+    let epoch=run.native.attempts[&2].log.admission().epoch;
+    let deadline=Instant::now()+Duration::from_secs(20);
+    loop {
+        let tick=run.native.attempts[&2].log.len() as u64+1;
+        if tick<=120 {run.client.publish_application(INPUT_KEY,InputPacket{inputs:vec![Input{epoch,tick,actions:[0.;18]}]}.encode().unwrap(),run.now);}
+        if let Some(result)=run.tick().into_iter().next(){
+            assert_eq!(result.value["kind"],"completed","{}",result.value);
+            assert_eq!(result.value["verified_rules"],"native-input-v1");
+            assert_eq!(result.value["ticks"],120);
+            break;
+        }
+        assert!(Instant::now()<deadline,"interior native worker timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

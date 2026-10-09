@@ -3,6 +3,7 @@ mod accounts;
 pub mod operations;
 pub mod supervision;
 mod base_world;
+pub mod locations;
 mod voice;
 pub mod entities;
 pub mod competition;
@@ -18,7 +19,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const USAGE: &str = "Usage: skate-server (--map MAP.skate | --test-world) [--bind IPv4:PORT] [--max-players 1..64] [--session NUMBER] [--resources server.json] [--accounts accounts.json] [--operations operations.json]\n\
+pub const USAGE: &str = "Usage: skate-server (--map MAP.skate | --test-world) [--bind IPv4:PORT] [--max-players 1..64] [--session NUMBER] [--resources server.json] [--locations DIRECTORY] [--accounts accounts.json] [--operations operations.json]\n\
 Validate a resource configuration without starting scripts: skate-server --validate-resources server.json\n\
 Default bind: 0.0.0.0:31030; players: 16; session: 48031030.\n\
 Clients use: skate3rust --connect SERVER:31030 --map MAP.skate\n\
@@ -37,6 +38,7 @@ pub struct Options {
     pub max_players: usize,
     pub map: Map,
     pub resources: Option<PathBuf>,
+    pub locations: Option<PathBuf>,
     pub accounts: Option<PathBuf>,
     pub operations: Option<PathBuf>,
 }
@@ -49,6 +51,7 @@ impl Options {
         let mut max_players = 16;
         let mut map = None;
         let mut resources = None;
+        let mut locations = None;
         let mut accounts = None;
         let mut operations = None;
         let mut seen = BTreeSet::new();
@@ -76,6 +79,7 @@ impl Options {
                             .ok_or("--accounts requires a configuration file")?,
                     ));
                 }
+                "--locations" => {locations=Some(PathBuf::from(args.next().ok_or("--locations requires a directory")?));}
                 "--resources" => {
                     resources = Some(PathBuf::from(
                         args.next()
@@ -123,6 +127,7 @@ impl Options {
             max_players,
             map: map.ok_or("Select --map MAP.skate or --test-world")?,
             resources,
+            locations,
             accounts,
             operations,
         }))
@@ -177,6 +182,8 @@ impl Host {
         if bind.ip().is_multicast() || bind.ip().is_broadcast() {
             return Err("Bind requires a unicast or wildcard address".into());
         }
+        let native=skate_resources::locations::PreparedCatalog::discover(match &options.map {Map::TestWorld=>None,Map::File(path)=>Some(path.as_path())},options.locations.as_deref())?;
+        // Dedicated add-on identity is carried by mandatory resource admission.
         let map = map_fingerprint(&options.map)?;
         // An incarnation ID prevents effects from a previous process being reused.
         // This is not an authentication credential or an encryption key.
@@ -195,23 +202,13 @@ impl Host {
             map,
             max_players: options.max_players,
         })?;
-        if options.resources.is_some() {
+        if options.resources.is_some() || native.is_some() {
             server.set_base_world_spawn(base_world::spawn(&options.map)?)?;
         }
         let socket = UdpSocket::bind(options.bind)
             .map_err(|error| format!("Bind {}: {error}", options.bind))?;
         skate_net::socket::configure(&socket).map_err(|error| format!("Configure UDP: {error}"))?;
-        let resources = options
-            .resources
-            .as_ref()
-            .map(|path| {
-                resources::Platform::load(
-                    path,
-                    socket.local_addr().map_err(|e| e.to_string())?,
-                    &mut server,
-                )
-            })
-            .transpose()?;
+        let resources=if options.resources.is_some()||native.is_some() {Some(resources::Platform::load_with_locations(options.resources.as_deref(),socket.local_addr().map_err(|e|e.to_string())?,&mut server,native.as_ref())?)}else{None};
         let accounts = options
             .accounts
             .as_ref()

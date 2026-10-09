@@ -143,6 +143,8 @@ pub(crate) fn build(
     app.add_plugins(crate::updater::UpdaterPlugin);
     app.add_plugins(crate::multiplayer::MultiplayerPlugin);
     app.add_plugins(crate::scoring_hud::ScoringHudPlugin);
+    app.add_plugins(crate::map_view::MapViewPlugin);
+    app.add_plugins(crate::locations::LocationPlugin);
     app.add_plugins(crate::debug_cam::DebugCamPlugin);
     app.add_plugins(crate::water_splash::WaterSplashPlugin);
     app.add_plugins(crate::ui_audio::UiAudioPlugin);
